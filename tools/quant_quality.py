@@ -369,7 +369,8 @@ def main() -> int:
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap", help="a command prefix for the engine, e.g. 'systemd-run --user --scope -p MemoryMax=200G'")
     p.add_argument("--kv", default="fp16", metavar="FMT",
-                   help="the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | k8v4")
+                   help=("the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | "
+                         "q4lm32 | q4lm32s | k8v4"))
     p = sub.add_parser("prompt", help="the batched prompt path's next-token logits after 20 prompts (a directory)")
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
@@ -379,7 +380,8 @@ def main() -> int:
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap")
     p.add_argument("--kv", default="fp16", metavar="FMT",
-                   help="the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | k8v4")
+                   help=("the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | "
+                         "q4lm32 | q4lm32s | k8v4"))
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")

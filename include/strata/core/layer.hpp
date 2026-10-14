@@ -219,6 +219,12 @@ struct QsaState {
     bool kv_q4 = false;
     uint8_t* k_q4 = nullptr;
     uint8_t* v_q4 = nullptr;
+    /// `--kv q4lm32` / `--kv q4lm32s` (qsa_set_kv_q4_mode): the same 144 B blocks and the same rotation as Q4_0,
+    /// with Max-Lloyd's 16 levels in place of ggml's uniform grid (kv_q4.hpp, kQ4lMap). Sets kv_q4 too - every pool,
+    /// page, stream and snapshot rule is Q4_0's - and this carries the two things that differ: the nibble -> value
+    /// map (both modes) and the writer's scale rule (kLloyd 1 = max|x|/87, kLloydLs 2 = the block's least-squares
+    /// scale). kUniform is plain q4_0.
+    strata::kernels::Q4Mode kv_q4_mode = strata::kernels::Q4Mode::kUniform;
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
@@ -315,12 +321,21 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// `--kv q4lm32` / `--kv q4lm32s`: Q4_0's blocks and rotation with Max-Lloyd's levels instead of ggml's uniform
+/// grid (kv_q4.hpp). kUniform here is plain q4_0 (use qsa_set_kv_q4); anything else sets that too.
+void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode);
+strata::kernels::Q4Mode qsa_kv_q4_mode();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
-/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
+/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvQ4lm /
+/// kKvQ4lmS / kKvHybrid).
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
+    // q4lm32 / q4lm32s: kKvQ4's blocks with another nibble -> value map (and, for q4lm32s, another scale rule) - a
+    // block is silent about both, so the format has to carry them.
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydLs) return strata::kernels::kKvQ4lmS;
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd) return strata::kernels::kKvQ4lm;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

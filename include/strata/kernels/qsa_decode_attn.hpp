@@ -14,6 +14,7 @@
 // the real count comes from `step[kStepWidth]` as for every other capturable QSA kernel.
 #pragma once
 
+#include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
 
 #include <cstdint>
@@ -29,6 +30,7 @@ struct QsaAttnPools {
     const uint16_t* v_scale = nullptr;
     const uint8_t* k_q4 = nullptr;      ///< q4_0 block_q4_0 [page][kv_head][page_size][head_dim / 32 * 18]
     const uint8_t* v_q4 = nullptr;
+    Q4Mode q4_mode = Q4Mode::kUniform;  ///< `--kv q4lm32`/`q4lm32s`: k_q4/v_q4 hold Max-Lloyd levels
     const int32_t* page_table = nullptr;
 };
 

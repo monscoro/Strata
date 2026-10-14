@@ -330,6 +330,42 @@ Ranked by validated impact per unit of effort, model-agnostic:
 3. **No QJL** (we never had it) and **yes to random signs** (SRHT) — unchanged from §5.5.
 4. Later / opt-in: delta compression for a 3-bit mode, per-layer bit allocation.
 
+### 6.8 Follow-up (2026-10-14): our own measurement of §6.7 item 2
+
+Item 2 was the one candidate this repo could build without calibration, and it was flagged "measure first". It is now
+built and measured as `--kv q4lm32` / `--kv q4lm32s` (design: `docs/KV_QUANT_WORKPACKAGE.md` §5.1-Nachtrag). Two
+things changed against the sketch in item 2, and the measurement forced both:
+
+- **Per-32 block, not per head.** Max-Lloyd's 16 reconstruction points for N(0,1) - the table from quant.cpp /
+  TurboQuant's `tq_codebook.c` - multiplied by 32 and rounded are integers, so a scale of `max|x|/87` keeps the
+  **existing** 18-byte block: the same layout, block size, block movers, streaming granule and int8 prompt-MMA
+  operands as `q4_0`. Only the nibble -> value map changes. A per-head block would have been a new format in every
+  backend for a lever this size.
+- **The scale is a second, separate lever.** Measured in `src/kernels/kv_q4_parity.cpp` (HIP, gfx1200 / RX 9060 XT;
+  the parity test's own drawn input: 487 cells x 2 KV heads x 256 values x K and V = 498,688 rotated values, 15,584
+  blocks). MSE, and dB under `q4_0`'s 2.938e-02:
+
+| Configuration (the same 16 levels unless stated) | MSE | vs `q4_0` |
+| --- | ---: | ---: |
+| `q4_0` uniform grid, ggml scale | 2.938e-02 | 0 dB |
+| Lloyd levels, `max|x|/87` | 2.740e-02 | **-0.30 dB** |
+| the same levels, `RMS/32` scale | 3.547e-02 | -0.82 dB (**worse**) |
+| the same levels, converged per-block best fit | 2.456e-02 | -0.78 dB (ceiling) |
+| Lloyd levels + **one** least-squares pass (`q4lm32s`) | 2.551e-02 | **-0.61 dB** |
+
+So the codebook alone is worth 0.30 dB and the block's own scale another 0.31 dB. One least-squares pass reaches
+**78.8 %** of the way to a converged fit, and the scale it lands on is only **0.4 %** from `max|x|/87` on average -
+what the pass buys is the *fit*, not a wider range. That matters for item 2's suspicion that the gain "partially
+depends on moving from a per-32 to a per-head scale": it does not, a per-32 block is enough. What item 2 did not say
+is that the scale rule is the *larger* half, and that a fixed rescale of the levels does not reproduce it - with
+`RMS/32` the error is **worse** than `q4_0`'s, because the block maximum of 32 samples sits at `max|x|/RMS = 2.363`
+sigma on average, below the 2.72 sigma the widest level is drawn for.
+
+Both formats are bitwise equal to a host reference, and the reader is unchanged between them (the scale is in the
+block). The end-to-end check against the fp16-KV arm at the same weights - PPL, mean and p99 KL, top-1 - is in
+`docs/KV_QUANT_WORKPACKAGE.md` §7.4: in one 8K run (24,573 positions) it is enough to take `q4_0`'s **+0.23 %** PPL
+penalty down to **+0.02 %** at the same byte count, with mean KL 8.6 % and p99 KL 12.5 % lower.
+
 ## 7. Sources
 
 Repository: `include/strata/kernels/kv_q4.hpp`, `bench/results/2026-09-27-kv-q4/README.md`, `docs/DETAILS.md:86`,

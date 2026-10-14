@@ -45,7 +45,18 @@ struct KvHostPools {
 /// K8V4 (`--kv k8v4`: K as int8 codes + scales, V as rotated q4_0 - three runs, `k_q`, `k_scale`, `v_q4`).
 /// (A bool `int8` argument still reads as kKvF16 / kKvInt8.)  kKvHybrid is 3, the number conversation snapshots
 /// already give K8V4.
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3 };
+///
+/// kKvQ4lm (4) and kKvQ4lmS (5) are `--kv q4lm32` and `--kv q4lm32s`: the same block layout as kKvQ4 - every
+/// function below moves them exactly like kKvQ4 - with Max-Lloyd levels in place of ggml's uniform grid, and either
+/// max|x| / 87 or a per-block least-squares scale.  They are separate values because a block is silent about which
+/// map its nibbles belong to, so a stream, ring or snapshot has to say; the two level-table values differ only on
+/// the *write* side, so a reader may treat them alike (q4_lloyd, kv_q4.hpp).  The code-map difference itself lives
+/// in `kv_q4.hpp` (`kQ4lMap`) and its readers.
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ4lm = 4, kKvQ4lmS = 5 };
+
+/// True for the three 4-bit rotated formats: same blocks, same bytes, same rotations - only the nibble -> value
+/// rule (and, for kKvQ4lmS, the writer's scale) differs.  A block-mover that only copies bytes can test this.
+inline constexpr bool kv_fmt_q4(int fmt) { return fmt == kKvQ4 || fmt == kKvQ4lm || fmt == kKvQ4lmS; }
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose

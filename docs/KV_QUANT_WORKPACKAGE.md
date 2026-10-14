@@ -1,8 +1,10 @@
 # Arbeitspaket: die KV-Cache-Quantisierung verbessern (Stand 2026-10-14)
 
-Status: **Plan, kein Ergebnis.** Abgeleitet aus [KV_QUANT_RESEARCH.md](KV_QUANT_RESEARCH.md) (Survey, Stand der
-Technik, Code-Deep-Dive #1 über quant.cpp). Wird noch verfeinert. Alle Wirkungsangaben sind **Erwartungen aus
-fremden Messungen**, keine Strata-Ergebnisse. Branch `KV_QUANT_research`.
+Status: **WP-0 steht, WP-1a ist gebaut und gemessen** (`--kv q4lm32` / `--kv q4lm32s`: §5.1-Nachtrag für das
+Design, §7.3 für die Parity-Zahlen, §7.4 für den 1K-A/B). Der Plan-Teil §1–§6 stammt aus dem Survey
+[KV_QUANT_RESEARCH.md](KV_QUANT_RESEARCH.md); wo die eigenen Messungen ihn korrigieren, steht das dabei. §4/§5 sind
+**Erwartungen aus fremden Messungen** und so gekennzeichnet; alle Zahlen in §7 sind **Strata-Messungen** mit dem
+Hinweis, worauf sie gemessen wurden. Branch `KV_QUANT_research`, noch kein PR.
 
 ## 1. Ziel
 
@@ -84,6 +86,44 @@ Zwei Kontroll-Varianten, um Ursachen zu trennen (nur intern, kein Extra-Format):
 - `q4lu`: wie `q4lm`, aber **uniformes** 16-Level-Gitter — isoliert den Skalenwechsel 32→Head;
 - `q4lm32`: per-32-Block wie heute, nur Gitter→Codebook — isoliert den Codebook-Effekt.
 
+**Nachtrag (14.10.2026): gebaut wird die Kontroll-Variante, und sie ist das Produkt-Format.** Der erste Meßpunkt
+(§7.1/§7.2) hat die Richtung entschieden: der Fehler ist ein Per-Token-Quantisierer-Effekt **ohne**
+Langkontext-Term, es zählt also allein, wie gut ein Vektor aus 256 Werten abgelegt wird. Damit ist Kandidat A
+richtig — aber die Ausführung aus §5.1 (ein 130-B-Block je **Head**, 4,06 bit/Wert) kostet in **jedem** Backend ein
+neues Layout: neue Blockgröße, neuer Block-Mover (`kv_stream`), neues Streaming-Granulat, neue Snapshot-Regeln, neue
+Prompt-MMA-Operanden. Die per-32-Variante dagegen behält die 18-B-Blöcke, die Pools, das Granulat und die
+Ganzzahl-Operanden des Prompt-MMA und ändert **nur die Nibble→Wert-Abbildung**. Deshalb wird `q4lm32` nicht als
+interner Kontrollarm gebaut, sondern als das Format; `q4lm` (ein Head je Block) wird **nicht** gebaut.
+
+Der Trick, der das ermöglicht: die 16 Level werden als `round(level · 32)` ganzzahlig gespeichert —
+`{−87,−66,−52,−40,−30,−21,−12,−4,4,12,21,30,40,52,66,87}`, d. i. Max-Lloyds 16 Rekonstruktionspunkte für N(0,1)
+(dieselbe Tabelle wie quant.cpp, aus TurboQuants `tq_codebook.c`) × 32, gerundet — und die Skala als
+`d = max|x| / 87`. Die Nibble bleiben Nibble, der Block bleibt 18 B, 8 Blöcke je Head.
+
+Der Survey (§6.4 Punkt 2: „das Codebook allein ist nicht der Gewinn, die Skala gehört dazu") wird von der eigenen
+Parity-Messung (§7.3) bestätigt und **getrennt** — deshalb gibt es **zwei** Formatwerte:
+
+| `--kv` | Skala je 32er-Block | Nibble→Wert | Bytes/Block |
+| --- | --- | --- | ---: |
+| `q4_0` (Bestand) | `d = mval / −8` (ggml, uniform) | `(n − 8) · d` | 18 |
+| `q4lm32` | `d = max|x| / 87` | `kQ4lMap[n] · d` | 18 |
+| `q4lm32s` | `d* = Σ(l·x) / Σ(l²)`, **ein** Schritt nach `max|x|/87` | `kQ4lMap[n] · d` | 18 |
+
+`q4lm32s` ist ebenfalls datenblind: der eine Least-Squares-Schritt benutzt nur den Block selbst (zwei zusätzliche
+Butterfly-Reduktionen über die 32 Werte), keine Kalibrierung, kein Lernschritt, und die zweite Zuweisung läuft mit
+demselben Level-Ladder. Beide Level-Tabellen-Formate **lesen** gleich (`q4_lloyd(mode)` in `kv_q4.hpp`), weil die
+Skala im Block steht; nur der Schreiber unterscheidet sich.
+
+Öffentliche API: `enum class Q4Mode : int { kUniform = 0, kLloyd = 1, kLloydLs = 2 }` in
+`include/strata/kernels/kv_q4.hpp`; alle vier öffentlichen `kv_q4`-Funktionen nehmen `Q4Mode mode =
+Q4Mode::kUniform` als letzten Parameter (Default = unverändert). `qsa_kv_format` liefert die neuen Format-IDs
+`kKvQ4lm` (4) und `kKvQ4lmS` (5), damit Streaming/Snapshot „dieselben Blöcke, andere Tabelle" mitführen. Der
+Prompt-Pfad **lehnt beide Formate ab** (`qsa_prompt_attn_batch` gibt `false` zurück), sodass Prefill über den
+Decode-Kernel läuft: kein Tensor-Core-Prefill für die opt-in-Formate, dokumentierter Tausch. `kQ4lMap` liegt auf
+CUDA/HIP als `__constant__`; die 16 Bytes divergent zu lesen ist der Worst Case für `__constant__` (für IQ4_NLs
+Codebook mit 2,12× gemessen, `s_gemv.cu`) — eine Kopie in Shared Memory ist der nächste Schritt, **vor** jedem
+Speed-A/B.
+
 ### 5.2 `--kv-window N` / `--kv-sink S` (Kandidat B)
 
 Auf `q4_0` und `k8v4`: die jüngsten `N` Zellen (und `S` Sink-Zellen am Anfang) liegen **fp16** vor, der Rest
@@ -123,7 +163,7 @@ Review.
 | WP | Inhalt | Deliverable | Aufwand |
 | --- | --- | --- | --- |
 | **WP-0** | KV-Qualitäts-Harness: **steht** — `tools/quant_quality.py --kv FMT` (§7.1). Offen: Baselines fp16/int8/q4_0/k8v4 bei 1K/8K/32K auf {Q2_0, IQ3_S} fixieren (Top-1, KL, PPL + `needle_bench.py` + Speed-A/B) | `bench/results/<datum>-kv-baseline/` | S |
-| **WP-1** | `--kv q4lm` (+ interne Kontrollen `q4lu`, `q4lm32`); CUDA/HIP + SYCL; Parity-Tests | Format + Tests + Messbericht | M |
+| **WP-1** | `--kv q4lm32` / `--kv q4lm32s` — **Format steht, modellfrei gemessen** (§5.1-Nachtrag, §7.3); CUDA/HIP gebaut, SYCL gespiegelt (hier nicht baubar); Parity-Tests grün. Offen: Speed-A/B (`kQ4lMap` erst in Shared Memory) | Format + Tests + Meßbericht | M |
 | **WP-2** | `--kv-window` / `--kv-sink` auf `q4_0` (und `k8v4`), mit #2318 abgestimmt | Format + Tests + Messbericht | M-L |
 | **WP-3** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
 | **WP-4** (später) | Delta-Modus für 3-bit; Per-Layer-Bit-Zuteilung nach Kurtosis | — | L |
@@ -210,6 +250,116 @@ WP-2/`--kv-window` bleibt er nötig, weil dort die *jüngsten* Zellen zählen. D
 **Korrektur:** das `v2-8k`-README behauptete, das 1K/8K-Paar trenne die Kontextlänge; für dieses Werkzeug tut es das
 nicht (`data/quant_quality/v2-8k/README.md` korrigiert).
 
+### 7.3 WP-1a: `--kv q4lm32` / `--kv q4lm32s` — gebaut und modellfrei gemessen
+
+Design und Bauentscheidung: §5.1-Nachtrag. Kurz: **dieselben 18-B-Blöcke wie `q4_0`**, nur die Nibble→Wert-Abbildung
+ändert sich (`q4lm32`: `kQ4lMap[n]·d` mit `d = max|x|/87`), und `q4lm32s` zusätzlich die Skalenregel des Schreibers
+(**ein** Least-Squares-Schritt, `d* = Σ(l·x)/Σ(l²)`, danach dasselbe Level-Ladder). Weder Layout noch Byte-Zahl noch
+Leser ändern sich zwischen den beiden Level-Tabellen-Formaten.
+
+**Der modellfreie Meßpunkt** (`src/kernels/kv_q4_parity.cpp`, HIP auf gfx1200 / RX 9060 XT). Der Test wiederholt den
+Schreiber über 487 gezogene Zellen (2 KV-Heads × 256 Werte × K und V = **498.688 rotierte Werte**, 15.584 Blöcke) und
+vergleicht **bitweise** gegen eine Host-Referenz; beide neuen Formate sind bitweise gleich, und der Gather liefert
+exakt `Level · gespeicherte Skala`. Auf genau denselben Werten, dieselben Blöcke, je Block die beste der möglichen
+Skalen:
+
+| Konfiguration (dieselben 16 Stufen) | MSE | gegen `q4_0` |
+| --- | ---: | ---: |
+| `q4_0` (uniformes Gitter, ggml-Skala) | 2,938e−02 | 0 dB |
+| `q4lm32` (Lloyd-Level, `max|x|/87`) | 2,740e−02 | **−0,30 dB** |
+| dieselben Level, Skala `RMS/32` | 3,547e−02 | −0,82 dB (**schlechter**) |
+| dieselben Level, konvergierte Best-Fit-Skala je Block | 2,456e−02 | −0,78 dB (Obergrenze) |
+| `q4lm32s` (Level + **ein** LS-Schritt) | 2,551e−02 | **−0,61 dB** |
+
+Lesart: die **Level-Tabelle allein bringt 0,30 dB**, die **Skalenregel noch einmal 0,31 dB** — der Survey (§6.4
+Punkt 2) hatte recht, dass beides zusammengehört. Ein Least-Squares-Schritt erreicht **78,8 %** des Wegs zur
+konvergierten Skala; die Skala selbst liegt danach im Mittel nur **0,4 %** neben `max|x|/87` — der Schritt kauft
+also die **Anpassung**, nicht einen größeren Wertebereich. Beides ist **kein** fixes Umskalieren der Level: mit
+`RMS/32` als Skala wird der Fehler **schlechter** als `q4_0`, weil der Block-Maximalwert aus 32 Stichproben im
+Mittel bei `max|x|/RMS = 2,363` liegt, also unter den 2,72 σ, für die das breiteste Level gezeichnet ist.
+
+Verhältnis zur Literatur (§6.4 Punkt 2 / §6.7 Punkt 2 des Surveys): dort war die Erwartung „Codebook allein ~1 %
+relativ, teils abhängig vom Wechsel 32→Head". Bei uns kommt die Größenordnung schon aus dem **per-32**-Format,
+sobald Tabelle **und** Skalenschritt zusammenkommen — der Skalenwechsel 32→Head (der `q4lm`-Teil von §5.1) wird
+deshalb **nicht** gebaut.
+
+**Backends.** CUDA und HIP teilen dieselbe `.cu`; HIP ist gebaut und getestet. SYCL ist gespiegelt
+(`kv_q4.dp.cpp`, `qsa_decode_attn.dp.cpp`, `kv_stream.dp.cpp`, `qsa_prompt_attn.dp.cpp` und die Host-Kopien unter
+`sycl/src/`), inklusive Parity-Zwilling — auf dieser Maschine **nicht baubar** (kein oneAPI), also **ungetestet**;
+die SYCL-Schreibseite nimmt den Modus als Laufzeit-Argument statt als Template-Parameter (im Code als bewusste
+Abweichung begründet, weil eine falsche Template-Instanziierung hier nicht auffallen könnte). Metal hat nur einen
+KV-Stub: keine Arbeit.
+
+### 7.4 WP-1a: der A/B bei 8K und 1K
+
+**Aufbau.** `tools/quant_quality.py run` mit derselben Config wie der Meßpunkt in §7.2, je Lauf nur `--kv` gewechselt
+(`fp16`, `int8`, `q4_0`, `q4lm32`, `q4lm32s`), auf `data/quant_quality/v2-8k/set.ids.json` — dieselben drei 8K-Texte,
+**8.191 Positionen je Abschnitt, 24.573 gesamt**. Referenz ist der **fp16-KV-Arm desselben Laufs** (Gewichte fix,
+gleiche Config), nicht `int8` und nicht der Vorbau. Gemessen mit dem Quellbau (`build-hip-win\strata.exe`, HIP auf
+gfx1200 / RX 9060 XT), nicht mit dem Vorbau.
+
+| Arm | Top-1 | mittl. KL | KL p99 | PPL | PPL gegen fp16 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fp16` (Referenz) | — | 0 | 0 | 3,31026 | — |
+| `int8` (Default) | 97,04 % | 0,006290 | 0,0675 | 3,30669 | −0,11 % |
+| `q4_0` | 95,27 % | 0,016584 | 0,1833 | 3,31781 | **+0,23 %** |
+| `q4lm32` | 95,46 % | 0,015788 | 0,1648 | 3,31147 | **+0,04 %** |
+| `q4lm32s` | 95,50 % | 0,015162 | 0,1603 | 3,31078 | **+0,02 %** |
+
+Je Abschnitt: PPL gegen den fp16-Arm, mittlere KL in Klammern (fp16-PPL als Absolutwert):
+
+| Abschnitt | fp16-PPL | `int8` | `q4_0` | `q4lm32` | `q4lm32s` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| docs | 6,79727 | −0,27 % (0,0085) | +0,06 % (0,0230) | −0,08 % (0,0214) | −0,41 % (0,0203) |
+| code | 2,05395 | −0,16 % (0,0049) | +0,57 % (0,0139) | +0,70 % (0,0140) | +0,74 % (0,0137) |
+| multilingual | 2,59814 | +0,11 % (0,0054) | +0,06 % (0,0129) | −0,51 % (0,0119) | −0,28 % (0,0115) |
+
+**Was 8K zeigt.**
+
+- `q4lm32s` **schließt die `q4_0`-Lücke ganz**: +0,23 % → **+0,02 %** PPL, also praktisch fp16-Niveau — bei
+  **unverändertem** Layout und **gleicher** Byte-Zahl wie `q4_0` (576 B/Zelle, kein Byte gespart).
+- Mittlere KL −8,6 % (0,016584 → 0,015162), KL p99 −12,5 % (0,1833 → 0,1603).
+- `q4lm32` (nur Tabelle, `max|x|/87`) holt den größten Teil: PPL +0,04 %, KL −4,8 %.
+- Der zweite Hebel (Skala) legt noch einmal **−4,0 %** KL darauf (PPL −0,02 %). Das ist deutlich weniger, als die
+  **−0,31 dB MSE** aus §7.3 erwarten lassen: der Per-Block-Fehlergewinn überträgt sich **nicht 1:1** auf KL/PPL.
+- Top-1 trennt die Formate in dieser Größe **nicht**: der Vorsprung von `q4lm32s` vor `q4_0` (95,50 % gegen 95,27 %)
+  ist so groß wie die Reproduktionslücke zwischen zwei Läufen (unten: 0,08 Prozentpunkte für `q4_0`).
+- Der Gewinn sitzt in `docs` (−0,41 %) und `multilingual` (−0,28 %). Auf `code` zahlt **jedes** q4-Format 0,6–0,7 %
+  PPL, und die neuen Formate senken das **nicht** — auf `code` sind sie in PPL minimal schlechter als `q4_0`, in KL
+  besser. Kein Anspruch auf Gleichheit über die Abschnitte.
+
+**1K-Paar.** Dieselben drei Texte, je **999 Positionen** (`set-1k.ids.json`), fp16-Referenz 3,74137. Der 1K-Punkt ist
+ein Reproduzierbarkeits-Check, **kein** Kontextlängen-Vergleich (§7.2):
+
+| Arm | Top-1 | mittl. KL | KL p99 | PPL | gegen fp16 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `int8` | 96,96 % | 0,007032 | 0,0755 | 3,75142 | +0,27 % |
+| `q4_0` | 95,33 % | 0,016052 | 0,2173 | 3,78984 | **+1,30 %** |
+| `q4lm32` | 95,06 % | 0,014846 | 0,1713 | 3,74192 | **+0,02 %** |
+| `q4lm32s` | 95,13 % | 0,015313 | 0,1603 | 3,74178 | **+0,01 %** |
+
+Auch auf 1K schließt die Level-Tabelle die `q4_0`-Lücke (+1,30 % → +0,02 %), und beide neuen Formate liegen
+praktisch auf fp16-Niveau. Zwei ehrliche Nuancen dazu:
+
+- Auf 1K **verliert** `q4lm32` Top-1 gegen `q4_0` (95,06 % gegen 95,33 %), **gewinnt** aber KL (−7,5 %) und p99
+  (−21 %). Auf 8K dreht sich die Top-1-Reihenfolge wieder um. Bei diesem Effekt ist Top-1 kein stabiles Kriterium,
+  die KL ist es.
+- Der **zweite Hebel ist bei 1K nicht gleichgerichtet**: `q4lm32s` hat dort eine um **3,1 % höhere** mittlere KL als
+  `q4lm32` (0,015313 gegen 0,014846) und eine um 6,4 % **niedrigere** p99, bei praktisch gleicher PPL (+0,01 % gegen
+  +0,02 %). Auf 8K ist die Reihenfolge umgekehrt (KL −4,0 %, p99 −2,7 %). Der Per-Block-Gewinn von **−0,31 dB**
+  (§7.3) ist damit gesichert, sein End-zu-End-Effekt aber **klein und nicht vorzeichenstabil** — anders als der der
+  Tabelle, die in beiden Sätzen dasselbe Vorzeichen hat.
+
+**Reproduzierbarkeit.** Der committete Vorbau-Lauf (`bench/results/2026-10-14-kv-8k`, prebuilt 0.1.44.1) liest für
+`int8` KL 0,006393 / PPL 3,30664 und für `q4_0` KL 0,016519 / PPL 3,31827; dieser Lauf 0,006290 / 3,30669 und
+0,016584 / 3,31781, Top-1 97,04/97,04 und 95,35/95,27. Die KL reproduziert auf ~1,6 %, die PPL auf 0,03 %, Top-1 auf
+0,08 Prozentpunkte — **aber nicht bit-identisch**: der fp16-Arm liest hier 3,31026 gegen 3,31128 im Vorbau-Lauf
+(+0,03 %). Ob das der Binärbau (Quellbau gegen Vorbau) oder die Run-zu-Run-Streuung der Engine ist, ist **nicht**
+isoliert. Deshalb stehen **alle** Deltas oben **innerhalb eines Laufs**. Der volle Satz Zahlen liegt in
+`bench/results/2026-10-14-kv-q4lm32/` (`compare.json`, `compare-1k.json`).
+
+**Offen vor einem PR:** das Identitäts-Gate (§8.1) und der Speed-A/B (§8.3) — siehe §9.
+
 ## 8. Messplan und Gate
 
 Für jedes WP:
@@ -230,17 +380,29 @@ Für jedes WP:
 
 ## 9. Risiken und offene Fragen
 
-- **Transfer der Literatur.** quant.cpp ist Llama (`head_dim` 128, **kein** QK-Norm); wir sind `head_dim` 256 **mit**
-  QK-Norm. Der Codebook-Gewinn (~1 % rel.) kann bei uns kleiner oder null sein — deshalb WP-0 vor WP-1 und `q4lu`
-  als Kontrolle.
-- **max-abs je Head** ist eine Heuristik (wie quant.cpp Variante B). Die echte Standardabweichung oder die
-  Beta-Verteilung der rotierten Einheitsvektor-Koordinaten kann besser sein — in WP-1 mitmessen.
-- **QK-Norm.** Wird K per Head normiert (Qwen3.8-Flash-Next tut das), ist `‖k‖` fast konstant; dann ist der eine
-  Skalenwert je Head fast redundant und die gesparten Bits könnten eine 5-bit-Stufe tragen. Hypothese, messen.
+- **Transfer der Literatur — beantwortet (14.10.2026).** quant.cpp ist Llama (`head_dim` 128, **kein** QK-Norm); wir
+  sind `head_dim` 256 **mit** QK-Norm. Auf unserem Material (§7.3) ist der Gewinn kleiner als die ~1 % relativ aus
+  der Literatur, aber real: **−0,30 dB** MSE aus der Tabelle, **−0,61 dB** mit dem Skalenschritt. Eine
+  `q4lu`-Kontrolle (Skalenwechsel 32→Head **ohne** Tabelle) wurde nicht gebaut, weil die Bauentscheidung auf das
+  per-32-Format gefallen ist (§5.1-Nachtrag) — der Vergleich Tabelle-gegen-Skala ist stattdessen in §7.3 direkt
+  gemessen.
+- **max-abs je Block ist eine Heuristik — teilweise beantwortet.** `max|x|/87` je 32er-Block ist **besser** als
+  `RMS/32` je Block (2,740e−02 gegen 3,547e−02, §7.3), und ein Least-Squares-Schritt verbessert es weiter
+  (2,551e−02). Offen: ob die *Beta*-Verteilung der rotierten Koordinaten eine noch bessere Regel hergibt als
+  `max|x|`.
+- **QK-Norm und die Skalen-Redundanz.** Wird K per Head normiert (Qwen3.8-Flash-Next tut das), ist `‖k‖` fast
+  konstant — die Erwartung war, dass ein Skalenwert je Head dann redundant ist. Unsere Messung spricht dagegen, dass
+  die Skala *überhaupt* redundant ist: sie ist der **größere** der beiden Hebel (je 32er-Block). Offen bleibt, ob
+  `‖k‖` konstant genug ist, um die Skala ganz einzusparen und die Bits einer 5-bit-Stufe zu geben.
 - **B überschneidet sich mit #2318** (offen, `q2k`). Vorher im PR-Thread fragen, ob dort gemessen/beigetragen wird.
-- **Streaming und STATE_HASH.** Eine neue Format-ID muss in den Snapshot-Hash und die Suffix-Reuse-Formatliste
-  aufgenommen werden (`docs/DETAILS.md:1008`, PR #2351).
+- **Streaming und STATE_HASH — erledigt.** `kKvQ4lm` (4) / `kKvQ4lmS` (5) sind in `KvFormat` (`kv_stream.hpp`), in
+  `kv_fmt_q4`, in `qsa_kv_format` (also im Snapshot-Hash, `src/core/conversation_snapshot.cpp:53`) und in den
+  Formatlisten von Suffix-Reuse; ein Block-Mover, der nur Bytes kopiert, behandelt sie wie `kKvQ4`
+  (`docs/DETAILS.md:1008`, PR #2351).
 - **Gate-Modelle.** Die genaue Vierer-Liste des Identitäts-Gates ist hier noch offen — vor WP-0 festzurren.
+- **Identitäts-Gate und Speed-A/B für WP-1a stehen noch aus** (§8.1/§8.3). Der A/B in §7.4 ist ein
+  *Qualitäts*-Vergleich gegen den fp16-KV-Arm; „byte-identisch mit dem neuen Format aus" und der Decode-Durchsatz
+  sind noch nicht gemessen. Vor einem PR beides nachholen, dann `kQ4lMap` zuerst in Shared Memory.
 
 ## 10. Was wir bewusst nicht machen
 
