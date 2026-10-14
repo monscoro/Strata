@@ -61,7 +61,9 @@ def cmd_ids(a) -> int:
     tok = ST.Tokenizer(toks, (tp / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tp / "token_type.json").read_text()))
     segs = []
-    for name in SEGMENTS:
+    wanted = a.segments.split(",") if isinstance(a.segments, str) else list(a.segments)
+    for name in wanted:
+        name = name.strip()
         text = (pathlib.Path(a.set) / f"{name}.txt").read_text(encoding="utf-8")
         ids = tok.encode(text, parse_special=(name == "agent"))
         if len(ids) < a.seg_tokens:
@@ -353,6 +355,9 @@ def main() -> int:
     p.add_argument("--tokenizer", required=True)
     p.add_argument("--set", default=str(SET_DIR))
     p.add_argument("--seg-tokens", type=int, default=1000)
+    p.add_argument("--segments", default=",".join(SEGMENTS), metavar="A,B,C",
+                   help=f"comma-separated segments to tokenize (default: {','.join(SEGMENTS)}); a longer-context set "
+                        f"may carry only some of them (docs,code,multilingual at 8K)")
     p.add_argument("--out")
     p = sub.add_parser("run")
     p.add_argument("--config", required=True)
