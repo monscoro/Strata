@@ -157,7 +157,7 @@ Bytes. Das Byte-Layout kommt erst in WP-2.
 
 Drei Modi, damit die K-vs-V-Frage bei **gleicher mittlerer Breite** gestellt wird:
 
-| `--kv` | K-Pegel | V-Pegel | Bits/Flag | was sie beantwortet |
+| `--kv` | K-Pegel | V-Pegel | Bits, Ø über K/V | was sie beantwortet |
 | --- | ---: | ---: | ---: | --- |
 | `q4lm32` | 16 | 16 | 4,0 | Referenz (schon gemessen) |
 | `q4lm8` | 8 | 8 | 3,0 | wie weit trägt 3 Bit überhaupt |
