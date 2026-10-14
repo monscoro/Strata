@@ -460,9 +460,78 @@ def cmd_compare(a) -> int:
                 continue
             print(f"{pathlib.Path(path).name[:40]:40s} {seg:13s} {v['positions']:5d} {100 * v['top1']:6.2f}% "
                   f"{v['kl']:8.5f} {v.get('kl_p99', float('nan')):8.4f} {v['ppl']:7.3f} {v['ppl_ref']:7.3f}")
+    paired_out = paired_tables(a, ref, allres) if a.paired else None
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps(allres, indent=1))
+    if a.paired_json and paired_out is not None:
+        pathlib.Path(a.paired_json).write_text(json.dumps(paired_out, indent=1))
     return 0
+
+
+def paired_stats(sa: dict, sb: dict) -> dict:
+    """The per-segment difference A - B over the segments both cover.  Every arm sees the identical text, so the
+    segment-to-segment spread of the reference - which is most of the spread of a single arm - cancels out: this is
+    the right test for "is the difference between two formats real", and a plain mean over positions cannot see it
+    (it has no notion of which differences came from the same text)."""
+    segs = sorted(set(sa) & set(sb))
+    d = [sa[s] - sb[s] for s in segs]
+    if len(d) < 2:
+        return None
+    m = sum(d) / len(d)
+    sd = math.sqrt(sum((x - m) ** 2 for x in d) / (len(d) - 1))
+    sem = sd / math.sqrt(len(d))
+    return {"n": len(d), "mean": m, "sd": sd, "sem": sem, "t": m / sem if sem else float("nan"),
+            "up": sum(1 for x in d if x > 0), "down": sum(1 for x in d if x < 0)}
+
+
+def answer_kl_by_segment(run: dict, ref: dict, answer_at: dict) -> dict:
+    out = {}
+    for name, rr in run.items():
+        ra, at = ref.get(name, {}), answer_at.get(name, 0)
+        kls = [kl_between(ra[q][4], rr[q][4]) for q in sorted(rr) if q + 1 >= at and q in ra]
+        if kls:
+            out[name] = sum(kls) / len(kls)
+    return out
+
+
+def paired_tables(a, ref: dict, allres: dict) -> dict:
+    """The paired whole-segment and answer-region tables.  The answer region needs the set's `answer_at`, which only
+    `--ids` can supply; without it the second table is skipped and said so."""
+    names = [pathlib.Path(a.ref).name[:40]] + [pathlib.Path(p).name[:40] for p in allres]
+    # The reference pairs against itself: KL(ref || ref) is 0 on every segment by construction, and taking the
+    # series from an actual `compare` pass keeps the segment list honest rather than assuming it.
+    series = {names[0]: {s: v["kl"] for s, v in compare(ref, ref).items() if s != "all"}}
+    for n, r in zip(names[1:], allres.values()):
+        series[n] = {s: v["kl"] for s, v in r.items() if s != "all"}
+    out = {"whole": {}, "answer": None}
+    print("\npaired whole-segment KL differences (same segments, so the text cancels):")
+    for i, na in enumerate(names):
+        for nb in names[i + 1:]:
+            p = paired_stats(series[na], series[nb])
+            if p is None:
+                continue
+            out["whole"][f"{na} - {nb}"] = p
+            print(f"  {na:40s} - {nb:40s} {p['mean']:+.5f}  sd {p['sd']:.5f}  sem {p['sem']:.5f}  "
+                  f"t {p['t']:+.2f}  ({p['up']}/{p['n']} segments up)")
+    if not a.ids:
+        print("  (answer region needs --ids: the set's answer_at tells the reader where the answer starts)")
+        return out
+    st = json.load(open(a.ids))
+    at = {s["name"]: s.get("answer_at", 0) for s in st["segments"]}
+    aser = {pathlib.Path(p).name[:40]: answer_kl_by_segment(read_run(p), ref, at)
+            for p in [a.ref, *a.runs]}
+    an = list(aser)
+    out["answer"] = {}
+    print("\npaired answer-region KL differences:")
+    for i, na in enumerate(an):
+        for nb in an[i + 1:]:
+            p = paired_stats(aser[na], aser[nb])
+            if p is None:
+                continue
+            out["answer"][f"{na} - {nb}"] = p
+            print(f"  {na:40s} - {nb:40s} {p['mean']:+.5f}  sd {p['sd']:.5f}  sem {p['sem']:.5f}  "
+                  f"t {p['t']:+.2f}  ({p['up']}/{p['n']} segments up)")
+    return out
 
 
 # ------------------------------------------------------------------------------------------------ areport
@@ -554,6 +623,12 @@ def main() -> int:
     p.add_argument("runs", nargs="+")
     p.add_argument("--segments", action="store_true")
     p.add_argument("--json")
+    p.add_argument("--paired", action="store_true",
+                   help=("also print the *paired* per-segment KL difference of every pair of arms (the test that "
+                         "can resolve a small format difference, because the text cancels); needs --ids for the "
+                         "answer-region table"))
+    p.add_argument("--ids", help="the set's ids file, for --paired's answer-region half")
+    p.add_argument("--paired-json", help="write the --paired tables as JSON here")
     p = sub.add_parser("areport", help="the FWE answer region: accuracy vs the text, and KL/agreement on the reference")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
