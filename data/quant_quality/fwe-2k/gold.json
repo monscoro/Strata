@@ -1,0 +1,90 @@
+[
+ {
+  "name": "s00",
+  "answer": [
+   "usnzjo",
+   "zvzywe",
+   "vqwpsb"
+  ],
+  "drawn_words": 1125,
+  "tokens": 2043,
+  "answer_at": 2033
+ },
+ {
+  "name": "s01",
+  "answer": [
+   "otlewv",
+   "llmqcr",
+   "tzxxis"
+  ],
+  "drawn_words": 1052,
+  "tokens": 2040,
+  "answer_at": 2030
+ },
+ {
+  "name": "s02",
+  "answer": [
+   "dknqid",
+   "iqvaud",
+   "nwpomh"
+  ],
+  "drawn_words": 1123,
+  "tokens": 2048,
+  "answer_at": 2038
+ },
+ {
+  "name": "s03",
+  "answer": [
+   "trpukp",
+   "cqojhl",
+   "szrhwr"
+  ],
+  "drawn_words": 1036,
+  "tokens": 2045,
+  "answer_at": 2035
+ },
+ {
+  "name": "s04",
+  "answer": [
+   "iwwqby",
+   "obcwea",
+   "mmhgxm"
+  ],
+  "drawn_words": 1036,
+  "tokens": 2047,
+  "answer_at": 2036
+ },
+ {
+  "name": "s05",
+  "answer": [
+   "bkacgz",
+   "niapww",
+   "gsupqf"
+  ],
+  "drawn_words": 1128,
+  "tokens": 2048,
+  "answer_at": 2038
+ },
+ {
+  "name": "s06",
+  "answer": [
+   "lnzklr",
+   "fuwzpf",
+   "itqbwv"
+  ],
+  "drawn_words": 1000,
+  "tokens": 2044,
+  "answer_at": 2032
+ },
+ {
+  "name": "s07",
+  "answer": [
+   "qrrxfu",
+   "fwwpdk",
+   "zuoodf"
+  ],
+  "drawn_words": 1031,
+  "tokens": 2048,
+  "answer_at": 2037
+ }
+]

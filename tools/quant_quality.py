@@ -20,6 +20,29 @@ Q8_0, on one fixed text set (data/quant_quality/v1: code, docs, English, other l
         tokens (both renormalized to that set; a token RUN does not list gets RUN's 64th log-probability), and the
         perplexity of the text under each.
 
+    python tools/quant_quality.py fwe --tokenizer DIR [--set data/quant_quality/fwe-2k] [--seq-tokens 2048]
+                                      [--samples 8] [--alpha 2.0] [--answer-words 3] [--seed 42]
+        builds the decision-test set: RULER's frequent-words-extraction task (arXiv:2404.06654 sec. 3.3) - a long
+        list of six-letter coded words drawn from a Zeta(alpha) rank distribution, the top-ranked word replaced
+        by '...' (the noise the question says to ignore), then the question and the `--answer-words` most frequent
+        words.  RULER's FWE asks for three, so that is the default and data/quant_quality/fwe-2k is reproducible
+        from it byte for byte.  RULER's CWE asks for ten, and `--answer-words 10` into data/quant_quality/cwe-2k is
+        the same generator and the same first three answer words with ~3.4x the answer-region rows.  One instance
+        per segment, `--seq-tokens` long, with the answer appended so this harness scores it.  The instances differ
+        (RULER's own script re-seeds one RNG for every sample, so its num_samples are identical).  The drawn counts
+        are exact integers, so the gold order is the realized order except where two ranks tie (fwe-2k: first tie
+        at rank 12-13; cwe-2k: rank 11 in one of the eight segments, which makes that one slot ambiguous).
+    python tools/quant_quality.py areport IDS.json REF.tsv RUN.tsv [...]   (REF = the fp16 run)
+        the answer region only (`pos + 1 >= answer_at`): how often each arm's argmax is the text's own next
+        token (the task's accuracy, and REF's value is the headroom), how often it agrees with REF, and the KL
+        at those positions.  Measured on fwe-2k (8 segments, 16,355 positions, 84 answer rows): the answer-region
+        accuracy has no resolution at all (fp16 = int8 = q4_0 = 80.95%; int8 reproduces fp16's argmax at 84/84 rows
+        and q4_0 at 83/84), and the answer-region KL does not separate int8 from q4_0 either (paired over segments,
+        t = 0.69).  The whole-segment KL on the same runs does (int8 0.00518 against q4_0 0.01100; paired over
+        segments t = 3.50, 8 of 8 segments in the same direction).  The answer region is the weak readout here
+        because the answer copies words that are already in the context, so emitting them is near-deterministic:
+        only 1 of the 84 decisions sits near a boundary.
+
 The RUN.tsv rows are the engine's STRATA_LOGPOS format: pos, target id, logp(target), argmax id, logp(argmax),
 argmax==target, logp(<|im_end|>), logp(target without <|im_end|>), then 64 `id:logp` fields (natural log).
 """
@@ -30,6 +53,8 @@ import json
 import math
 import os
 import pathlib
+import random
+import string
 import subprocess
 import sys
 import time
@@ -50,16 +75,21 @@ DROP_FLAG = {"--serve", "--vision", "--resident-experts", "--resident-cpu-expert
 
 
 # ------------------------------------------------------------------------------------------------ ids
-def cmd_ids(a) -> int:
+def load_tokenizer(path: str):
+    """The pack's `tokenizer/` directory, as `tools/strata_tokenizer.py` reads it."""
     sys.path.insert(0, str(HERE))
     import strata_tokenizer as ST  # noqa: E402
-    tp = pathlib.Path(a.tokenizer)
+    tp = pathlib.Path(path)
     vocab = json.loads((tp / "vocab.json").read_text(encoding="utf-8"))
     toks = [None] * len(vocab)
     for t, i in vocab.items():
         toks[i] = t
-    tok = ST.Tokenizer(toks, (tp / "merges.txt").read_text(encoding="utf-8").split("\n"),
-                       json.loads((tp / "token_type.json").read_text()))
+    return ST.Tokenizer(toks, (tp / "merges.txt").read_text(encoding="utf-8").split("\n"),
+                        json.loads((tp / "token_type.json").read_text()))
+
+
+def cmd_ids(a) -> int:
+    tok = load_tokenizer(a.tokenizer)
     segs = []
     wanted = a.segments.split(",") if isinstance(a.segments, str) else list(a.segments)
     for name in wanted:
@@ -73,6 +103,88 @@ def cmd_ids(a) -> int:
     out = pathlib.Path(a.out or (pathlib.Path(a.set) / "set.ids.json"))
     out.write_text(json.dumps({"version": pathlib.Path(a.set).name, "seg_tokens": a.seg_tokens, "segments": segs}))
     print(f"wrote {out}")
+    return 0
+
+
+# ------------------------------------------------------------------------------------------------ fwe
+FWE_VOCAB_PER = 50      # RULER: vocab_size = max_seq_length // 50
+FWE_WORDLEN = 6         # RULER --coded_wordlen
+FWE_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
+             10: "ten", 20: "twenty", 30: "thirty"}
+FWE_TEMPLATE = (
+    "Read the following coded text and track the frequency of each coded word. Find the {num} most frequently "
+    "appeared coded words. {context}\n"
+    "Question: Do not provide any explanation. Please ignore the dots '....'. What are the {num} most frequently "
+    "appeared words in the above coded text?\n"
+    "Answer: According to the coded text above, the {num} most frequently appeared words are:")
+
+
+def riemann_zeta(alpha: float, terms: int = 200000) -> float:
+    """sum k^-alpha, which is what scipy.special.zeta(alpha) gives RULER (the infinite sum, not a truncated one)."""
+    return sum(k ** -alpha for k in range(1, terms + 1))
+
+
+def fwe_vocab(size: int, rng: random.Random) -> list[str]:
+    vocab = ["".join(rng.choices(string.ascii_lowercase, k=FWE_WORDLEN)) for _ in range(size)]
+    while len(set(vocab)) < size:
+        vocab.append("".join(rng.choices(string.ascii_lowercase, k=FWE_WORDLEN)))
+    vocab = sorted(set(vocab))
+    rng.shuffle(vocab)
+    vocab[0] = "..."        # RULER: the top-ranked word is the noise the question tells the model to ignore
+    return vocab
+
+
+def fwe_context(vocab: list[str], num_words: int, alpha: float, zeta: float, seed: int) -> str:
+    """RULER's sample: word k appears `num_words * k^-alpha / zeta(alpha)` times, then one shuffle of all of them."""
+    words = [w for k, w in enumerate(vocab, 1) for _ in range(int(num_words * k ** -alpha / zeta))]
+    random.Random(seed).shuffle(words)
+    return " ".join(words)
+
+
+def cmd_fwe(a) -> int:
+    tok = load_tokenizer(a.tokenizer)
+    out = pathlib.Path(a.set)
+    out.mkdir(parents=True, exist_ok=True)
+    zeta = riemann_zeta(a.alpha)
+    vocab_size = max(16, a.seq_tokens // FWE_VOCAB_PER)
+    segs, gold = [], []
+    for i in range(a.samples):
+        name = "s%02d" % i
+        vocab = fwe_vocab(vocab_size, random.Random(a.seed + i))
+        answer = vocab[1:1 + a.answer_words]
+
+        def prompt(n: int) -> str:
+            return FWE_TEMPLATE.format(num=FWE_WORDS.get(a.answer_words, str(a.answer_words)),
+                                       context=fwe_context(vocab, n, a.alpha, zeta, a.seed * 1000 + i))
+
+        def full(n: int) -> str:
+            return prompt(n) + " " + " ".join(answer)
+
+        lo, hi = 1, a.seq_tokens     # a coded word is at least one token, so 1..seq_tokens is the whole range
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if len(tok.encode(full(mid))) <= a.seq_tokens:
+                lo = mid
+            else:
+                hi = mid - 1
+        text, pre = full(lo), prompt(lo)
+        ids = tok.encode(text)
+        answer_at = len(tok.encode(pre))
+        if len(ids) > a.seq_tokens:
+            raise SystemExit(f"{name}: {len(ids)} tokens, more than --seq-tokens {a.seq_tokens}")
+        back = tok.decode(ids[answer_at:])
+        if not all(w in back for w in answer):
+            raise SystemExit(f"{name}: the answer region {back!r} does not carry {answer}")
+        (out / f"{name}.txt").write_text(text)
+        segs.append({"name": name, "ids": ids, "answer_at": answer_at})
+        gold.append({"name": name, "answer": answer, "drawn_words": lo, "tokens": len(ids), "answer_at": answer_at})
+        print(f"{name}: {len(ids)} tokens, {lo} drawn words, answer at {answer_at} ({' '.join(answer)})")
+    (out / "set.ids.json").write_text(json.dumps(
+        {"version": out.name, "seg_tokens": a.seq_tokens, "task": "RULER FWE", "alpha": a.alpha,
+         "answer_words": a.answer_words,
+         "coded_wordlen": FWE_WORDLEN, "vocab_size": vocab_size, "seed": a.seed, "segments": segs}, indent=0))
+    (out / "gold.json").write_text(json.dumps(gold, indent=1))
+    print(f"wrote {out}/set.ids.json, gold.json and {a.samples} s*.txt")
     return 0
 
 
@@ -285,10 +397,20 @@ def read_run(path: str) -> dict:
             f = line.split("\t")
             if len(f) < 8 + TOPK:
                 continue
-            d[int(f[0])] = (int(f[1]), float(f[2]), int(f[3]), [(int(x), float(y)) for x, y in
-                                                                (z.split(":") for z in f[8:8 + TOPK])])
+            d[int(f[0])] = (int(f[1]), float(f[2]), int(f[3]), f[5] == "1",
+                            [(int(x), float(y)) for x, y in (z.split(":") for z in f[8:8 + TOPK])])
         out[s["name"]] = d
     return out
+
+
+def kl_between(kr, ka) -> float:
+    """KL(REF || RUN) over REF's 64 most likely tokens; a token RUN does not list gets RUN's 64th log-probability."""
+    da = dict(ka)
+    floor = min(b for _, b in ka)
+    pr = [math.exp(b) for _, b in kr]
+    pa = [math.exp(da.get(i, floor)) for i, _ in kr]
+    sr, sa = sum(pr), sum(pa)
+    return sum((x / sr) * math.log((x / sr) / (y / sa)) for x, y in zip(pr, pa) if x > 0)
 
 
 def compare(ref: dict, run: dict) -> dict:
@@ -299,20 +421,15 @@ def compare(ref: dict, run: dict) -> dict:
         n = agree = 0
         kls, nll_r, nll_a = [], 0.0, 0.0
         for q in pos:
-            tr, lr, topr, kr = rr[q]
-            ta, la, topa, ka = ra[q]
+            tr, lr, topr, _hit, kr = rr[q]
+            ta, la, topa, _hita, ka = ra[q]
             if tr != ta:
                 raise SystemExit(f"{name} pos {q}: target {tr} != {ta} (not the same text)")
             n += 1
             agree += topr == topa
             nll_r -= lr
             nll_a -= la
-            da = dict(ka)
-            floor = min(b for _, b in ka)
-            pr = [math.exp(b) for _, b in kr]
-            pa = [math.exp(da.get(i, floor)) for i, _ in kr]
-            sr, sa = sum(pr), sum(pa)
-            kls.append(sum((x / sr) * math.log((x / sr) / (y / sa)) for x, y in zip(pr, pa) if x > 0))
+            kls.append(kl_between(kr, ka))
         allk += kls
         if n:
             res[name] = {"positions": n, "top1": agree / n, "kl": sum(kls) / n,
@@ -348,6 +465,45 @@ def cmd_compare(a) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------------------------ areport
+def answer_region(run: dict, ref: dict, answer_at: dict) -> dict:
+    """The rows whose *target* is an answer token: row `p` predicts token `p + 1`, so the answer starts at row
+    `answer_at - 1` and the region is `p + 1 >= answer_at`."""
+    tot = {"positions": 0, "hit": 0, "agree": 0, "kl": 0.0}
+    for name, rr in run.items():
+        ra, at = ref.get(name, {}), answer_at.get(name, 0)
+        for q in sorted(rr):
+            if q + 1 < at or q not in ra:
+                continue
+            tr, _lr, topr, hit, kr = rr[q]
+            ta, _la, topa, _hita, ka = ra[q]
+            if tr != ta:
+                raise SystemExit(f"{name} pos {q}: target {tr} != {ta} (not the same text)")
+            tot["positions"] += 1
+            tot["hit"] += int(hit)
+            tot["agree"] += int(topr == topa)
+            tot["kl"] += kl_between(kr, ka)
+    return tot
+
+
+def cmd_areport(a) -> int:
+    st = json.load(open(a.ids))
+    at = {s["name"]: s.get("answer_at", 0) for s in st["segments"]}
+    ref = read_run(a.ref)
+    print(f"reference: {a.ref}")
+    print(f"{'run':34s} {'ans pos':>7s} {'top1 tgt':>8s} {'agree ref':>9s} {'KL ref':>8s}")
+    res = {}
+    for path in [a.ref, *a.runs]:
+        v = answer_region(read_run(path), ref, at)
+        res[pathlib.Path(path).name] = v
+        n = max(v["positions"], 1)
+        print(f"{pathlib.Path(path).name[:34]:34s} {v['positions']:7d} {100 * v['hit'] / n:7.2f}% "
+              f"{100 * v['agree'] / n:8.2f}% {v['kl'] / n:8.5f}")
+    if a.json:
+        pathlib.Path(a.json).write_text(json.dumps(res, indent=1))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -359,6 +515,17 @@ def main() -> int:
                    help=f"comma-separated segments to tokenize (default: {','.join(SEGMENTS)}); a longer-context set "
                         f"may carry only some of them (docs,code,multilingual at 8K)")
     p.add_argument("--out")
+    p = sub.add_parser("fwe", help="build the RULER frequent-words-extraction decision-test set")
+    p.add_argument("--tokenizer", required=True)
+    p.add_argument("--set", default=str(HERE.parent / "data" / "quant_quality" / "fwe-2k"))
+    p.add_argument("--seq-tokens", type=int, default=2048)
+    p.add_argument("--samples", type=int, default=8)
+    p.add_argument("--alpha", type=float, default=2.0)
+    p.add_argument("--answer-words", type=int, default=3,
+                   help="how many of the most frequent words the question asks for (RULER FWE asks for 3; RULER CWE "
+                        "asks for 10, which gives ~3.4x the answer-region rows and smaller gaps between the counts "
+                        "of the asked-about ranks at the same context length and runtime)")
+    p.add_argument("--seed", type=int, default=42)
     p = sub.add_parser("run")
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
@@ -387,12 +554,17 @@ def main() -> int:
     p.add_argument("runs", nargs="+")
     p.add_argument("--segments", action="store_true")
     p.add_argument("--json")
+    p = sub.add_parser("areport", help="the FWE answer region: accuracy vs the text, and KL/agreement on the reference")
+    p.add_argument("ref")
+    p.add_argument("runs", nargs="+")
+    p.add_argument("--ids", required=True)
+    p.add_argument("--json")
     p = sub.add_parser("pcompare", help="full-vocabulary KL and top-1 of `prompt` directories against a reference one")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
     a = ap.parse_args()
-    return {"ids": cmd_ids, "run": cmd_run, "prompt": cmd_prompt, "compare": cmd_compare,
-            "pcompare": cmd_pcompare}[a.cmd](a)
+    return {"ids": cmd_ids, "fwe": cmd_fwe, "run": cmd_run, "prompt": cmd_prompt, "compare": cmd_compare,
+            "areport": cmd_areport, "pcompare": cmd_pcompare}[a.cmd](a)
 
 
 if __name__ == "__main__":
