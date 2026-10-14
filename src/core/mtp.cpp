@@ -48,6 +48,14 @@
 #include <immintrin.h>
 #endif
 
+#if defined(_WIN32) && defined(STRATA_USE_HIP)
+// hipKernelNameRefByPtr is not in the import library of every Windows HIP SDK (TheRock's ROCm exports it from
+// amdhip64_7.dll, the HIP SDK does not), so the graph listing below resolves it at run time like src/core/verify.cpp
+// does.  NOMINMAX keeps windows.h's min/max macros off this file's std::min/std::max.
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #ifdef STRATA_NATIVE_EXPERTS
 #include "ggml.h"   // --mtp-q4: the head rows' and projections' formats, dequantized and requantized at load
 #endif
@@ -842,7 +850,15 @@ void mtp_list_nodes(cudaGraph_t graph, const char* what) {
         if (ty == hipGraphNodeTypeKernel) {
             hipKernelNodeParams kp{};
             if (hipGraphKernelNodeGetParams(nd, &kp) == hipSuccess && kp.func != nullptr) {
+#if defined(_WIN32)
+                // Resolved at run time, so a HIP SDK without the symbol still links (the name stays "typeN").
+                using Fn_hipKernelNameRefByPtr = const char* (*)(const void*, hipStream_t);
+                static auto p_hipKernelNameRefByPtr = reinterpret_cast<Fn_hipKernelNameRefByPtr>(
+                    GetProcAddress(GetModuleHandleA("amdhip64_7.dll"), "hipKernelNameRefByPtr"));
+                const char* fn = p_hipKernelNameRefByPtr ? p_hipKernelNameRefByPtr(kp.func, nullptr) : nullptr;
+#else
                 const char* fn = hipKernelNameRefByPtr(kp.func, nullptr);
+#endif
                 if (fn != nullptr) name = fn;
             }
         }
