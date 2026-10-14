@@ -150,6 +150,8 @@ nothing, and on K it tends to hurt**:
   nothing to scores."** Dropping QJL and spending the freed bytes on a **2x larger codebook** gave
   `turbo_kv_4b` PPL **14.28 (+5.3%)** vs `uniform_4b` 14.41 (+6.3%) vs llama.cpp's `q4_0` KV **~14.99 (+10.6%)**
   at the same 4-bit budget. They also credit the RHT + MSE-grid pattern to **HIGGS** (`arXiv:2411.17525`).
+  *(Caveat added after reading their code, see §6.4: those runs keep V in FP16, so it is not the same budget as a
+  `q4_0` K+V cache; and the codebook only wins together with a per-head max-abs scale.)*
 - **scos-lab reference implementation**: MSE beats Prod for attention ("the paper recommends Prod for keys; our
   experiments show MSE for both is better"), and outlier-aware mixed precision (a few K channels at 8 bit, the
   rest at 3) recovers most of the loss.
@@ -193,8 +195,9 @@ and per-model work, which cuts against Strata shipping one code path for many pa
 ### 5.5 What this means for Strata (prioritised)
 
 1. **Replace the uniform `q4_0` grid with a Beta/Lloyd-Max codebook** after the existing rotation. Data-oblivious,
-   same 4-bit layout plus a scale, so it slots into `kv_q4.hpp`. quant.cpp's 14.28-vs-14.99 PPL suggests this
-   roughly halves the q4_0 quality gap on its own.
+   same 4-bit layout plus a scale, so it slots into `kv_q4.hpp`. The code read (§6.4) says the realistic gain is
+   **small** — in quant.cpp the codebook+max-abs config beat uniform min-max by ~0.9% relative on K — so measure it,
+   and pair it with a per-head (not per-32) max-abs scale as they did.
 2. **Per-channel scales for K** (V keeps the token-wise `q4_0` path).
 3. **Keep the K/V asymmetry** (`k8v4`); vLLM's best 4-bit preset is exactly that shape.
 4. **Random sign flips** on the Hadamard (SRHT) — cheap, and closer to what the theory assumes.
@@ -204,7 +207,122 @@ and per-model work, which cuts against Strata shipping one code path for many pa
 All numbers above were measured on other models (GPT-2, Llama 3.2, Qwen2.5, Qwen3, MiniMax, GLM) and other metrics
 (PPL vs FP32/FP16/q8_0, LongBench, RULER, AIME). Treat them as directional, not as Strata results.
 
-## 6. Sources
+## 6. Code deep-dive #1: `quant.cpp` (`quantumaikr/quant.cpp`)
+
+Read from a shallow clone on 2026-10-14. Files: `src/core/tq_rht.c`, `tq_codebook.c`, `tq_turbo_kv.c`,
+`tq_uniform.c`, `tq_value_quant.c`, `src/cache/tq_progressive.c`, `src/engine/tq_adaptive.c`,
+`src/engine/tq_transformer.c`, `src/engine/tq_model.c`, `src/server/tq_server.c`,
+`bench/results/turboquant_reproduction.md`, `docs/blog/breaking-3bit-barrier.md`, `README.md`,
+`spec/tq_format_v1.md`.
+
+### 6.1 What it is
+
+Pure C, zero dependencies, ~72k LOC, ships as a single header (`quant.h`) and a WASM build. It calls itself a
+**research platform for KV compression**, not a speed competitor ("Non-goals: GPU speed competition"). Seven KV
+types, a tiered/progressive cache and a delta mode. That is our problem, so it is worth reading as a **worked
+experiment**, not as a product.
+
+### 6.2 The shipped pipeline, read from the code
+
+`tq_turbo_kv_4b_quantize_ref` (`src/core/tq_turbo_kv.c:480`):
+
+1. per-head **L2 norm** -> fp16 (2 bytes);
+2. normalise to a **unit vector**;
+3. **RHT**: Rademacher sign flip (`random_sign`, Knuth hash) + Walsh-Hadamard butterfly + `1/sqrt(n)`
+   (`tq_rht.c`) — called with the **constant** seed `TKV_DEFAULT_SEED = 0x12345678` (`tq_turbo_kv.c:71`), so the
+   sign pattern is fixed and the shipped transform is a **fixed signed Hadamard**, not a per-block randomised one;
+4. **max-abs scaling**: `inv_std = CENT_4BIT_MAX / max_abs(x)` — *not* the paper's `inv_std = sqrt(d)`, not the
+   true standard deviation (the header comment says `sqrt(d)`; the code does max-abs — doc and code disagree);
+5. **16-level Lloyd-Max Gaussian codebook** from hard-coded Max-1960 constants (`tq_codebook.c`);
+6. **no residual stage** (Variant F drops QJL);
+7. attention rotates the **query once** and dots against the codebook in rotated space; the 16 centroids are
+   int8-quantised and looked up with `vqtbl1q_s8` (NEON) / `pshufb` (AVX2) — that round took decode from -45% to
+   fp32 parity.
+
+Block = **128 elements = one head vector**; 72 B = 8 B header (norm, an unused residual norm, `inv_std`, padding)
++ 64 B codes = **4.5 bits/value**. Values are a **separate** path: `tq_value_quant.c` is plain **uniform**, and the
+engine default is `value_quant_bits = 0`, i.e. **V stays FP16** (`tq_server.c:1524`). The CLI default is
+`kv_type = TQ_TYPE_UNIFORM_4B` + V FP16 (`tq_server.c:1524-1525`); `turbo_kv_4b` is the *recommended* type, not
+the default. K and V use deliberately different algorithms.
+
+### 6.3 The one table that matters (a 9-round measured loop)
+
+`bench/results/turboquant_reproduction.md`, Llama 3.2 3B, 1,040-token PPL, FP32 = 13.56:
+
+| Round | Change | 4-bit PPL | 3-bit PPL |
+| --- | --- | ---: | ---: |
+| 0 | literal paper port, `inv_std = sqrt(d)` | 16.03 (+18.2%) | 25.84 (+90.6%) |
+| A | per-block `1/std` | 15.87 | 25.07 |
+| B | `inv_std = CENT_MAX/max(|x|)` | **15.39** | 84.97 (breaks) |
+| C | 99th-percentile winsorising | 17.24 | — |
+| D | `K·std` sweep | 15.53 (best K=2) | — |
+| E | uniform 8-level min/max | 16.28 | — |
+| F | **drop QJL, reinvest 16 B in a finer codebook** | **14.28** | 15.36 |
+| ref | `uniform_4b` | 14.41-14.60 | — |
+
+### 6.4 Corrections this force on §5.2 and §5.5
+
+1. **The "same 4-bit budget" framing in §5.2 is wrong.** Every `turbo_kv_*` number in the reproduction is run with
+   `-v fp16`, so quant.cpp's 14.28 is **4-bit K + FP16 V**, while our `q4_0` figure is 4-bit K **and** 4-bit V.
+   14.28-vs-+12% is **not** a like-for-like gap; the comparable config is `-k turbo_kv_4b -v q4`.
+2. **The codebook alone is not the win.** Their own ablation: the literal Lloyd-Max codebook was *worse* than
+   uniform per-block min-max (16.03 vs 14.41) because Gaussian centroids clip a heavier-than-Gaussian tail; it only
+   became best **after** the max-abs scaling (round B) and after the QJL bytes were reinvested. So §5.5 item 1
+   ("a codebook... roughly halves the q4_0 gap") overstates it: the **final** codebook+max-abs config beats
+   uniform by ~0.9% relative (14.41 -> 14.28) on K, not by half.
+3. **quant.cpp does not randomise the rotation** (constant seed). The SRHT idea in §5.3 is ours; it is not what
+   they ship.
+4. **They decline to quantise QK-normed keys** rather than rotating them: `is_gemma4 && use_qk_norm` forces
+   `use_quant_kv = 0` ("QK-normed keys are too sparse, cosine 0.62", `tq_transformer.c:1970`). Our target
+   **Qwen3.8-Flash-Next has per-head `attn_q_norm`/`attn_k_norm`**, i.e. exactly that case — and Strata's
+   rotation is the thing that makes it work where quant.cpp bailed. That is a genuine strength of our design.
+
+### 6.5 The biggest validated lever is *not* the codebook
+
+`README.md` (Llama 3.2 3B, **3,970 tokens** — their honest longer eval): FP32 19.41; **4-bit + a 128-token FP32
+window (`progressive`) = 19.39 (-0.1%)**; 4-bit flat 20.02 (+3.1%). A tiny full-precision recent window removes
+essentially the whole 4-bit penalty, and it is context-length-invariant (at 128K only ~0.1% of cells stay FP32).
+It needs no calibration and is model-agnostic; it is the same idea as StreamingLLM / KVSink / SKVQ and as our own
+open PR **#2318** (`--kv-window` + `--kv-sink`).
+
+Their own caveats: at short context the same trick carries +0.6% (13.64 vs 13.56 at 957 tokens), so the flat
+penalty there was already small; **no window rescues 2-bit** (flat +165%; k512 +4.3% short but +36.7% at 3,970
+tokens); and 3-bit survives only **with delta compression** (+1.3% on SmolLM2/WikiText-2), at ~3.5x slower decode
+(25 -> 7 tok/s) and with batched prefill disabled.
+
+### 6.6 Other transferable details
+
+- **Delta compression** (an FP32 "I-frame" every 64 tokens, "P-frames" store the quantised delta from the last
+  anchor): the only thing that made 3-bit usable. A documented **negative result** at 2 bits — reconstruction
+  drift, cosine 0.997 -> 0.885 over 200 steps. Irrelevant at 4 bits (costs speed, buys nothing).
+- **Block size 128 (one head vector), not 32**: fewer scales, and a distribution a codebook can be matched to.
+- **K/V asymmetry is explicit and measured**: K gets the codebook path; V is uniform and by default FP16, because
+  they measured uniform V quantisation to have "terrible cosine (0.62)".
+- **Per-layer bit allocation** by post-rotation kurtosis (`tq_adaptive.c`: `kurtosis > 6 -> 3-bit else 1-bit`) and
+  an online Lloyd-Max recalibration — unproven, later/opt-in only.
+- **Methodology debt they paid**: an early "1-bit is lossless" result was a **fallback bug** — prefill wrote FP32
+  into the cache slots before quantisation ran, so the prompt attention was FP32 and masked the noise. Real cosine
+  0.634 ≈ 2/pi. Their rule ("never trust a number not traced end-to-end") is worth copying.
+- **Denominator discipline**: their "7.1x" is vs **FP32**; vs FP16 it is **3.5x**. Their "llama.cpp q4_0" contrast
+  is partly a literature number, and their absolute PPL differs from llama.cpp's because the weight-quant path
+  differs (Q8_0 vs Q4-at-load) — only deltas are comparable.
+- **Honest attribution**: they renamed away from "TurboQuant" and credit **HIGGS** for RHT + MSE grids; Variant F
+  is "inspired by, not identical to" the paper.
+
+### 6.7 First candidate from this repo alone (to be re-checked after deep-dives #2 and #3)
+
+Ranked by validated impact per unit of effort, model-agnostic:
+
+1. **A precise recent window + sinks on top of the existing `q4_0`.** Largest validated effect (removes ~all of a
+   +3% flat penalty), no calibration, works for any model; our PR #2318 is the same idea for `q2k`. Effort is in
+   layout and block selection, not in new quantiser maths.
+2. **A matched (Lloyd-Max) codebook with one max-abs scale per head, L2-normalised**, replacing the per-32
+   uniform grid. Data-oblivious, same container, but the expected gain is **small** (~1% relative PPL on their
+   benchmark) and it partially depends on moving from a per-32 to a per-head scale. Measure first.
+3. **No QJL** (we never had it) and **yes to random signs** (SRHT) — unchanged from §5.5.
+4. Later / opt-in: delta compression for a 3-bit mode, per-layer bit allocation.
+
+## 7. Sources
 
 Repository: `include/strata/kernels/kv_q4.hpp`, `bench/results/2026-09-27-kv-q4/README.md`, `docs/DETAILS.md:86`,
 `docs/DETAILS.md:91`, PR #21, #120, #293, #711, #2318, #2351, #1095, #1614.
@@ -231,3 +349,8 @@ Literature:
 18. ik_llama.cpp TurboQuant implementation thread (#1509) — <https://github.com/ikawrakow/ik_llama.cpp/issues/1509>
 19. vLLM TurboQuant (Lloyd-Max K, uniform V, presets) — <https://docs.vllm.ai/projects/vllm-metal/en/latest/turboquant>
 20. llama.cpp Hadamard KV rotation/WHT kernels — PR #21038, #22631, #23615, #23687
+21. quant.cpp code deep-dive (read 2026-10-14, shallow clone): `src/core/tq_turbo_kv.c`, `tq_rht.c`,
+    `tq_codebook.c`, `tq_value_quant.c`, `src/cache/tq_progressive.c`, `src/engine/tq_transformer.c`,
+    `src/server/tq_server.c` — <https://github.com/quantumaikr/quant.cpp>
+22. quant.cpp variant history and QJL ablation — `bench/results/turboquant_reproduction.md`; honest 4-bit/window
+    numbers — `README.md`; 3-bit/delta and the 2-bit wall — `docs/blog/breaking-3bit-barrier.md`
