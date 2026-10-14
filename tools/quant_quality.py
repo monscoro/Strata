@@ -114,7 +114,9 @@ def cmd_run(a) -> int:
     env = dict(os.environ)
     env.update(cfg.get("env", {}))
     if cfg.get("lib_dirs"):
-        env["LD_LIBRARY_PATH"] = ":".join(cfg["lib_dirs"] + [env.get("LD_LIBRARY_PATH", "")])
+        # Windows loads the engine's HIP libraries from PATH (serve/server.py's child_env), Linux from LD_LIBRARY_PATH
+        var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+        env[var] = os.pathsep.join(cfg["lib_dirs"] + ([env[var]] if env.get(var) else []))
     env.update(FIXED_ENV)
     for kv in a.env or []:
         k, _, v = kv.partition("=")
@@ -190,7 +192,9 @@ def cmd_prompt(a) -> int:
     env = dict(os.environ)
     env.update(cfg.get("env", {}))
     if cfg.get("lib_dirs"):
-        env["LD_LIBRARY_PATH"] = ":".join(cfg["lib_dirs"] + [env.get("LD_LIBRARY_PATH", "")])
+        # Windows loads the engine's HIP libraries from PATH (serve/server.py's child_env), Linux from LD_LIBRARY_PATH
+        var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+        env[var] = os.pathsep.join(cfg["lib_dirs"] + ([env[var]] if env.get(var) else []))
     env.update(FIXED_ENV)
     for kv in a.env or []:
         k, _, v = kv.partition("=")
