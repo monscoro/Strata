@@ -1,0 +1,16 @@
+{
+ "docs_long:0=docs_short:0": {
+  "positions": 1199,
+  "same_topk": 1199,
+  "same_argmax": 1.0,
+  "kl": 0.0,
+  "max_abs_dlogp": 0.0
+ },
+ "code_fresh:0=code_after_docs:7000": {
+  "positions": 1199,
+  "same_topk": 0,
+  "same_argmax": 0.9232693911592994,
+  "kl": 0.11821057899882935,
+  "max_abs_dlogp": 8.741582268
+ }
+}

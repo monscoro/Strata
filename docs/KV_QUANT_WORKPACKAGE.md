@@ -164,6 +164,52 @@ Zweiter, **modellfreier** Meßpunkt: die KV-Parity-Tests (`kv_q4_parity`, `kv_q8
 Attention **schon gegen die fp32-true** Attention; dort gehört die entsprechende Schranke für `q4lm`/`q4lu` hin.
 Sie sind das Korrektheits-Gate, nicht der Qualitätsmaßstab.
 
+### 7.2 WP-0, zweiter Meßpunkt: 8K und die Kontextlängen-Frage
+
+Das 1K-Set kann die Frage nicht beantworten, die für ein KV-Format am wichtigsten ist: **wächst der Fehler mit der
+Kontextlänge?** Dafür steht jetzt `data/quant_quality/v2-8k` — docs/code/multilingual, **8.191 Positionen je
+Segment (24.573)**, nur Material aus diesem Repo (`ad4deb11`) — samt 1K-Armen (`set-1k.ids.json`, die ersten 1.000
+Tokens derselben Texte).
+
+    python tools/quant_quality.py run --config strata-q2_0.json --kv fp16 --ids data/quant_quality/v2-8k/set.ids.json --out kv-fp16.tsv
+    python tools/quant_quality.py run --config strata-q2_0.json --kv int8 --ids data/quant_quality/v2-8k/set.ids.json --out kv-int8.tsv
+    python tools/quant_quality.py run --config strata-q2_0.json --kv q4_0 --ids data/quant_quality/v2-8k/set.ids.json --out kv-q4_0.tsv
+    python tools/quant_quality.py compare kv-fp16.tsv kv-int8.tsv kv-q4_0.tsv --segments --json compare.json
+    python tools/quant_bins.py bins --ref kv-fp16.tsv --run kv-int8.tsv --run kv-q4_0.tsv --bin 1000 --json bins.json
+
+**Ergebnis** (Q2_0, gfx1200 RX 9060 XT, 0.1.44.1 HIP; 24.573 Positionen;
+`bench/results/2026-10-14-kv-8k/README.md`):
+
+| KV | Top-1 | mittlere KL | KL p99 | PPL | gegen fp16 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| int8 | 97,04 % | 0,00639 | 0,0692 | 3,3066 | **−0,14 %** |
+| q4_0 | 95,35 % | 0,01652 | 0,1843 | 3,3183 | **+0,21 %** |
+
+Je Segment: int8 −0,26 % / −0,28 % / +0,12 % (docs/code/multilingual), q4_0 +0,15 % / +0,49 % / −0,00 %. Das ist
+dieselbe Ordnung wie der erste Meßpunkt, aber auf **5× mehr Positionen**: int8 ist gratis, q4_0 kostet ~0,2 % PPL und
+verliert im Ausläufer (KL p99 0,184 gegen 0,069).
+
+Zur Kontextlänge zwei Messungen:
+
+1. `quant_quality.py run` schickt jeden Abschnitt als **eigenen `GEN`-Befehl** und bemisst `--max-context` auf
+   `seg_tokens+512` — Position ist also Kontextlänge. Belegt mit dem neuen `tools/quant_bins.py segments` auf der
+   Sonde `2026-10-14-kv-ctxprobe`: dieselben 1.200 Tokens sind als eigener Abschnitt und als erste 1.200 Tokens eines
+   8.192er Abschnitts **bit-identisch** (1199/1199, 0,000e+00); dieselben `code`-Tokens hinter 7.000 Tokens `docs`
+   sind es **nicht** (KL 0,118, 92,33 % gleicher argmax) — die Engine liest den langen Kontext wirklich, es ist kein
+   verstecktes Aufmerksamkeitsfenster.
+2. Die mittlere KL je 1.000er-Positionstopf steigt in **keinem** Abschnitt: `docs` 0,0169/0,0174, dann 0,0213–0,0288;
+   `multilingual` ist in den letzten 2.191 Positionen nahe null (0,0008–0,0055); `code` ohne Trend. Die Streuung
+   zwischen den Töpfen eines Abschnitts ist so groß wie die zwischen den drei Abschnitten im selben Topf
+   (0,0140–0,0172) — der Fehler folgt dem Text, nicht der Länge.
+
+**Folge für den Plan:** Der Fehler ist ein **Per-Token-Quantisierer-Effekt ohne Langkontext-Term**. Ein 1K-Set ist für
+den Mittelwert so gut wie ein 8K-Set, und ein 32K-Punkt wird für den Mittelwert nicht gebraucht (§8.2 angepasst); für
+WP-2/`--kv-window` bleibt er nötig, weil dort die *jüngsten* Zellen zählen. Der Hebel ist die Genauigkeit eines
+256-Werte-Vektors — genau WP-1/§5.1; die `q4_0`-Zahlen oben sind dessen Baseline.
+
+**Korrektur:** das `v2-8k`-README behauptete, das 1K/8K-Paar trenne die Kontextlänge; für dieses Werkzeug tut es das
+nicht (`data/quant_quality/v2-8k/README.md` korrigiert).
+
 ## 8. Messplan und Gate
 
 Für jedes WP:
@@ -174,7 +220,10 @@ Für jedes WP:
 2. **Qualität.** `tools/quant_quality.py run` / `compare` — **gegen den fp16-KV-Arm bei gleicher Config** (für
    Gewichts-Quants wäre Q8_0 die Referenz; für KV wäre das eine Vermischung beider Fehler) — Top-1, mean/p99 KL,
    PPL auf dem festen Set `data/quant_quality/v1` (code, docs, english, multilingual, agent), je Format und Kontext
-   (1K/8K/32K); `tools/needle_bench.py` für Recall (32K/128K/262K, Tiefen 10/50/90 %).
+   (1K/8K/32K); `tools/needle_bench.py` für Recall (32K/128K/262K, Tiefen 10/50/90 %). **Nachtrag §7.2:** für den
+   Mittelwert ändert die Kontextlänge 1K→8K nichts, der 32K-Punkt wird dafür nicht gebraucht (für WP-2 und den
+   Recall schon); das zweite feste Set ist `data/quant_quality/v2-8k`, v1 bleibt nur für den Vergleich mit dem
+   ersten Meßpunkt.
 3. **Speed und Speicher.** Decode-A/B mit `--kv-resident`, wie in `bench/results/2026-09-27-kv-q4`.
 4. **Akzeptanz.** Ein WP wird nur vorgeschlagen, wenn es die q4_0-Lücke bei **gleicher oder kleinerer** Byte-Zahl
    messbar schließt und die Speed-A/B nicht verliert. Sonst bleibt es opt-in/experimentell oder wird verworfen.

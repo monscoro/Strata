@@ -21,8 +21,14 @@ has.
 ## Two lengths, one text
 
 `set.ids.json` is 8192 tokens per segment. `set-1k.ids.json` is the **first 1000 tokens of the same three texts**.
-Scoring both means the 1K positions are a prefix of the 8K positions, so what separates the two runs is the context
-length and not a different excerpt.
+
+Careful with what that pair does and does not compare. `tools/quant_quality.py run` sends each segment as its own
+`GEN` request, so a segment is scored with only its own earlier tokens as context: position `p` has `p` tokens of
+context whatever the segment's length. Every position the 1K run has, the 8K run has **with exactly the same
+context**, and the two scored it bit-for-bit identically (measured:
+[2026-10-14-kv-ctxprobe](../../../bench/results/2026-10-14-kv-ctxprobe/README.md)). The 1K run is therefore a cheap check that
+the long run reproduces, and the 8K run's extra value is its extra positions - i.e. the longer contexts 1k to 8k.
+"What separates the two runs is the context length" would only hold if a segment kept the earlier segments' tokens.
 
 ```
 .venv/Scripts/python tools/quant_quality.py ids --tokenizer <pack>/tokenizer --set data/quant_quality/v2-8k \
