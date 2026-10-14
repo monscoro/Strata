@@ -559,6 +559,45 @@ dicht, PPL/QA statt Retrieval).
 WP-1 läuft unverändert (Behandlung + Bit-Referenz + Ablation) — nur die *Deutung* des Bit-Arms hat sich
 geändert: Er ist Referenz, keine Richtung.
 
+### 7.7 Nächste Schritte (konkret, Stand 2026-10-14 abends, GPU frei)
+
+Jede Stufe produziert genau eine Entscheidung. CPU-Arbeit (Bauen) läuft parallel zu GPU-Arbeit (Messen).
+
+**Phase 0 — bereit (Tage, GPU frei).**
+0. Nadel-Anker: fp16 + int8, 32K, Tiefen 10/50/90, `--repeats 3`, Typen code+uuid → JSON einchecken. *Entscheidung:*
+   Gate kalibriert (wo steht fp16/int8 bei Länge?). Aufwand S + GPU (Größenordnung ~1 h, wird gemessen).
+1. WP-1-Arme bauen (CUDA/HIP + Parity grün): V-RMS-Skalenregel, No-Rotation-Modus (q4lm8v-Referenz existiert).
+   *Entscheidung:* Arme messbereit. Aufwand M.
+2. Pro-Layer-Diagnostik: K/V-Kurtosis/max/Outlier-Masse aus Kalibrierungs-Forward (ohne Quantisierung).
+   *Entscheidung:* Vorwissen für Skalenregel (WP-1) und κ-Wahl (WP-2a). Aufwand S.
+
+**Phase 1 — WP-1 Swift (darauf).**
+3. cwe-2k Swift (fp16/int8/q4_0/q4lm32 + Behandlung + Bit-Referenz + No-Rotation, +evtl. q4lm8) mit Power
+   (Segmente hoch oder cwe-4k parallel). *Entscheidung:* WP-1-Urteil — trägt Behandlung? Bit-Split bei 7 Bit?
+   Rotation? Aufwand M (GPU über Nacht).
+4. cwe-4k Swift für die Gewinner. *Entscheidung:* Längen-Generalisierung. Aufwand S–M.
+
+**Phase 2 — WP-2a (danach).**
+5. Clipped-Scale-Arm (κ-Grid, κ_K≠κ_V, fix zuerst) → Swift cwe-2k. *Entscheidung:* Schwanz-Beitrag separiert.
+   Aufwand S.
+6. Fenster-Arm (q2k-Mechanismus auf Sonden-Arme) → Swift cwe-2k. *Entscheidung:* Fenster-Beitrag separiert
+   (ohne ihn keine Transform-Attribution). Aufwand M.
+7. Nadel-Gate 32K für WP-1/WP-2a-Gewinner (Server-Neustarts je KV-Arm). *Entscheidung:* Validity bestanden?
+   Aufwand S + Betrieb.
+
+**Phase 3 — Layout + Vergleich.**
+8. WP-2 echtes asymmetrisches Layout (K4/V3-Klasse, ehrliche BPE, Slot vorbereitet). Aufwand L.
+9. WP-3 kalibriert-nur-K (Kalibrierung ~8k Tokens). *Entscheidung:* Layout vs kalibriert, mit BPE. Aufwand M–L.
+10. Nadel-Gate 32K/128K + cwe-4k + Power-Top-up falls nötig.
+
+**Phase 4 — PR-Reife.**
+11. Identitäts-Gate (4 Modelle) + Speed-A/B (erst `kQ4lMap` in Shared Memory). *Entscheidung:* PR-reif. Aufwand M.
+12. Kuratierter PR nach AGENTS.md (eine Änderung je PR; Sonden-Code fällt raus). Aufwand S.
+
+**Explizit zurückgestellt:** Zweit-Gewichtsmodell (Entscheidung nach WP-1 Swift: trennt IQ3_XXS scharf, nur
+Bestätigung nötig); ROT-Arm; 16K/32K-Framing (c); SRHT/WP-4; Delta/WP-5; Decode-only-Arm (braucht
+Engine-Prefill-Pfad); Teacher-forced-NIAH-Fallback.
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist
