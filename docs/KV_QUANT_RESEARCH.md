@@ -129,7 +129,82 @@ byte-identical.
   a **Beta/Lloyd-Max codebook** after the same rotation instead of uniform `q4_0`, and (b) a **1-bit QJL residual
   on K** — both data-oblivious and rotation-compatible, i.e. they fit the existing `kv_q4` path.
 
-## 5. Sources
+## 5. Follow-up work on TurboQuant (since April 2025)
+
+### 5.1 The paper itself, clarified
+
+TurboQuant (`arXiv:2504.19874`, ICLR 2026) is a composition of two earlier works: **PolarQuant** (norm + direction,
+random preconditioning; `arXiv:2502.02617`, AISTATS 2026) for stage 1, and **QJL** (1-bit sign residual;
+`arXiv:2406.03482`, AAAI 2025) for stage 2. Google Research posted the blog on 2026-03-24. Two author
+clarifications (Han In-su, per a 2026-04-13 interview): the **6x** memory and **8x** attention numbers come from
+different settings and must not be multiplied, and the 8x is H100-at-4-bit attention, not end-to-end. The
+"3-bit zero loss" headline is shorthand: quality-neutral at **3.5 bits/channel**, marginal at 2.5.
+
+### 5.2 Independent replications: the QJL residual is dubious for KV caches
+
+Several careful reproductions converge on the same surprising result — **the 1-bit QJL residual adds little or
+nothing, and on K it tends to hurt**:
+
+- **quant.cpp** (Apple M1 Pro, Llama 3.2 3B, 1,040-token PPL): a literal TurboQuant port (RHT -> Lloyd-Max ->
+  1-bit QJL) was **byte-for-byte identical to MSE-only in ablation — "the QJL residual stage contributed exactly
+  nothing to scores."** Dropping QJL and spending the freed bytes on a **2x larger codebook** gave
+  `turbo_kv_4b` PPL **14.28 (+5.3%)** vs `uniform_4b` 14.41 (+6.3%) vs llama.cpp's `q4_0` KV **~14.99 (+10.6%)**
+  at the same 4-bit budget. They also credit the RHT + MSE-grid pattern to **HIGGS** (`arXiv:2411.17525`).
+- **scos-lab reference implementation**: MSE beats Prod for attention ("the paper recommends Prod for keys; our
+  experiments show MSE for both is better"), and outlier-aware mixed precision (a few K channels at 8 bit, the
+  rest at 3) recovers most of the loss.
+- **AMD ablation** (`arXiv:2607.09683`): QJL on K amplifies variance through the softmax (Jensen) and is worse
+  than no QJL on structured regimes; and a companion (`arXiv:2605.08114`) finds that **at 4 bits `KQV` (QJL on V
+  only) wins on every measure, while `QKQV` (QJL on both) is consistently worse in KL.**
+- **ik_llama.cpp #1509**: implementation note — QJL is not needed for the KV cache; `TurboQuant_mse` (Algorithm 1)
+  suffices, and pre-rotated queries let attention dot against the codebook directly.
+
+**Consequence for our own plan:** the earlier suggestion to add a "1-bit QJL residual on K" is **not supported** by
+the follow-up literature and is withdrawn. The part that survives is the rotation plus a **codebook matched to the
+rotated distribution**.
+
+### 5.3 Improvements on the same core that we could use
+
+| Idea | Source | Fits Strata? |
+| --- | --- | --- |
+| **Beta/Lloyd-Max codebook instead of a uniform grid** (same 4 bits, better centroids) | TurboQuant/PolarQuant, quant.cpp, vLLM presets | yes — data-oblivious, no layout size change |
+| **No stored per-block scale** (norm + direction; random preconditioning removes the 1-2 bits/block of scale/zero-point) | PolarQuant `2502.02617` | partly — q4_0 pays an fp16 scale per 32 values (~0.5 bit/value) |
+| **Per-channel K scales** (K outliers are channel-aligned: RMS max/median 5.8x on L3 up to 74.9x on L47) | KIVI, KVQuant, OSCAR, Strata PR #2318 | yes for K |
+| **Asymmetric K/V bits** (give K the extra bit) | vLLM `turboquant_k8v4` = its best 4-bit preset (+1.17% PPL at 2.6x) | already have `k8v4` |
+| **A full-precision window + attention sinks** (a slice of recent/first cells exact) | KVSink `2508.04257`, SKVQ, KIVI, Strata PR #2318 | yes, format-agnostic |
+| **Keep the top-k coordinates high precision, before and after rotation** | TORQUE `2609.36032` | yes, but new code |
+| **Random sign flips (SRHT) instead of a plain Hadamard** | TurboQuant; SRFT vs SRHT is "statistically indistinguishable" per `2605.05699` | cheap, theory-aligned |
+| **Calibrated / covariance-aware rotation** (beats fixed Hadamard but is model- and calibration-specific) | SpinQuant `2405.16406`, OSCAR `2605.17757`, OptR `2608.02691`, WUSH-KV `2609.38121` | opt-in only — breaks data-obliviousness |
+
+OSCAR reports INT2 staying near BF16 on Qwen3-32B and GLM-4.7 (358B) where a naive rotation "collapses to nearly
+zero"; OptR raises Qwen3-8B AIME25 from 17.33% to 66.67% over QuaRot. Both are strong but need calibration data
+and per-model work, which cuts against Strata shipping one code path for many packs.
+
+### 5.4 Integration status elsewhere
+
+- **vLLM**: PR #38479 merged (2026-04-15). Named presets with measured PPL: `turboquant_k8v4` 2.6x / **+1.17%**,
+  `turboquant_4bit_nc` 3.8x / +2.71%, `turboquant_k3v4_nc` ~3.5x / +10.63%, `turboquant_3bit_nc` 4.9x / +20.59%.
+  Note it applies **Lloyd-Max on K and uniform on V**, again the asymmetric split.
+- **llama.cpp**: the rotation idea landed as a Hadamard KV-cache rotation (#21038, citing TurboQuant) with WHT
+  kernels on CPU (#22631), CUDA (#23615) and Vulkan (#23687). Many downstream forks (e.g. `turbo3` ~4.6x at
+  <1.5% PPL on Llama 3.1 8B).
+- **AMD**: `turbo4` +0.23% PPL vs q8_0, `turbo3` +1.06%, decode 89% of f16.
+
+### 5.5 What this means for Strata (prioritised)
+
+1. **Replace the uniform `q4_0` grid with a Beta/Lloyd-Max codebook** after the existing rotation. Data-oblivious,
+   same 4-bit layout plus a scale, so it slots into `kv_q4.hpp`. quant.cpp's 14.28-vs-14.99 PPL suggests this
+   roughly halves the q4_0 quality gap on its own.
+2. **Per-channel scales for K** (V keeps the token-wise `q4_0` path).
+3. **Keep the K/V asymmetry** (`k8v4`); vLLM's best 4-bit preset is exactly that shape.
+4. **Random sign flips** on the Hadamard (SRHT) — cheap, and closer to what the theory assumes.
+5. **Do not add QJL.**
+6. Later / opt-in: the FP16 window + sinks (also the subject of open PR #2318), and any calibrated rotation.
+
+All numbers above were measured on other models (GPT-2, Llama 3.2, Qwen2.5, Qwen3, MiniMax, GLM) and other metrics
+(PPL vs FP32/FP16/q8_0, LongBench, RULER, AIME). Treat them as directional, not as Strata results.
+
+## 6. Sources
 
 Repository: `include/strata/kernels/kv_q4.hpp`, `bench/results/2026-09-27-kv-q4/README.md`, `docs/DETAILS.md:86`,
 `docs/DETAILS.md:91`, PR #21, #120, #293, #711, #2318, #2351, #1095, #1614.
@@ -143,3 +218,16 @@ Literature:
 5. TurboQuant reference implementation (engineering findings) — <https://github.com/scos-lab/turboquant>
 6. SpectralQuant — <https://pypi.org/project/spectralquant>
 7. SpectrumQuant (ACL 2026) — <https://aclanthology.org/2026.acl-long.1732>
+8. PolarQuant (TurboQuant stage 1) — <https://arxiv.org/abs/2502.02617>
+9. QJL (TurboQuant stage 2) — <https://arxiv.org/abs/2406.03482>
+10. HIGGS (rotation + MSE-optimal grids, the earlier origin) — <https://arxiv.org/abs/2411.17525>
+11. quant.cpp reproduction (QJL contributed nothing; larger codebook wins) — <https://github.com/quantumaikr/quant.cpp>
+12. TORQUE — <https://arxiv.org/abs/2609.36032>
+13. OSCAR (offline spectral covariance-aware rotation, INT2) — <https://arxiv.org/abs/2605.17757>
+14. OptR (output-aware rotation) — <https://arxiv.org/abs/2608.02691>
+15. SpinQuant (learned rotations) — <https://arxiv.org/abs/2405.16406>
+16. KVSink (attention sinks) — <https://arxiv.org/abs/2508.04257>
+17. "When Quantization Is Free" (SRFT vs SRHT, learned-rotation ablation) — <https://arxiv.org/abs/2605.05699>
+18. ik_llama.cpp TurboQuant implementation thread (#1509) — <https://github.com/ikawrakow/ik_llama.cpp/issues/1509>
+19. vLLM TurboQuant (Lloyd-Max K, uniform V, presets) — <https://docs.vllm.ai/projects/vllm-metal/en/latest/turboquant>
+20. llama.cpp Hadamard KV rotation/WHT kernels — PR #21038, #22631, #23615, #23687
