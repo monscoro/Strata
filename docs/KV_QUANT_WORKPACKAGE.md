@@ -21,13 +21,20 @@ ohne den Default-Pfad (`int8`) in irgendeiner Weise zu berühren.
 
 | Größe | Wert | Quelle |
 | --- | --- | --- |
-| int8 gegen fp16 | ununterscheidbar (±2 Standardfehler) | `bench/results/2026-09-27-kv-q4/README.md` |
-| q4_0 Document-PPL | **+8 % @1K, +12 % @8K** | ebd. |
-| q4_0 KL gegen fp16 | 0,039 (1K) / 0,297 (8K); 2,6-4,2× int8 | ebd. |
-| q4_0 Top-1 | 91,3 % (Doc 1K), 88,0 % (8K) | ebd. |
+| **int8 gegen fp16** (neues fixes Set, 5×999) | **−0,10 % PPL**, KL 0,0136 | `bench/results/2026-10-14-kv-first-run/README.md` |
+| **q4_0 gegen fp16** (neues fixes Set, 5×999) | **+1,12 % PPL**, KL 0,0364 (**2,7× int8**), Top-1 94,15 % | ebd. |
+| int8 gegen fp16 (alter Doc-Probe) | ununterscheidbar (±2 Standardfehler) | `bench/results/2026-09-27-kv-q4/README.md` |
+| q4_0 Document-PPL (alter Doc-Probe) | **+8 % @1K, +12 % @8K** | ebd. |
+| q4_0 KL gegen fp16 (alt) | 0,039 (1K) / 0,297 (8K); 2,6-4,2× int8 | ebd. |
+| q4_0 Top-1 (alt) | 91,3 % (Doc 1K), 88,0 % (8K) | ebd. |
 | q4_0 Needles | 5/5 (1K-262K) | ebd. |
 | q4_0 Decode @128K | 67,4 t/s, 0,83 GiB K/V (`--kv-resident 32768`) | ebd. |
 | Layout | 18 B je 32 Werte, 144 B/Head, **4,5 bit/Wert** | `include/strata/kernels/kv_q4.hpp` |
+
+Die beiden neuen Zeilen sind der **erste Meßpunkt auf dem festen Set** (§7.1) und der Maßstab für WP-1. Die alten
+Doc-Probe-Zahlen („+8 % @1K") stammen von einem anderen, inzwischen entfernten Werkzeug auf einem einzelnen langen
+Dokument und sind mit dem neuen Set **nicht** vergleichbar — der `docs`-Abschnitt zeigt hier bei ähnlicher KL nur
++0,09 % PPL.
 
 Der Kern der Lücke: wir rotieren bereits (festes, orthonormales H) und legen dann das **uniforme** ggml-`q4_0`-Gitter
 darüber, mit **einer Skala je 32 Werte**. Nach der Rotation sind die Werte aber näherungsweise gaußverteilt — ein
@@ -115,13 +122,47 @@ Review.
 
 | WP | Inhalt | Deliverable | Aufwand |
 | --- | --- | --- | --- |
-| **WP-0** | KV-Qualitäts-Harness: `tools/quant_quality.py` so erweitern, dass `--kv` nicht mehr fix `fp16` ist; Baselines fp16/int8/q4_0/k8v4 bei 1K/8K/32K auf {Q2_0, IQ3_S} fixieren (Top-1, KL, PPL + `needle_bench.py` + Speed-A/B) | `bench/results/<datum>-kv-baseline/` | S-M |
+| **WP-0** | KV-Qualitäts-Harness: **steht** — `tools/quant_quality.py --kv FMT` (§7.1). Offen: Baselines fp16/int8/q4_0/k8v4 bei 1K/8K/32K auf {Q2_0, IQ3_S} fixieren (Top-1, KL, PPL + `needle_bench.py` + Speed-A/B) | `bench/results/<datum>-kv-baseline/` | S |
 | **WP-1** | `--kv q4lm` (+ interne Kontrollen `q4lu`, `q4lm32`); CUDA/HIP + SYCL; Parity-Tests | Format + Tests + Messbericht | M |
 | **WP-2** | `--kv-window` / `--kv-sink` auf `q4_0` (und `k8v4`), mit #2318 abgestimmt | Format + Tests + Messbericht | M-L |
 | **WP-3** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
 | **WP-4** (später) | Delta-Modus für 3-bit; Per-Layer-Bit-Zuteilung nach Kurtosis | — | L |
 
 Reihenfolge: **WP-0 → WP-1 → (WP-2 ‖ WP-3) → WP-4.** Jedes WP ist **ein** PR (AGENTS.md: eine Änderung je PR).
+
+### 7.1 WP-0: der Harness steht, der erste Meßpunkt liegt vor
+
+`tools/quant_quality.py` pinnte `--kv` fix auf `fp16` und warf `--kv`/`--kv-resident` aus der Config — damit war **kein**
+KV-Format meßbar. Seit Commit `f275f3cf` ist `--kv FMT` ein Lauf-Argument (Default `fp16`, also unverändertes
+Verhalten), und die Engine-Umgebung benutzt unter Windows `PATH` statt `LD_LIBRARY_PATH` — wie `serve/server.py`s
+`child_env` (`94d31866`). Beides sind nur Werkzeug-Änderungen; der Default-Pfad der Engine bleibt unberührt.
+
+Erster Meßpunkt (Gewichte fest, nur die K/V-Ablage variiert):
+
+    python tools/quant_quality.py run --config strata-q2_0.json --kv fp16 --out kv-fp16.tsv
+    python tools/quant_quality.py run --config strata-q2_0.json --kv int8 --out kv-int8.tsv
+    python tools/quant_quality.py run --config strata-q2_0.json --kv q4_0 --out kv-q4_0.tsv
+    python tools/quant_quality.py compare kv-fp16.tsv kv-int8.tsv kv-q4_0.tsv --segments
+
+Referenz ist der **fp16-KV-Arm bei gleicher Config**, **nicht** Q8_0: sonst mischt der Vergleich Gewichts- und
+KV-Fehler. `run` hat keine Segment-Auswahl (jeder Arm = 5×999 Positionen teacher-forced, ~2,5 min), das ist der Preis
+für den festen, committeten Tokensatz.
+
+**Ergebnis** (Q2_0, gfx1100, 0.1.44.1 HIP; 4.995 Positionen; `bench/results/2026-10-14-kv-first-run/README.md`):
+
+| KV | Top-1 | mittlere KL | PPL | gegen fp16 |
+| --- | ---: | ---: | ---: | ---: |
+| int8 | 96,48 % | 0,0136 | 4,469 | **−0,10 %** |
+| q4_0 | 94,15 % | 0,0364 | 4,524 | **+1,12 %** |
+
+Das ist die Zahl, die WP-1 schlagen muß (q4_0-Lücke, hier +1,12 % PPL / KL 0,0364 = 2,7× int8). Achtung: die
+September-Zahl „+8 % @1K“ (`2026-09-27-kv-q4`) stammt von einem anderen, seitentfernten Werkzeug auf einem einzelnen
+langen Dokument und ist mit diesem Set **nicht** vergleichbar — deshalb jetzt zwei Zahlen statt einer.
+
+Zweiter, **modellfreier** Meßpunkt: die KV-Parity-Tests (`kv_q4_parity`, `kv_q8_parity`, `kv_hybrid_parity`,
+`kv_stream_parity`, `kv_steps_parity`) — GPU, synthetisch, in ctest. `kv_hybrid_parity` boundet die quantisierte
+Attention **schon gegen die fp32-true** Attention; dort gehört die entsprechende Schranke für `q4lm`/`q4lu` hin.
+Sie sind das Korrektheits-Gate, nicht der Qualitätsmaßstab.
 
 ## 8. Messplan und Gate
 
@@ -130,9 +171,10 @@ Für jedes WP:
 1. **Identitäts-Gate.** Mit dem neuen Format **aus** muss die Ausgabe byte-identisch sein (Default `int8` und die
    bestehenden `q4_0`/`k8v4` unverändert). Ein neues opt-in-Format ist per Konstruktion default-neutral — das
    **zeigen**, nicht behaupten.
-2. **Qualität.** `tools/quant_quality.py run` / `compare` gegen Q8_0 (Top-1, mean/p99 KL, PPL) auf dem festen Set
-   `data/quant_quality/v1` (code, docs, english, multilingual, agent), je Format und Kontext (1K/8K/32K);
-   `tools/needle_bench.py` für Recall (32K/128K/262K, Tiefen 10/50/90 %).
+2. **Qualität.** `tools/quant_quality.py run` / `compare` — **gegen den fp16-KV-Arm bei gleicher Config** (für
+   Gewichts-Quants wäre Q8_0 die Referenz; für KV wäre das eine Vermischung beider Fehler) — Top-1, mean/p99 KL,
+   PPL auf dem festen Set `data/quant_quality/v1` (code, docs, english, multilingual, agent), je Format und Kontext
+   (1K/8K/32K); `tools/needle_bench.py` für Recall (32K/128K/262K, Tiefen 10/50/90 %).
 3. **Speed und Speicher.** Decode-A/B mit `--kv-resident`, wie in `bench/results/2026-09-27-kv-q4`.
 4. **Akzeptanz.** Ein WP wird nur vorgeschlagen, wenn es die q4_0-Lücke bei **gleicher oder kleinerer** Byte-Zahl
    messbar schließt und die Speed-A/B nicht verliert. Sonst bleibt es opt-in/experimentell oder wird verworfen.

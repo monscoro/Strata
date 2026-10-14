@@ -7,6 +7,12 @@ Branch: `KV_QUANT_research`.
 
 The implementation plan derived from this note is [KV_QUANT_WORKPACKAGE.md](KV_QUANT_WORKPACKAGE.md).
 
+The first KV-cache **measurement point** (the fixed yardstick set, same weights, only `--kv` differs) is in
+[bench/results/2026-10-14-kv-first-run/](../../bench/results/2026-10-14-kv-first-run/README.md): on Q2_0, int8 is
+-0.10% perplexity against fp16 K/V and q4_0 is **+1.12%** (mean KL 0.0364, 2.7x int8's). That is the gap WP-1 has to
+close; the older "+8% @1K" document probe used a different, removed tool and a single long document and is not
+comparable to this set.
+
 ---
 
 ## 1. What Strata does today (`--kv`)
