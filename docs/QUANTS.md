@@ -6,6 +6,19 @@ each layer, which of Strata's kernels run those formats on each kind of hardware
 the Q8_0 reference. Setup and the per-file details: [UD-Q4_K_XL](UNSLOTH_Q4.md), [UD-Q6_K_XL](UNSLOTH_Q6.md),
 [MODELS.md](MODELS.md).
 
+## Where these formats come from
+
+Two families, and they must not be confused. The **weight files** in this page are GGUF files of the llama.cpp
+family (K-quants, Q8_0, IQ formats), read from their headers alone (`tools/quant_formats.py`). Strata runs kernels
+for them; it does not implement weight-quantization algorithms of the GPTQ/AQLM/HIGGS/QuEST line. Strata's **own**
+formats are the KV-cache formats (`--kv q4_0`, `k8v4`, `q4lm32`, ...), and they sit in the rotation-before-scalar
+line: a fixed Hadamard rotation, then a scalar quantizer — "TurboQuant minimised", without TurboQuant's randomized
+signs, Beta-optimal codebook, or 1-bit QJL residual ([KV_QUANT_RESEARCH.md](KV_QUANT_RESEARCH.md) §3). No
+TurboQuant/PolarQuant/QJL integration is open or merged upstream, and the QJL residual is excluded by measurement,
+not by taste (§5.2: a literal port contributed exactly nothing; on K it amplifies variance through the softmax).
+The calibrated per-head transforms of that line's newest KV member, WUSH-KV, are the tested main direction
+(WP-2 transform slot, [KV_QUANT_WORKPACKAGE.md](KV_QUANT_WORKPACKAGE.md) §5.4) — not a shipped format.
+
 ## What each file stores
 
 Read from the GGUF headers alone with `tools/quant_formats.py --hf unsloth/Qwen3.8-Flash-Next-GGUF 38bb39ee... <dir>`

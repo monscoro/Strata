@@ -530,6 +530,17 @@ Für jedes WP:
   wiederholt, wo der KV-Fehler sichtbar wird. Die Sonde verbraucht **keine** Bytes (576 B/Zelle wie `q4_0`), also
   ist selbst ein gutes Ergebnis **kein** Halbierungs-Beleg, sondern nur die Lizenz, das echte Layout in WP-2 zu
   bauen. Offen bleibt, ob 8 Pegel genug sind oder ob der Transform-Slot die 3-Bit-Stufe erst trägt.
+- **Hauptrichtung mit Falsifikationspflicht.** Die Hauptrichtung ist der **kalibrierte Transform-Slot** (WP-2:
+  festes Hadamard als datenblinder Default, per-Head gelernte Transformation opt-in). Sie wird an **jeder** Messung
+  kritisch hinterfragt, nicht nur einmal begründet:
+  1. Kalibriert muß festes Hadamard bei **gleichen Bits** auf cwe-2k (**Swift**) in gepaarter KL *und*
+     Antwortgenauigkeit schlagen — sonst bleibt es ungebaut bzw. opt-in.
+  2. Das Kostenbudget gilt mit: Kalibrierzeit, Downloadgröße der Transformation, Online-K-Kosten pro Token.
+  3. Die Alternativen bleiben auf dem Tisch: asymmetrische K/V-Zuteilung (die Sonde zeigt K-will-die-Bits, aber
+     etabliert ist das noch nicht), Residualkorrektur nur bei neuer Evidenz (QJL ist derzeit per Messung
+     ausgeschlossen, Survey §5.2).
+  4. Wenn Swift die K-vs-V-Richtung dreht, ändert sich das WP-2-Layout — die Q2_0-Richtung ist eine Richtung, kein
+     Gesetz.
 - **Identitäts-Gate und Speed-A/B für WP-1a stehen noch aus** (§8.1/§8.3). Der A/B in §7.4 ist ein
   *Qualitäts*-Vergleich gegen den fp16-KV-Arm; „byte-identisch mit dem neuen Format aus" und der Decode-Durchsatz
   sind noch nicht gemessen. Vor einem PR beides nachholen, dann `kQ4lMap` zuerst in Shared Memory.
