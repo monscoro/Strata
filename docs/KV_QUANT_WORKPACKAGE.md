@@ -66,7 +66,13 @@ Explizit nicht: QJL, symmetrisch-2-Bit, V-Folding in quantisierte Gewichte (§10
 
 Neues, opt-in Format mit eigener Format-ID (`kKvQ4lm`). Die Rotation bleibt `fwht256` (orthonormal, selbstinvers)
 für K, V und Q — damit bleiben die Scores exakt `<Hq, Hk> = <q, k>`, und der Ausgang wird mit demselben H
-zurückgedreht.
+zurückgedreht. Platzierung festgehalten: Der Schreiber sieht **Post-Norm/Post-RoPE-K** (`mtp.cpp:963`
+`native_qsa_rms_norm_rope` vor `kv_append_q4_steps` in Z. 979; ebenso `verify.cpp:1243` vor Z. 1312) — also
+WUSH-Regime, nicht KVQuant-pre-RoPE. Das ist kohärent mit FWHT (die mischt Kanäle ohnehin, also überträgt sich
+KVQuants Pre-RoPE-Kanalargument nicht 1:1), war aber nie eine *Entscheidung* aus K-Sensitivität: Pro-Kanal-Skalen
+für K im KIVI/KVQuant-Sinn können nur **vor** FWHT leben (Pipeline-Änderung, vgl. §5.5), alles nach der Rotation
+muss über Skalenregel/Clipping/Fenster laufen. (Nebenbei: `n_rot` ist 64 von 256 Dims — FWHT mischt rotierte mit
+unrotierten Dims; ungeprüft, derzeit außer Scope.)
 
 Block = **ein Head-Vektor (256 Werte)** statt 8 × 32:
 
@@ -193,13 +199,21 @@ Sonden-Bytes (576 B/Zelle) — wegwerfbar bis auf den Gewinner, der in WP-2 echt
    OSCAR-Ablation (INT2, deren Pipeline) sagt H trägt ~18 Punkte, das ist das Gegengewicht, kein Urteil über
    unsere Geometrie.
 
+**Diagnostik-Lücke (noch kein Arm).** Die Literatur teilt feiner zu als Tensor: KVQuant pro-Layer
+sensitivitätsgewichtet, RateQuant pro-Head-Bits, WUSH pro-Head-Transformationen. Wir haben nie gemessen, welche
+Layer/Heads wehtun — die Parity-Suite kennt nur synthetisches N(0,1). Billig zu schließen: Pro-Layer-K/V-Statistik
+(Kurtosis, max|x|, Outlier-Masse) aus einem Kalibrierungs-Forward-Pass, ohne jede Quantisierung; informiert
+Skalenregel (WP-1), κ-Wahl (WP-2a) und spätere Bit-Zuteilung (WP-5). Noch nicht gebaut, nur vorgemerkt.
+
 ### 5.6 Clipped-Scale + Fenster vor dem Layout (WP-2a neu)
 
 Zwei Arme, beide **ohne Byte-Änderung**, beide vor jedem Layout-Bau — sie entscheiden, was das Layout überhaupt
 tragen muss:
 
 1. **Clipped-Scale.** Skala aus dem κ-Quantil statt `max|x|` (Start κ≈0,92–0,96 — OSCAR-Tab. 6 und
-   FlatQuant-fix 0,9/0,95 konvergieren dorthin; dann Grid auf Swift), Tabelle/Blöcke/Leser unverändert. Das
+   FlatQuant-fix 0,9/0,95 konvergieren dorthin; dann Grid auf Swift, **mit getrenntem κ_K ≠ κ_V**: OSCAR
+   clippt K weniger (0,96) als V (0,92) — K behält mehr Dynamikbereich, wie es seiner Empfindlichkeit
+   entspricht), Tabelle/Blöcke/Leser unverändert. Das
    Clipping greift **nach** der Rotation (der Schreiber sieht post-FWHT-Werte), wie FlatQuant-Tab. 15 verlangt
    (nachher 6,98 vs vorher 7,37; fix fängt ~70 % des Gewinns ohne jede Kalibrierung). Null Bytes, nur Schreiber
    + Parity + cwe-2k-Arm. Schwellen fix = datenblind; aus Kalibrierung = opt-in.
