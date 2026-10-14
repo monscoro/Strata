@@ -583,6 +583,23 @@ Für jedes WP:
    (≈11 h für 6 Arme auf Swift) — oder cwe-4k (Effekt verstärken statt Rauschen mitteln) oder McNemar-primär
    (5:0 steht bei p=0,062; wenige Segmente mehr entscheiden ihn). Vor einem Layout-Urteil eine der drei
    einlösen; „Richtung" ohne eingelöste Power ist kein Bauauftrag.
+7. **Aussage-Disziplin (ab 2026-10-14, Survey §6.13).** Primär-Auslesung je Frage vorab festlegen und dann
+   festhalten: Ganzsegment-gepaarte KL für Format-Rangfolge, McNemar-Antwortgenauigkeit für K-vs-V (der
+   fwe→cwe-Wechsel war datengetrieben und ist hiermit verriegelt). Prefill-Abweichung offenlegen: Unser Harness
+   quantisiert Prefill-KV mit (Feldstandard ist decode-only, Yuan OB1) — interne Vergleiche bleiben gültig
+   (fp16-Arm teilt die Behandlung), absolute Lücken sind nicht mit Feldzahlen vergleichbar; ein Decode-only-Arm
+   ist vorgemerkte Arbeit (braucht Engine-Prefill-Pfad fürs Format), keine vorhandene. Jeder Bench-README trägt
+   den Scope-Stempel (Modell, Pack, Kontext, Prefill-Behandlung); Längenskalierung (cwe-4k) ist der
+   Generalitäts-Proxy; Q2_0→Swift der Gewichtsregime-Gegencheck. Gesättigter Test = Härtevorschrift, kein
+   Ergebnis (H2O-Lehre: 100 % → 35 % nach Härtung).
+8. **Nadel-Gate (vorgemerkt, für WP-2).** `tools/needle_bench.py` existiert und passt aufs fehlende Bein: freie
+   Generierung durch die Server-API, greedy, Thinking aus, Exaktmatch-Grading, Repo-Heuhaufen, Tiefen 10/50/90,
+   32K/128K/262K, Timing dabei. Lücken vor dem Gate-Einsatz: ein Schuss pro Zelle (keine Varianz → `--repeats`
+   mit frischen Wörtern/Positionen), ein Nadeltyp (RULER: UUID-ähnliche Codes dazu), keine harten Distraktoren
+   (MK-Analog: Distraktor-Nadeln), nur Einzelabfrage (MV/MQ-Analog: unvollständige Mengen unsichtbar), nie pro
+   KV-Arm gelaufen (braucht Server-Neustarts je `--kv`-Arm — Betriebskosten, vermerkt). Spezifiziert hiermit,
+   gebaut bei freier GPU. Fallback: Teacher-forced-NIAH im Harness (Nadel-Logprob + KL an Nadel-Tiefen, gepaart,
+   ohne Server), falls freie Generierung pro GPU-Stunde zu verrauscht ist.
 
 ## 9. Risiken und offene Fragen
 

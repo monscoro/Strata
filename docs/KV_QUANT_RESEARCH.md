@@ -602,6 +602,61 @@ skepticism gets measured, both directions). Explicitly not: QJL, symmetric 2-bit
 V-folding into quantized weights.
 
 
+### 6.13 The decision test against the field (2026-10-14)
+
+How the field measures KV quantization, and where our instrument stands in it. Read in full: RULER (2404.06654,
+all sections - the task catalogue we borrow from) and Yuan et al. 2407.01527 ("KV Cache Compression, But What
+Must We Give in Return", full text - the benchmark-of-benchmarks); our own `tools/needle_bench.py` (118 lines)
+audited line by line.
+
+**What the field measures with.** PPL on WikiText-2/C4 is a coarse screen everywhere, never the decision metric;
+every group pairs it with task metrics. KIVI: LM-Eval generation (CoQA/TruthfulQA/GSM8K) + LongBench + NIAH.
+WUSH-KV: WikiText-2 PPL + AIME/MATH/GPQA/LiveCodeBench with long traces + RULER NIAH/MRCR. OSCAR: 32K-generation
+evals on five reasoning/coding tasks + RULER-NIAH to 128K. Yuan et al.: LongBench (6 categories) + NIAH across
+10+ methods. The pattern: **PPL screens, NIAH stresses, long reasoning traces test compounding.** Our paired KL
+replaces their PPL with something strictly more sensitive; what we lack is their stress leg.
+
+**Teacher-forced vs free generation - the real divide.** Our harness scores P(x_t | correct prefix): no error
+compounding, perfect pairing, KL per position, cheap. The field (nearly) always free-generates: compounding
+included, which is exactly the failure mode that kills low-bit caches downstream (WUSH-KV Table 2: H-2bit
+generating 92K tokens of garbage until budget exhaustion - teacher-forced PPL shows high loss but not the
+behavioral collapse). Our answer-accuracy readout is a hybrid (greedy one-step argmax, still no compounding).
+Neither side subsumes the other: teacher-forced KL is the sensitive *instrument* (it found everything so far),
+free-generation NIAH is the *validity gate* (does retrieval survive at length?). The division of labor is
+deliberate: we rank close variants with the sensitive instrument and validate the winner at length - not the
+other way round.
+
+**Saturation policy (the H2O lesson).** Yuan et al. caught H2O at 100 % needle retrieval - an artifact of the
+7-digit passkey plus a no-eviction first token; at 64 digits it fell to 35 %, while KIVI-2bit held 91 %. A
+saturated test is not a result, it is an instruction to harden. This is our 4-bit answer accuracy (null):
+harden, don't conclude. Hardening knobs per RULER §5: more queries (1->8 costs ~15 points), hard distractor
+needles (~40 points at 256K), needle types (UUID hardest), lower alpha, longer context. Our cwe-4k/cwe-4k-flat
+are built on exactly this logic; the power rule (§8.6 of the workpackage) is its statistical form.
+
+**Prefill deviation, disclosed.** Yuan OB1: every tested KV method quantizes decode only - "keeping the prefill
+process uncompressed is crucial"; KIVI/FlexGen/H2O compress nothing during prefill. Our harness routes prefill
+through the quantized decode-attn-batch path, so prefill KV is quantized too. Internal comparisons stay valid
+(the same-run fp16 arm shares the treatment), but absolute gaps are not comparable to field numbers, and a
+shipped format would likely be decode-only. Stated here so it cannot surprise: a decode-only arm is filed work
+(needs engine prefill-path support for the format), not present work.
+
+**Discipline.** Pre-register the primary readout per question (whole-segment paired KL for ranking, McNemar
+answer accuracy for K-vs-V - the fwe->cwe switch was data-driven and is now locked, workpackage §8.7);
+RULER-scale n (500/length) is out of reach, pairing + power rule is the substitute; one model plus ikawrakow's
+"typical example" warning plus Yuan's alignment caveat means every bench README carries the scope stamp (model,
+pack, context, prefill treatment) and length-scaling (cwe-4k) is the generality proxy. Q2_0->Swift is already
+the weight-regime cross-check.
+
+**The added test: hardened needle_bench as validity gate.** `tools/needle_bench.py` exists and fits the missing
+leg: free generation through the server API, greedy, thinking off, exact-match grading, repo-text haystack,
+depth sweep 10/50/90, 32K/128K/262K, timing recorded. Audited gaps before it can gate WP-2: single shot per
+cell (no variance - needs --repeats with fresh words/positions), one needle type (RULER: add UUID-ish codes),
+no hard distractors (MK-analogue: distractor needles), single-query only (MV/MQ-analogue: incomplete-set
+failures invisible), never run per-KV-arm (needs server restarts per --kv arm - operational cost, noted).
+Specified in workpackage §8.8; implemented when the GPU is free. A teacher-forced NIAH inside the harness
+(needle logprob + KL at needle depths, paired, no server) stays the fallback if free generation proves too
+noisy per GPU-hour.
+
 ## 7. Sources
 
 Repository: `include/strata/kernels/kv_q4.hpp`, `bench/results/2026-09-27-kv-q4/README.md`, `docs/DETAILS.md:86`,
