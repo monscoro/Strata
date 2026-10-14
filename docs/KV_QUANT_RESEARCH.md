@@ -366,6 +366,61 @@ block). The end-to-end check against the fp16-KV arm at the same weights - PPL, 
 `docs/KV_QUANT_WORKPACKAGE.md` §7.4: in one 8K run (24,573 positions) it is enough to take `q4_0`'s **+0.23 %** PPL
 penalty down to **+0.02 %** at the same byte count, with mean KL 8.6 % and p99 KL 12.5 % lower.
 
+### 6.9 Deep-dive #4: WUSH-KV (ISTA, 2026-09-29) and where the fixed Hadamard ends
+
+The newest KV-specific work in the field is **WUSH-KV** (`arXiv:2609.38121`, Jiale Chen, Vage Egiazarian, Eldar
+Kurtić, Torsten Hoefler, Dan Alistarh; ISTA + ETH Zürich + Red Hat AI, submitted 2026-09-29). It shares authors with
+GPTQ, AQLM, QuaRot, HIGGS and QuEST, so it is also the group whose line this repository's format sits in.
+
+**What it does.** For **each KV head separately** it builds a `d x d` transform for K and another for V, from the Gram
+matrix of the cached tensor and the Hessian of the layer output with respect to that tensor's perturbation (for K the
+Hessian is the query Gram, for V the output projection). The V transform folds into `W_V`/`W_O` offline and costs
+nothing online; the K transform must stay online, because it acts after the headwise norm and RoPE - Appendix A shows
+that folding it requires the transform to commute with RoPE, which leaves only sign flips, and sign flips cannot
+redistribute coordinate magnitudes. Calibration is 128 FineWeb-Edu sequences (12 minutes, 39 GiB on one L40S),
+reused across bitwidths. The quantizer is **QuEST** (Panferov et al., 2025): per token, `2^b` levels spaced evenly
+between `+/- alpha_b` times the group RMS, with `alpha_b` the constant that minimises the MSE of that grid on a
+standard Gaussian, and clipping outside.
+
+**The numbers that matter to us.** The fixed-rotation arm and the calibrated arms are published on Qwen3-8B,
+WikiText-2, 2048-token sequences processed in 16-token chunks, fp16 cache = 9.72:
+
+| transform (the same QuEST quantizer throughout) | 4-bit | 3-bit | 2-bit |
+| --- | ---: | ---: | ---: |
+| identity | 11.36 | 15.29 | 38.08 |
+| random orthogonal | 9.77 | 10.18 | 14.22 |
+| **normalized Hadamard - fixed, data-oblivious rotation** | **9.77** | **10.06** | **258.29** |
+| OSCAR (calibrated, separate K/V transforms) | 9.77 | 10.19 | 13.74 |
+| WUSH-KV (calibrated, separate K/V transforms) | 9.73 | 9.82 | 10.51 |
+
+At 2 bits the Hadamard arm does not merely lose points, it stops the model: Qwen3-8B on AIME 2025 scores
+`0.0 +/- 0.0` with 98 % of runs hitting the 92,160-token budget and on LiveCodeBench v6 `1.0 +/- 0.3`; WUSH-KV scores
+46.7 and 35.2 there, the fp16 cache 67.8 and 47.8. Their reading is specific: key-vector spikes in the first attention
+module sit in essentially one coordinate, the Hadamard spreads them into near-equal magnitudes, and at 2 bits those
+land close to the midpoints between adjacent reconstruction levels. The controlled attention-stage ablation agrees -
+at 2 bits the module-output error (geometric mean over Qwen3-8B's 36 modules) is 0.325 for the Hadamard transform
+against 0.208 for WUSH-KV. RotateKV (IJCAI 2025) reports the same wall independently: it finds the QuaRot rotation
+degrading sharply at 2 bits and repairs it with channel reordering, a pre-RoPE grouped-head rotation and explicit
+attention-sink protection.
+
+**Three readings, all load-bearing for our claim.**
+
+1. **Our claim is a 4-bit claim, and 4 bits is where a fixed transform is safe.** On Qwen3-8B the Hadamard arm is
+   9.77 against 9.72 fp16, +0.5 %. Our own four-bit formats sit in the same place on a different model with a
+   different quantizer (Qwen3.8-Flash-Next, ggml per-32-block levels, 8K, 24,573 positions): `q4_0` +0.23 %,
+   `q4lm32s` +0.02 % (§6.8, `docs/KV_QUANT_WORKPACKAGE.md` §7.4). "Same quality, half the bytes" - 576 B/cell
+   against int8's 1056 (§1) - is inside the range this literature supports.
+2. **It does not extend to 2 or 3 bits.** At 3 bits the fixed Hadamard is already +3.5 % (10.06) while the calibrated
+   transforms are +1.0 % (9.82) and +4.8 % (10.19); at 2 bits it fails against +8.1 % (10.51) and +41 % (13.74). A
+   data-oblivious Strata format below 4 bits therefore needs a different lever - the K/V asymmetry already shipped as
+   `k8v4` (816 B/cell, §1), a full-precision window with sinks, or calibration - not more of the same rotation.
+3. **The per-block scalar quantizer is exhausted as a lever.** The parity table in §6.8 gives `q4_0` 2.938e-02,
+   Max-Lloyd levels at `max|x|/87` 2.740e-02, one least-squares scale pass 2.551e-02, and the *converged* best fit
+   for the same 16 levels 2.456e-02. That leaves 0.17 dB of headroom for any further work on level placement or scale
+   rule inside this container, and the end-to-end result is already +0.02 % PPL. What remains is structural (separate
+   K and V treatment, windows/sinks) or calibrated (SpinQuant, OSCAR, OptR, WUSH-KV) - which is the split §5.3
+   already makes.
+
 ## 7. Sources
 
 Repository: `include/strata/kernels/kv_q4.hpp`, `bench/results/2026-09-27-kv-q4/README.md`, `docs/DETAILS.md:86`,
@@ -398,3 +453,9 @@ Literature:
     `src/server/tq_server.c` — <https://github.com/quantumaikr/quant.cpp>
 22. quant.cpp variant history and QJL ablation — `bench/results/turboquant_reproduction.md`; honest 4-bit/window
     numbers — `README.md`; 3-bit/delta and the 2-bit wall — `docs/blog/breaking-3bit-barrier.md`
+23. WUSH-KV (ISTA; per-head calibrated K/V transforms; the fixed-Hadamard wall at 2 and 3 bits) —
+    <https://arxiv.org/abs/2609.38121>
+24. RotateKV (IJCAI 2025; outlier-aware pre-RoPE grouped-head rotation, attention-sink protection, 2-bit) —
+    <https://www.ijcai.org/proceedings/2025/0690>
+25. FlatQuant (ICML 2025; learned Kronecker affine transforms, applied to the KV cache at group size 128) —
+    <https://arxiv.org/abs/2410.09426>
