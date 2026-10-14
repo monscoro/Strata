@@ -6,12 +6,15 @@ Q8_0, on one fixed text set (data/quant_quality/v1: code, docs, English, other l
         tokenizes the set (each segment cut to --seg-tokens, default 1000) - the ids file is committed with the set
         (data/quant_quality/v1/set.ids.json), so a box without the tokenizer scores the same positions
     python tools/quant_quality.py run --config CFG.json --out RUN.tsv [--ids set.ids.json] [--env K=V ...] [--gpu-experts]
+                                       [--kv FMT]   FMT is the KV cache format (default fp16); run one arm per
+                                                    --kv to score KV quantization against fp16 K/V with the weights fixed
         one `strata --serve` engine (the config's exe and args), every segment one request whose tokens are all read
         through the decode windows (--short-read), where STRATA_LOGPOS / STRATA_LOGPOS_TOPK=64 write, per position,
         the log-probability of the text's next token and the 64 most likely tokens.  Fixed: the experts on the CPU
         (one VRAM slot, --expert-cache 1: the verify windows need a profile-filled tier, so the config must have
         --expert-profile; --gpu-experts: 1500 slots), no expert adaptation, no PCIe share, no suffix drafts, no prompt
-        cache, FP16 K/V, STRATA_ROUTE_TAIL_SKIP=0, STRATA_PREFILL_CPU_SHARE=0.  RUN.tsv + RUN.tsv.seg.json (line ranges).
+        cache, K/V as --kv says (fp16 by default; the config's own --kv/--kv-resident are dropped, so the flag decides),
+        STRATA_ROUTE_TAIL_SKIP=0, STRATA_PREFILL_CPU_SHARE=0.  RUN.tsv + RUN.tsv.seg.json (line ranges).
     python tools/quant_quality.py compare REF.tsv RUN.tsv [...]   (REF = the Q8_0 run)
         per segment and overall: top-1 agreement (same argmax), mean / p99 KL(REF || RUN) over REF's 64 most likely
         tokens (both renormalized to that set; a token RUN does not list gets RUN's 64th log-probability), and the
@@ -36,9 +39,10 @@ SET_DIR = HERE.parent / "data" / "quant_quality" / "v1"
 SEGMENTS = ["code", "docs", "english", "multilingual", "agent"]
 TOPK = 64
 FIXED = ["--expert-cache", "1", "--adapt-every", "100000", "--pcie-frac", "0", "--suffix-draft", "0",
-         "--prompt-cache", "0", "--kv", "fp16"]
+         "--prompt-cache", "0"]
 FIXED_ENV = {"STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_PREFILL_CPU_SHARE": "0", "STRATA_PCIE_FRAC_DEFAULT": "old"}
-# config args the yardstick replaces (value-taking) or drops (flags)
+# config args the yardstick replaces (value-taking) or drops (flags).  --kv is dropped here and set by the `--kv`
+# flag instead, so the same config scores every KV format against the fp16 default.
 DROP_VALUE = {"--expert-cache", "--adapt-every", "--pcie-frac", "--suffix-draft", "--prompt-cache", "--max-context",
               "--prefill", "--prompt-cache-every", "--short-read", "--conversation-cache-mib", "--eos-ids",
               "--kv", "--kv-resident"}   # (--resident-budget-gib stays: a PC whose RAM does not hold the experts)
@@ -81,7 +85,7 @@ def mem_available_gb() -> float:
     return float("inf")
 
 
-def engine_args(cfg: dict, gpu_experts, seg_tokens: int) -> list[str]:
+def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16") -> list[str]:
     base, out, i = list(cfg["args"]), [], 0
     while i < len(base):
         x = base[i]
@@ -96,7 +100,7 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int) -> list[str]:
     fixed = list(FIXED)
     if gpu_experts:
         fixed[1] = gpu_experts if isinstance(gpu_experts, str) else "1500"
-    return [cfg["exe"], "--serve", *out, *fixed, "--max-context", str(seg_tokens + 512),
+    return [cfg["exe"], "--serve", *out, *fixed, "--kv", kv, "--max-context", str(seg_tokens + 512),
             "--short-read", str(seg_tokens + 64), "--prefill", "512"]
 
 
@@ -119,7 +123,7 @@ def cmd_run(a) -> int:
     env["STRATA_LOGPOS_TOPK"] = str(TOPK)
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
-    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"])
+    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv)
     if a.wrap:
         args = a.wrap.split() + args
     errf = open(str(out) + ".stderr.txt", "w")
@@ -194,7 +198,7 @@ def cmd_prompt(a) -> int:
     env["STRATA_DUMP_FIRST_LOGITS"] = str(out / "first")
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
-    args = engine_args(cfg, a.gpu_experts, max(PROMPT_LENS))
+    args = engine_args(cfg, a.gpu_experts, max(PROMPT_LENS), a.kv)
     k = args.index("--short-read")
     del args[k:k + 2]                      # the default (64): these prompts take the batched prompt path
     k = args.index("--prefill")
@@ -355,6 +359,8 @@ def main() -> int:
                    help="--expert-cache 1500 (or the N given, e.g. auto) instead of one slot (the experts on the GPU kernels)")
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap", help="a command prefix for the engine, e.g. 'systemd-run --user --scope -p MemoryMax=200G'")
+    p.add_argument("--kv", default="fp16", metavar="FMT",
+                   help="the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | k8v4")
     p = sub.add_parser("prompt", help="the batched prompt path's next-token logits after 20 prompts (a directory)")
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
@@ -363,6 +369,8 @@ def main() -> int:
     p.add_argument("--gpu-experts", action="store_true")
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap")
+    p.add_argument("--kv", default="fp16", metavar="FMT",
+                   help="the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | k8v4")
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
