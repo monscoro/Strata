@@ -498,8 +498,23 @@ effect*: no single readout crosses the conventional threshold at 8 segments, tho
 **This is Q2_0, and Q2_0 is the damped case.** Q2_0's own weight error is the largest in the line (+10.4 % PPL
 against Q8_0, §6.7) and it lays itself over every KV degradation, so these gaps are a *lower bound*. The
 K-vs-V decision is therefore repeated on **Swift IQ3_XXS**, which is the measurement basis from here on; the Q2_0
-numbers stay as the bound and as proof that the probe's wiring is self-diagnosing. Table and full readouts:
+numbers stay as the bound and as proof that the probe's wiring self-diagnoses. Table and full readouts:
 `bench/results/2026-10-14-kv-3bit-probe/`.
+
+**The Swift repeat (2026-10-14, same day).** The falsification rule from §6.12/workpackage §9 fired on schedule.
+Direct byte-exact contrast q4lm8k-vs-q4lm8v on Swift: **+0.00011, t +0.05, 3/8 segments**; answer-region t +0.74,
+4/8; McNemar over all pairs p = 1.000 (largest discordance 3:2) - no K-split anywhere, where Q2_0 read t +0.60
+with 0:5 discordant and a categorical accuracy split. The Q2_0 direction does not survive the regime change,
+and the WP-2 asymmetric-layout shape cannot rest on it anymore. Two things survive intact: the instrument
+(fp16-vs-int8 pairs to t -13.34 on Swift against -4.43 on Q2_0 - segment noise collapses with the weight floor,
+sd 0.00107 vs 0.00658 on the same contrast), and every boundary except K-vs-V (int8/4-bit t -4.84,
+4-bit/symmetric-3-bit t -5.43 at 0/8, 4-bit/split t -2.56/-3.60; symmetric 3-bit top-1 -0.38 pp). The Swift null
+is consistent with FlatQuant Table 11, which is tied at 7 total bits (K4V3 vs K3V4 nearly tied) and separates
+only at 6 (K4V2 vs K2V4 decisively): at 7 total bits the split does not matter on either model. Whether it
+matters at 6 on ours is an open probe question, not measured here. Treatment asymmetry (scale rules) is a
+different mechanism and untouched. PPL blindness, fourth exhibit: q4lm8k reads +0.13 % (best of all 4/3-bit
+arms, better than q4lm32's +0.43 %) at 1.52x its KL. Full tables:
+`bench/results/2026-10-14-kv-3bit-probe-swift/`.
 
 ### 6.12 Critical review (2026-10-14): what the literature says about our plan
 

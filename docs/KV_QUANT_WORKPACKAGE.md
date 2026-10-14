@@ -554,6 +554,11 @@ Die „K4/V3-Klasse" in WP-2 ist keine runde Zahl: FlatQuant-Tab. 11 misst K4V3 
 QA (nahezu verlustfrei) — die Referenzform fürs Layout, mit Undamped-Caveat (dort fp16-Rest, Head-dim 128,
 dicht, PPL/QA statt Retrieval).
 
+**Nachtrag Swift (2026-10-14, selber Tag).** Die Falsifikation ist eingelöst, wie §9 festhält: Q2_0-Richtung tot
+(t +0,05, McNemar überall p=1,000), Instrument intakt (t −13,34), WP-2-Form ab sofort ohne Sonden-Begründung.
+WP-1 läuft unverändert (Behandlung + Bit-Referenz + Ablation) — nur die *Deutung* des Bit-Arms hat sich
+geändert: Er ist Referenz, keine Richtung.
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist
@@ -640,6 +645,14 @@ Für jedes WP:
   IQ3_XXS wäre das ein abgeleitetes Pack (dicht-transformierte Projektionen in 3-Bit-Gewichte requantisiert)
   oder eine Online-V-Transformation (dann ist „gratis" weg). Deshalb: nur K wird kalibriert, V bleibt fest.
   (§10)
+- **Falsifikation eingelöst (Swift, 2026-10-14).** Die Q2_0-Richtung (K-will-Bits, t +0,60, McNemar 0:5) hat den
+  Regimewechsel nicht überlebt: direkter Kontrast auf Swift +0,00011, t +0,05, 3/8; McNemar überall p=1,000
+  (`bench/results/2026-10-14-kv-3bit-probe-swift/`). Folge: Die WP-2-Form (K4/V3-Klasse) ruht nicht mehr auf der
+  Sonden-Richtung, sondern nur noch auf FlatQuant-Tab. 11 (fremde Evidenz, dort bei 7 Bit ebenfalls Gleichstand)
+  — plus der offenen 6-Bit-Split-Sondenfrage (dort trennt die Literatur: K4V2 vs K2V4). Unberührt: Behandlung
+  (Skalenregeln, WP-1 Arm 1 — anderer Mechanismus), Clipped-Scale, Fenster, kalibriert-nur-K als Vergleich.
+  Intakt auch das Instrument (fp16-int8 t −13,34 auf Swift gegen −4,43 auf Q2_0). So arbeitet die Regel: Richtung
+  verworfen, Plan angepasst, Messung behalten.
 - **(0,0)-Fenster sind tot.** OSCAR-Tab. 5: INT2 mit Rotation+Clip, aber ohne Sink/Recent = 0,00 überall; Knie
   bei (64,256). Jedes Sub-4-Bit-Layout ohne eigenen Fenster-Arm ist blind — WP-2a misst ihn zuerst.
 - **Kalibrierung ist leicht, aber eigene Arbeit.** OSCAR: ein Pass, ~8k Tokens, domänenrobust (Tab. 7) — weit
