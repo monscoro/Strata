@@ -436,9 +436,41 @@ Zwei Befunde daraus:
 verschiedene** Ausgaben — mit dem erwarteten Muster: `q4lm8` und `q4lm8k` teilen sich das 8-Pegel-K (gleiche
 Scores, gleiche erste Tokens), `q4lm8v` teilt sich das 16-Pegel-K mit `q4lm32`.
 
-**Der Modelllauf** (Entscheidungstest §6.10 des Surveys) steht in `data/quant_quality/cwe-2k` mit frischer
-fp16-Referenz, Ankern `int8`/`q4lm32` und den drei Sonden-Armen. Er ist selbst-diagnostizierend: der `q4lm32`-Arm
-muß die KL aus dem schon gemessenen Lauf reproduzieren, sonst ist die Tabellenverdrahtung falsch.
+**Der Modelllauf** (Entscheidungstest §6.10 des Surveys) ist gelaufen: `data/quant_quality/cwe-2k`, 8 Segmente,
+fp16-Referenz, Anker `int8`/`q4lm32` und die drei Sonden-Arme, Q2_0-Gewichte. Er ist selbst-diagnostizierend, und
+er bestätigt sich: `q4lm32` reproduziert **bit-genau** die KL 0,02022 (PPL 3,09327), `int8` die 0,01033, die
+fp16-Referenz die 3,06695 — die Tabellenverdrahtung stimmt also, und cwe-2k reproduziert über Sitzungen auf 4–5
+Stellen (anders als die 8K-Ganzmodell-Menge, die zwischen zwei Läufen um 0,03 % abwich).
+
+Ganzsegmentige KL (16.351 Positionen) und gepaart über die 8 Segmente:
+
+| Arm | K/V-Pegel | mean KL | gegen `q4lm32` | top-1 | PPL vs fp16 | gepaart t (vs `q4lm32`) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `int8` | 16/16 (2 B) | 0,01033 | 0,51× | 99,16 % | +0,11 % | −4,19 |
+| `q4lm32` | 16/16 | 0,02022 | 1,00× | 98,62 % | +0,86 % | 0 |
+| **`q4lm8v`** | **16/8** | **0,02619** | **1,30×** | 98,52 % | **+0,37 %** | **−2,39** |
+| `q4lm8k` | 8/16 | 0,02748 | 1,36× | 98,48 % | +0,30 % | −3,25 |
+| `q4lm8` | 8/8 | 0,03328 | 1,65× | 98,23 % | +0,81 % | −5,04 |
+
+Die Kernzeile ist `q4lm8k` gegen `q4lm8v` (byte-exakt gleich, gleiche mittlere Breite 3,5 Bit):
+**+0,00129 KL, t +0,60, 4/8 Segmente gegenläufig** — der direkte K-vs-V-Vergleich ist mit *diesem* Kriterium allein
+**nicht aufgelöst**. Die Richtung zeigt aber in allen drei Auslesungen gleichsinnig, und die Antwortregion trennt
+**kategorial entlang K**: alle 16-Pegel-K-Arme lesen 90,98 %, alle 8-Pegel-K-Arme 89,10 % — egal was V tut. Exakter
+McNemar (`areport --paired`, dieselben Zeilen): `q4lm32` gegen `q4lm8v` (V 16→8) **2:2, p 1,000** (die Aufgabe
+bleibt unberührt); `q4lm8k` gegen `q4lm8v` **0:5, p 0,062** (zweiseitig; einseitig 0,031). Und PPL sieht das
+**gar nicht**: `q4lm8` liest +0,81 % gegen `q4lm32` +0,86 % — *besser* —, während seine KL 65 % höher liegt.
+
+**Befund:** K will die Bits, nicht V — die Richtung von arXiv 2502.15075 und des schon ausgelieferten `k8v4`
+(#120), und **gegen** die Schlagzeile von #2318. Das ist eine *Richtung, kein etablierter Effekt*: kein Einzel-
+kriterium reißt bei 8 Segmenten die konventionelle Schwelle. Vollständige Tabellen, die vierfache Übereinstimmung
+der drei Auslesungen und die Reproduktion: `bench/results/2026-10-14-kv-3bit-probe/`.
+
+> **Meßbasis ab 2026-10-14: Swift IQ3_XXS, nicht Q2_0.** Alles oben Gemessene ist Q2_0, und Q2_0 ist der
+> **gedämpfteste** Gewichts-Regime (+10,4 % PPL gegen Q8_0, §6.7): sein Gewichtsfehler legt sich auf jede
+> KV-Verschlechterung. Der Vergleich mit Q2_0 behält seinen Wert als *untere Schranke* und als Beleg, daß die
+> Sonde selbst-diagnostizierend funktioniert — die **Entscheidung K-vs-V wird aber auf Swift IQ3_XXS wiederholt**,
+> weil nur dort der KV-Fehler sichtbar ist. Alles Ab hier Neue wird auf Swift gemessen; Q2_0-Zahlen werden als
+> solche gekennzeichnet und nicht mehr als Grundlage benutzt.
 
 **Backends.** CUDA und HIP (dieselbe `.cu`), HIP gebaut und getestet. SYCL ist **bewußt nicht angefaßt**: der
 SYCL-Port hat einen eigenen Schreiber (`kQ4lMapDev`) und bräuchte eine eigene Dispatch-Verzweigung, und seine
@@ -447,6 +479,11 @@ additiven Enum-Werte in `kv_q4.hpp` stehen hinter dem `__CUDACC__`/`__HIPCC__`-G
 Metal hat nur einen KV-Stub.
 
 ## 8. Messplan und Gate
+
+**Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist
+das gedämpfteste Regime, sein Gewichtsfehler maskiert den KV-Fehler. Q2_0-Messungen bleiben als untere Schranke
+zulässig und werden als solche gekennzeichnet; jede **Entscheidung** (K-vs-V-Zuteilung, 3-vs-4-Bit, Transform-Slot)
+fällt auf Swift. Das gilt für alle Punkte unten.
 
 Für jedes WP:
 
@@ -486,10 +523,13 @@ Für jedes WP:
   Formatlisten von Suffix-Reuse; ein Block-Mover, der nur Bytes kopiert, behandelt sie wie `kKvQ4`
   (`docs/DETAILS.md:1008`, PR #2351).
 - **Gate-Modelle.** Die genaue Vierer-Liste des Identitäts-Gates ist hier noch offen — vor WP-0 festzurren.
-- **3-Bit-Sonde (WP-2a) — offen.** Der Modelllauf entscheidet, ob `q4lm8` überhaupt lebensfähig ist und welche
-  Seite die Bits will (§5.4). Die Sonde verbraucht **keine** Bytes — 576 B/Zelle wie `q4_0` — also ist selbst ein
-  gutes Ergebnis **kein** Halbierungs-Beleg, sondern nur die Lizenz, das echte Layout in WP-2 zu bauen. Offen bleibt
-  darin, ob 8 Pegel genug sind oder ob der Transform-Slot die 3-Bit-Stufe erst trägt.
+- **3-Bit-Sonde (WP-2a) — Q2_0-Richtung liegt vor, Swift-Entscheidung offen.** Der Q2_0-Lauf (§7.5) zeigt die
+  Richtung **K will die Bits** (Antwortregion kategorial entlang K, McNemar 0:5 gegen den V-schweren Arm) und daß
+  symmetrisch 3 Bit zu teuer ist (`q4lm8` 1,65× KL, t −5,04). Kein Einzelkriterium reißt bei 8 Segmenten die
+  Schwelle, und Q2_0 ist das gedämpfteste Gewichts-Regime — deshalb wird der Lauf auf **Swift IQ3_XXS**
+  wiederholt, wo der KV-Fehler sichtbar wird. Die Sonde verbraucht **keine** Bytes (576 B/Zelle wie `q4_0`), also
+  ist selbst ein gutes Ergebnis **kein** Halbierungs-Beleg, sondern nur die Lizenz, das echte Layout in WP-2 zu
+  bauen. Offen bleibt, ob 8 Pegel genug sind oder ob der Transform-Slot die 3-Bit-Stufe erst trägt.
 - **Identitäts-Gate und Speed-A/B für WP-1a stehen noch aus** (§8.1/§8.3). Der A/B in §7.4 ist ein
   *Qualitäts*-Vergleich gegen den fp16-KV-Arm; „byte-identisch mit dem neuen Format aus" und der Decode-Durchsatz
   sind noch nicht gemessen. Vor einem PR beides nachholen, dann `kQ4lMap` zuerst in Shared Memory.

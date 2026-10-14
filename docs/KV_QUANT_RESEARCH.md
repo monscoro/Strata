@@ -479,8 +479,27 @@ the attention scores multiplicatively (a *relative* error after the softmax), a 
 distortion table, and it is the reason the probe was built before the layout.
 
 The 3-Bit-Sonde is throwaway code: it lives only on `KV_QUANT_research`, is marked as such in the header, and is
-dropped before the WP-1/WP-2 PR. Its design and model-free numbers are in `docs/KV_QUANT_WORKPACKAGE.md` §5.4/§7.5;
-the model run against `cwe-2k` is the decision.
+dropped before the WP-1/WP-2 PR. Its design and model-free numbers are in `docs/KV_QUANT_WORKPACKAGE.md` §5.4/§7.5.
+
+**The model run (Q2_0, cwe-2k, 2026-10-14).** The run reproduces its own anchors exactly (`q4lm32` KL 0.02022,
+`int8` 0.01033 as in §6.10), and it points one way. Paired whole-segment KL against `q4lm32`: K 16 -> 8 levels costs
++0.00726 (`t -3.25`, 0/8), V 16 -> 8 costs +0.00597 (`t -2.39`, 1/8) - so cutting K costs about 1.2x as much. The
+direct byte-exact comparison `q4lm8k` vs `q4lm8v` is **not resolved** by that readout alone (+0.00129, `t +0.60`,
+4/8). The **answer region separates categorically and only along K**: every 16-level-K arm reads 90.98 %, every
+8-level-K arm 89.10 %, whatever V does; exact McNemar gives `q4lm32` vs `q4lm8v` (V 16 -> 8) 2:2, `p 1.000`, and
+`q4lm8k` vs `q4lm8v` 0:5, `p 0.062`. And PPL is blind to all of it (`q4lm8` reads +0.81 % against `q4lm32`'s
++0.86 % while its KL is 65 % higher). Symmetric 3-bit (`q4lm8`) is decisively too expensive: +0.01306 KL,
+`t -5.04`, 0/8, 0.39 pp of top-1.
+
+So the direction is **K wants the bits, not V** - the direction of `arXiv:2502.15075` and of the already-shipped
+`k8v4` (PR #120), and the opposite of PR #2318's headline. It is stated as a *direction, not an established
+effect*: no single readout crosses the conventional threshold at 8 segments, though all three agree in sign.
+
+**This is Q2_0, and Q2_0 is the damped case.** Q2_0's own weight error is the largest in the line (+10.4 % PPL
+against Q8_0, §6.7) and it lays itself over every KV degradation, so these gaps are a *lower bound*. The
+K-vs-V decision is therefore repeated on **Swift IQ3_XXS**, which is the measurement basis from here on; the Q2_0
+numbers stay as the bound and as proof that the probe's wiring is self-diagnosing. Table and full readouts:
+`bench/results/2026-10-14-kv-3bit-probe/`.
 
 ## 7. Sources
 
