@@ -555,6 +555,26 @@ def answer_region(run: dict, ref: dict, answer_at: dict) -> dict:
     return tot
 
 
+def answer_rows(run: dict, ref: dict, at: dict) -> dict:
+    """The answer region in per-row form, `{(segment, pos): hit}`, for a paired McNemar test."""
+    out = {}
+    for name, rr in run.items():
+        ra, a = ref.get(name, {}), at.get(name, 0)
+        for q in sorted(rr):
+            if q + 1 >= a and q in ra:
+                out[(name, q)] = bool(rr[q][3])
+    return out
+
+
+def binom_two_sided(b: int, c: int) -> float:
+    """Exact two-sided McNemar p: b discordant pairs one way, c the other, under p = 1/2."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    return min(1.0, 2 * sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n)
+
+
 def cmd_areport(a) -> int:
     st = json.load(open(a.ids))
     at = {s["name"]: s.get("answer_at", 0) for s in st["segments"]}
@@ -568,6 +588,17 @@ def cmd_areport(a) -> int:
         n = max(v["positions"], 1)
         print(f"{pathlib.Path(path).name[:34]:34s} {v['positions']:7d} {100 * v['hit'] / n:7.2f}% "
               f"{100 * v['agree'] / n:8.2f}% {v['kl'] / n:8.5f}")
+    if a.paired:
+        rows = {pathlib.Path(p).name[:34]: answer_rows(read_run(p), ref, at) for p in [a.ref, *a.runs]}
+        names = list(rows)
+        print("\npaired answer accuracy (exact McNemar over the same rows; b = only the first arm right, "
+              "c = only the second):")
+        for i, na in enumerate(names):
+            for nb in names[i + 1:]:
+                keys = sorted(set(rows[na]) & set(rows[nb]))
+                b = sum(1 for q in keys if rows[nb][q] and not rows[na][q])
+                c = sum(1 for q in keys if rows[na][q] and not rows[nb][q])
+                print(f"  {na:34s} vs {nb:34s} b {b:3d} c {c:3d}  p {binom_two_sided(b, c):.3f}")
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps(res, indent=1))
     return 0
@@ -633,6 +664,9 @@ def main() -> int:
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
     p.add_argument("--ids", required=True)
+    p.add_argument("--paired", action="store_true",
+                   help=("also test the answer *accuracy* pairwise with exact McNemar, which the aggregate hit "
+                         "counts cannot: two arms can differ by a few rows while both beating the reference"))
     p.add_argument("--json")
     p = sub.add_parser("pcompare", help="full-vocabulary KL and top-1 of `prompt` directories against a reference one")
     p.add_argument("ref")
