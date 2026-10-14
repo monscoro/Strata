@@ -5,6 +5,8 @@ Everything under "the field" and "open pull requests" is a literature and PR rev
 papers' numbers were measured on other models and other metrics and are **not** directly comparable to ours.
 Branch: `KV_QUANT_research`.
 
+The implementation plan derived from this note is [KV_QUANT_WORKPACKAGE.md](KV_QUANT_WORKPACKAGE.md).
+
 ---
 
 ## 1. What Strata does today (`--kv`)
