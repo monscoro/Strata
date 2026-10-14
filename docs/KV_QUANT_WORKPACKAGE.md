@@ -140,6 +140,38 @@ Ansatz von **#2318** (dort `--kv-window`/`--kv-sink` für `q2k`) — vor Baubegi
 Default aus. Beachte: quant.cpp fährt die Rotation mit **konstantem** Seed, ist also selbst kein echtes SRHT
 (§6.4 des Surveys).
 
+### 5.4 Die 3-Bit-Sonde (WP-2a) — erst messen, dann bauen
+
+**Die Frage.** Der Survey (§6.9) hat den Transform-Hebel bei 4 Bit erledigt: WUSH-KVs kalibrierte Transformation
+bringt dort 9,77 → 9,73 gegen fp16 9,72, während sie bei 3 Bit 10,06 → 9,82 und bei 2 Bit 258,29 → 10,51 holt.
+Der Sprung muss also aus der **Bit-Zuteilung** kommen — und die Literatur widerspricht sich genau darin: llama.cpp
+**#2318** mißt K2c+V4 **besser** als K4+V2c, arXiv **2502.15075** hat K4V2 bei 98,3 % der K4V4-Genauigkeit. Beide
+können für ihre Cache-Geometrie recht haben; **welche für unseren 256er-Head mit FWHT-256 gilt, sagt keine von
+beiden.**
+
+**Die Sonde.** Statt sofort ein 3-Bit-Layout zu bauen, wird die 3-Bit-**Codebook**-Frage in den **unveränderten
+4-Bit-Bytes** gestellt: derselbe 18-B-Block, dieselbe Rotation, dieselben Leser, nur die 16-Level-Tabelle wird
+durch Max-Lloyds 8-Level-Tabelle für N(0,1) ersetzt — `{±69, ±43, ±24, ±8}`, `d = max|x|/69`, abgerundet nach
+derselben ×32-Regel wie `kQ4lMap`. Die Zahl 576 B/Zelle bleibt damit **gleich**: die Sonde mißt **Qualität**, nicht
+Bytes. Das Byte-Layout kommt erst in WP-2.
+
+Drei Modi, damit die K-vs-V-Frage bei **gleicher mittlerer Breite** gestellt wird:
+
+| `--kv` | K-Pegel | V-Pegel | Bits/Flag | was sie beantwortet |
+| --- | ---: | ---: | ---: | --- |
+| `q4lm32` | 16 | 16 | 4,0 | Referenz (schon gemessen) |
+| `q4lm8` | 8 | 8 | 3,0 | wie weit trägt 3 Bit überhaupt |
+| `q4lm8k` | 8 | 16 | 3,5 | K-seitig gespart |
+| `q4lm8v` | 16 | 8 | 3,5 | V-seitig gespart |
+
+**Warum das die richtige Frage-Reihenfolge ist.** `q4lm8` sagt, ob 3 Bit auf diesem Modell überhaupt lebensfähig
+sind; `q4lm8k` gegen `q4lm8v` ist **byte-exakt gleich** und beantwortet #2318-vs-2502.15075 direkt an unserem
+Modell, ohne dass ein Byte-Layout-Entwurf vorher festgelegt werden müßte. Erst wenn die Zuteilung steht, bekommt das
+Layout in WP-2 seinen Transform-Slot (festes Hadamard als datenblinder Default, kalibrierte Transformation opt-in).
+
+**Die Sonde ist Wegwerf-Code.** Sie ist als solcher gekennzeichnet, lebt nur auf `KV_QUANT_research` und geht
+**nicht** in den WP-1/WP-2-PR.
+
 ## 6. Berührte Dateien und Backends (Landkarte am Beispiel `q4_0`)
 
 - Kern/API: `include/strata/kernels/kv_q4.hpp`, `include/strata/kernels/kv_stream.hpp` (Enum),
@@ -158,17 +190,25 @@ Default aus. Beachte: quant.cpp fährt die Rotation mit **konstantem** Seed, ist
 Regel aus [AGENTS.md](../AGENTS.md): **jede** von einer Datei berührte Backend-Art (CUDA, HIP, SYCL) bauen, bevor
 Review.
 
+**WP-2a-Sonde (Wegwerf, §5.4/§7.5)** berührt dieselbe Landkarte, aber **nur CUDA/HIP**: die SYCL-Schreibseite
+bleibt absichtlich unangefaßt, und die SYCL-`--kv`-Prüfung lehnt die drei neuen Flags mit Exit 2 ab — sie kann
+also nicht stillschweigend falsch gelesen werden. Damit ist der Zweck der Regel (kein Backend unbemerkt brechen)
+erfüllt, ohne einen hier nicht baubaren SYCL-Build zu behaupten.
+
 ## 7. Arbeitspakete
 
 | WP | Inhalt | Deliverable | Aufwand |
 | --- | --- | --- | --- |
 | **WP-0** | KV-Qualitäts-Harness: **steht** — `tools/quant_quality.py --kv FMT` (§7.1). Offen: Baselines fp16/int8/q4_0/k8v4 bei 1K/8K/32K auf {Q2_0, IQ3_S} fixieren (Top-1, KL, PPL + `needle_bench.py` + Speed-A/B) | `bench/results/<datum>-kv-baseline/` | S |
 | **WP-1** | `--kv q4lm32` / `--kv q4lm32s` — **Format steht, modellfrei gemessen** (§5.1-Nachtrag, §7.3); CUDA/HIP gebaut, SYCL gespiegelt (hier nicht baubar); Parity-Tests grün. Offen: Speed-A/B (`kQ4lMap` erst in Shared Memory) | Format + Tests + Meßbericht | M |
-| **WP-2** | `--kv-window` / `--kv-sink` auf `q4_0` (und `k8v4`), mit #2318 abgestimmt | Format + Tests + Messbericht | M-L |
+| **WP-2a** | 3-Bit-**Sonde** (§5.4, §7.5): 8-Level-Tabelle in den **unveränderten** 18-B-Blöcken, K-vs-V am Modell entschieden. **Gebaut, modellfrei gemessen, Modelllauf läuft** | Sonden-Code + Meßbericht | S |
+| **WP-2** | **echtes** 3-Bit-Layout mit Transform-Slot: festes Hadamard als datenblinder Default, kalibrierte per-Head-Transformation opt-in. **Bau erst nach WP-2a** | Format + Tests + Meßbericht | L |
 | **WP-3** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
 | **WP-4** (später) | Delta-Modus für 3-bit; Per-Layer-Bit-Zuteilung nach Kurtosis | — | L |
+| **WP-5** (zurückgestellt) | `--kv-window` / `--kv-sink` auf `q4_0` (und `k8v4`), mit #2318 abgestimmt. Zurückgestellt, weil die 3-Bit-Frage (WP-2a) vorgezogen wurde | Format + Tests + Messbericht | M-L |
 
-Reihenfolge: **WP-0 → WP-1 → (WP-2 ‖ WP-3) → WP-4.** Jedes WP ist **ein** PR (AGENTS.md: eine Änderung je PR).
+Reihenfolge: **WP-0 → WP-1 → WP-2a → WP-2 → (WP-3 ‖ WP-5) → WP-4.** Jedes WP ist **ein** PR (AGENTS.md: eine
+Änderung je PR). WP-2a ist die Ausnahme: es ist ausdrücklich Sonden-Code und geht in **keinen** PR.
 
 ### 7.1 WP-0: der Harness steht, der erste Meßpunkt liegt vor
 
@@ -360,6 +400,52 @@ isoliert. Deshalb stehen **alle** Deltas oben **innerhalb eines Laufs**. Der vol
 
 **Offen vor einem PR:** das Identitäts-Gate (§8.1) und der Speed-A/B (§8.3) — siehe §9.
 
+### 7.5 WP-2a: die 3-Bit-Sonde — gebaut und modellfrei gemessen
+
+Design: §5.4. Gebaut sind drei neue `Q4Mode`-Werte (`kLloyd8`, `kLloyd8K`, `kLloyd8V`), die 8-Pegel-Tabelle in
+`kv_q4.hpp`, ein Template-Parameter `N` am Gruppenschreiber (`q4l_group<FIT, N>`, N ∈ {8, 16}), eine
+**Laufzeit-Tabellenwahl je Tensor** in den fusionierten Lesern (`q4l_map_k(v)` aus `pools.q4_mode`) und die drei
+neuen `--kv`-Strings. Die 16-Pegel-Pfade sind dabei **unverändert**: die Paritätssuite läuft 7/7 mit exakt den
+Zahlen aus §7.3 (0,30 dB / 0,61 dB / 78,8 %).
+
+**Der modellfreie Meßpunkt** (`kv_q4_parity.cpp`, Test 7; synthetisch N(0,1), dieselben 498.688 rotierten Werte,
+gfx1200). Neben der bitweisen Gleichheit aller drei Arme gegen die Host-Referenz und dem Nachweis, daß der Leser
+**je Tensor** die richtige Tabelle zieht:
+
+| Arm | K/V-Pegel | MSE | gegen `q4lm32` (2,740e−02) |
+| --- | --- | ---: | ---: |
+| `q4lm32` | 16/16 | 2,740e−02 | 0 dB |
+| `q4lm8k` | 8/16 | 7,672e−02 | −4,47 dB |
+| `q4lm8v` | 16/8 | 7,662e−02 | −4,46 dB |
+| `q4lm8` | 8/8 | 1,259e−01 | −6,62 dB |
+
+Zwei Befunde daraus:
+
+- Der 3-Bit-Sprung kostet am Codebook **6,6 dB** MSE — mehr als die 4,09-fache (≈ 6,1 dB) Max-Lloyd-Theorie für
+  3-vs-4-Bit, weil die `max|x|`-Skala bei weniger Pegeln relativ teurer wird. `q4lm8` wird also **nicht** gratis
+  sein; die Frage ist, ob das Modell es billiger sieht als der MSE.
+- **Am Quantisierer sind K8 und V8 ununterscheidbar** (7,672e−02 gegen 7,662e−02, 0,1 %). Beide Tensoren stellen
+  die Hälfte der Werte und benutzen dieselbe Tabelle, also ist ihr MSE-Beitrag symmetrisch, und die Differenz
+  kann nur aus den leicht verschiedenen Statistiken der beiden gezogenen Tensoren kommen. **Die Entscheidung
+  #2318-vs-2502.15075 kann der MSE also nicht treffen** — K geht multiplikativ in die Attention-Scores ein (nach
+  Softmax ein *relativer* Fehler), V linear in den Ausgabewert (ein *additiver* Fehler je Position). Nur das
+  Modell kennt den Wechselkurs. Genau dafür läuft der Modelllauf.
+
+**Engine-Smoke-Test** (`--tokens 9707,1879,264,1229,13`, `--max-new 6 --greedy`, Q2_0/HIP): alle fünf Arme
+(`int8`, `q4lm32`, `q4lm8`, `q4lm8k`, `q4lm8v`) laufen mit Exit 0 durch, und die vier q4-Arme liefern **vier
+verschiedene** Ausgaben — mit dem erwarteten Muster: `q4lm8` und `q4lm8k` teilen sich das 8-Pegel-K (gleiche
+Scores, gleiche erste Tokens), `q4lm8v` teilt sich das 16-Pegel-K mit `q4lm32`.
+
+**Der Modelllauf** (Entscheidungstest §6.10 des Surveys) steht in `data/quant_quality/cwe-2k` mit frischer
+fp16-Referenz, Ankern `int8`/`q4lm32` und den drei Sonden-Armen. Er ist selbst-diagnostizierend: der `q4lm32`-Arm
+muß die KL aus dem schon gemessenen Lauf reproduzieren, sonst ist die Tabellenverdrahtung falsch.
+
+**Backends.** CUDA und HIP (dieselbe `.cu`), HIP gebaut und getestet. SYCL ist **bewußt nicht angefaßt**: der
+SYCL-Port hat einen eigenen Schreiber (`kQ4lMapDev`) und bräuchte eine eigene Dispatch-Verzweigung, und seine
+`--kv`-Prüfung lehnt die neuen Flags mit Exit 2 ab — kein Backend kann sie also stillschweigend fehldeuten. Die
+additiven Enum-Werte in `kv_q4.hpp` stehen hinter dem `__CUDACC__`/`__HIPCC__`-Guard und ändern SYCL nicht.
+Metal hat nur einen KV-Stub.
+
 ## 8. Messplan und Gate
 
 Für jedes WP:
@@ -400,6 +486,10 @@ Für jedes WP:
   Formatlisten von Suffix-Reuse; ein Block-Mover, der nur Bytes kopiert, behandelt sie wie `kKvQ4`
   (`docs/DETAILS.md:1008`, PR #2351).
 - **Gate-Modelle.** Die genaue Vierer-Liste des Identitäts-Gates ist hier noch offen — vor WP-0 festzurren.
+- **3-Bit-Sonde (WP-2a) — offen.** Der Modelllauf entscheidet, ob `q4lm8` überhaupt lebensfähig ist und welche
+  Seite die Bits will (§5.4). Die Sonde verbraucht **keine** Bytes — 576 B/Zelle wie `q4_0` — also ist selbst ein
+  gutes Ergebnis **kein** Halbierungs-Beleg, sondern nur die Lizenz, das echte Layout in WP-2 zu bauen. Offen bleibt
+  darin, ob 8 Pegel genug sind oder ob der Transform-Slot die 3-Bit-Stufe erst trägt.
 - **Identitäts-Gate und Speed-A/B für WP-1a stehen noch aus** (§8.1/§8.3). Der A/B in §7.4 ist ein
   *Qualitäts*-Vergleich gegen den fp16-KV-Arm; „byte-identisch mit dem neuen Format aus" und der Decode-Durchsatz
   sind noch nicht gemessen. Vor einem PR beides nachholen, dann `kQ4lMap` zuerst in Shared Memory.
@@ -408,4 +498,4 @@ Für jedes WP:
 
 - Kein QJL-Residuum.
 - Kein Kalibrierungs-/Eigenbasis-Default (SpinQuant/OSCAR/OptR) — wenn überhaupt, nur opt-in in einem späteren WP.
-- Kein 2-bit; 3-bit nur später mit Delta (in quant.cpp eine sauber dokumentierte Sackgasse).
+- Kein 2-bit; 3-bit für jetzt **ohne** Delta (WP-2a mißt zuerst die K/V-Zuteilung; ein Delta-Modus bleibt WP-4).

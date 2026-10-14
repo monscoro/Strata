@@ -421,6 +421,67 @@ attention-sink protection.
    K and V treatment, windows/sinks) or calibrated (SpinQuant, OSCAR, OptR, WUSH-KV) - which is the split §5.3
    already makes.
 
+### 6.10 The decision test, and what it can actually resolve (measured 2026-10-14)
+
+Every number in §6.8, §6.9 and `docs/KV_QUANT_WORKPACKAGE.md` §7.4 rests on the harness's own readout; this is the
+one measurement that says whether that readout is strong enough to carry a claim. The test is RULER FWE/CWE
+(`arXiv:2404.06654` §3.3) read **teacher-forced**: 8 segments of 2048 tokens, a 40-word vocabulary of 6-character
+coded words drawn with a Zipf exponent of 2.0, ten answer words, and every arm scored against the `fp16` arm of the
+same run (Q2_0 pack, gfx1200, weights fixed). FWE and CWE are the retrieval half of a long context - the part a
+lossy cache damages first - where a mean KL over all positions is dominated by the easy ones. Sets:
+`data/quant_quality/fwe-2k/` and `data/quant_quality/cwe-2k/`.
+
+The readout that was pre-registered - the KL over the answer region - **measures false**, and the failure is larger
+on the set it was designed for. `fwe-2k` has 84 answer positions over 8 segments; int8 against `q4_0` there pairs to
+`t -0.69` with 6 of 8 segments going the *other* way, on the largest difference in the run. The task accuracy is
+worse than weak: `fwe-2k` has all three arms hitting the same 68 of 84, and at `cwe-2k` the 4-bit arm hits **more**
+answer words than fp16 (243 against 241 of 266). A task-accuracy readout cannot see the format at all.
+
+What replaces it is the **whole-segment KL, paired over the segments**: every arm reads the identical segment, so
+`KL_a(s) - KL_b(s)` cancels the text, which is most of a single arm's spread. On `cwe-2k` (8 segments, 16,351
+positions) the int8-to-4-bit boundary is then decisive - every pair 0/8 segments with `|t| >= 4.19`, int8 against
+`q4_0` at `t -5.66`, sem 17.7 % of the effect - while `q4_0`, `q4lm32` and `q4lm32s` sit **inside one another's
+noise** (`t` between -0.91 and -1.35, 2-5 of 8 segments the other way). `cwe-2k` is the sharper of the two sets for
+that same contrast (`t -5.66` against `fwe-2k`'s `t -3.50`, sem 28.7 %). Full tables, per-segment values and the
+committed `compare`/`areport`/`paired` JSON: `bench/results/2026-10-14-kv-fwe/`.
+
+**What this forces on the wording.** The 4-bit formats are real at the quantizer (0.30 dB / 0.61 dB MSE, §6.8) and
+below this test's resolution at the model. The half-the-bytes claim is therefore *not* "same quality": int8 is
+measurably better than any 4-bit arm, at a cost this test can put a number on - `+0.13 %` PPL for `q4_0` at
+`cwe-2k`, `+0.23 %` on the 8K whole-model set. And the three 4-bit maps cannot be ranked against each other on this
+evidence: the 8K set puts `q4lm32s` first and `cwe-2k` puts `q4_0` first, which is itself the sign that the gap is
+at the noise floor. §6.9's point 1 ("inside the range this literature supports") stands as a comparison with the
+field; it is not a claim of equality.
+
+### 6.11 Deep-dive #5: the 3-bit K/V allocation question, and the probe that asks it
+
+§6.9 leaves the direction explicit: a fixed Hadamard is safe at 4 bits and fails at 3 (10.06 against the calibrated
+9.82 on Qwen3-8B), so below 4 bits the next move is **how bits are allocated between K and V**, not more rotation.
+The field disagrees on which side wants them, and the two sources disagree in opposite directions: llama.cpp
+**#2318** measures `K2c+V4` *better* than `K4+V2c`, while **`arXiv:2502.15075`** keeps 98.3 % of K4V4 accuracy with
+K4V2. Both can be right for their own cache geometry; neither answers for our 256-wide head with an FWHT-256 in
+front of it.
+
+So the question is asked before the layout is built. The **probe** puts Max-Lloyd's 8-level ladder for N(0,1)
+(`{±69, ±43, ±24, ±8}`, `d = max|x|/69`, rounded by the same x32 rule as `kQ4lMap`) into the **unchanged 18-byte
+`block_q4_0`** - same block, same rotation, same readers, so it is a *quality* probe at 576 B/cell and not a byte
+layout. Three modes make the K-vs-V question an equal-average-width comparison (3.5 bits): `q4lm8` (8/8), `q4lm8k`
+(8 on K, 16 on V), `q4lm8v` (16 on K, 8 on V), with `q4lm32` (16/16) as the reference. `q4lm8k` and `q4lm8v` are
+byte-exact equals, so the pair answers #2318 against 2502.15075 on our own model.
+
+The model-free measurement (`kv_q4_parity` test 7, synthetic N(0,1), 498,688 rotated values, gfx1200) already
+settles what the probe *cannot* do: on the codebook, `q4lm8k` and `q4lm8v` are 0.1 % apart (7.672e-02 against
+7.662e-02 MSE, q4lm32 2.740e-02, q4lm8 1.259e-01). Both tensors supply half the values and use the same table, so
+their MSE contribution is symmetric, and only their slightly different drawn statistics separate them. **The
+exchange rate between a K error and a V error is a property of the model, not of the quantizer**: a K error enters
+the attention scores multiplicatively (a *relative* error after the softmax), a V error enters the output linearly
+(a *per-position additive* error). That is exactly why the decision has to come from the model run and not from a
+distortion table, and it is the reason the probe was built before the layout.
+
+The 3-Bit-Sonde is throwaway code: it lives only on `KV_QUANT_research`, is marked as such in the header, and is
+dropped before the WP-1/WP-2 PR. Its design and model-free numbers are in `docs/KV_QUANT_WORKPACKAGE.md` §5.4/§7.5;
+the model run against `cwe-2k` is the decision.
+
 ## 7. Sources
 
 Repository: `include/strata/kernels/kv_q4.hpp`, `bench/results/2026-09-27-kv-q4/README.md`, `docs/DETAILS.md:86`,
@@ -459,3 +520,7 @@ Literature:
     <https://www.ijcai.org/proceedings/2025/0690>
 25. FlatQuant (ICML 2025; learned Kronecker affine transforms, applied to the KV cache at group size 128) —
     <https://arxiv.org/abs/2410.09426>
+26. RULER (the long-context benchmark whose FWE/CWE retrieval tasks the decision test borrows) —
+    <https://arxiv.org/abs/2404.06654>
+27. "K4V2 keeps 98.3 % of K4V4" (the counter-position to PR #2318's K2c+V4 > K4+V2c) —
+    <https://arxiv.org/abs/2502.15075>
