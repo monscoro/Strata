@@ -65,22 +65,24 @@ __device__ __forceinline__ void load8_q4(const QsaAttnPools& p, bool value, long
     const int rem = d0 % QK4_0;
     const block_q4_0* blk = reinterpret_cast<const block_q4_0*>((value ? p.v_q4 : p.k_q4) + row * bytes_per_head) + b;
     const float d = __half2float(__ushort_as_half(blk->d));
+    const int8_t* lm = value ? q4l_map_v(p.q4_mode) : q4l_map_k(p.q4_mode);
     const int j = (rem == 0 || rem == 16) ? 0 : 8;
     const uint8_t* bytes = blk->qs + j;
     // q4_0: the nibble is the value (nibble - 8) on a uniform grid. q4lm32: the nibble indexes the Max-Lloyd level
-    // table in kv_q4.hpp, which the int8 side of the same block holds too. `if constexpr`, so a q4_0 build keeps
-    // exactly the old arithmetic.
+    // table in kv_q4.hpp, which the int8 side of the same block holds too. The probe modes pick a second table per
+    // tensor from the state's own Q4Mode, so a K8/V16 pair reads the two tables it was written with. `if constexpr`,
+    // so a q4_0 build keeps exactly the old arithmetic.
     if (rem < 16) {
 #pragma unroll
         for (int k = 0; k < 8; ++k) {
             const int n = (int) (bytes[k] & 0x0F);
-            out[k] = (LLOYD ? (float) kQ4lMap[n] : (float) (n - 8)) * d;
+            out[k] = (LLOYD ? (float) lm[n] : (float) (n - 8)) * d;
         }
     } else {
 #pragma unroll
         for (int k = 0; k < 8; ++k) {
             const int n = (int) (bytes[k] >> 4);
-            out[k] = (LLOYD ? (float) kQ4lMap[n] : (float) (n - 8)) * d;
+            out[k] = (LLOYD ? (float) lm[n] : (float) (n - 8)) * d;
         }
     }
 }
@@ -283,7 +285,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
             const int j = rem < 16 ? rem : (rem - 16);
             const uint8_t byte = blk->qs[j];
             const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
-            v = (KV_MODE == 4 ? (float) kQ4lMap[n] : (float) (n - 8)) * d;
+            v = (KV_MODE == 4 ? (float) q4l_map_v(p.q4_mode)[n] : (float) (n - 8)) * d;
         }
 #pragma unroll
         for (int h = 0; h < G; ++h) acc[h] = fmaf(sp[h][c], v, acc[h]);
@@ -373,7 +375,7 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
         const int j = rem < 16 ? rem : (rem - 16);
         const uint8_t byte = blk->qs[j];
         const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
-        return (KV_MODE == 4 ? (float) kQ4lMap[n] : (float) (n - 8)) * dd;
+        return (KV_MODE == 4 ? (float) q4l_map_v(p.q4_mode)[n] : (float) (n - 8)) * dd;
     }
 }
 

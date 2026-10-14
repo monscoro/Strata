@@ -52,11 +52,19 @@ struct KvHostPools {
 /// map its nibbles belong to, so a stream, ring or snapshot has to say; the two level-table values differ only on
 /// the *write* side, so a reader may treat them alike (q4_lloyd, kv_q4.hpp).  The code-map difference itself lives
 /// in `kv_q4.hpp` (`kQ4lMap`) and its readers.
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ4lm = 4, kKvQ4lmS = 5 };
+///
+/// kKvQ4lm8 / kKvQ4lm8K / kKvQ4lm8V (6, 7, 8) are the WP-2 3-bit probe (`--kv q4lm8`, `q4lm8k`, `q4lm8v`): the same
+/// blocks and bytes again, with the 8-level table on both tensors, on K only, or on V only. Same rule - the block
+/// cannot say which table it holds, so the format carries it.
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ4lm = 4, kKvQ4lmS = 5,
+                      kKvQ4lm8 = 6, kKvQ4lm8K = 7, kKvQ4lm8V = 8 };
 
-/// True for the three 4-bit rotated formats: same blocks, same bytes, same rotations - only the nibble -> value
+/// True for every rotated 4-bit format: same blocks, same bytes, same rotations - only the nibble -> value
 /// rule (and, for kKvQ4lmS, the writer's scale) differs.  A block-mover that only copies bytes can test this.
-inline constexpr bool kv_fmt_q4(int fmt) { return fmt == kKvQ4 || fmt == kKvQ4lm || fmt == kKvQ4lmS; }
+inline constexpr bool kv_fmt_q4(int fmt) {
+    return fmt == kKvQ4 || fmt == kKvQ4lm || fmt == kKvQ4lmS || fmt == kKvQ4lm8 || fmt == kKvQ4lm8K ||
+           fmt == kKvQ4lm8V;
+}
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose

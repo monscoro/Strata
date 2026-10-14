@@ -336,6 +336,10 @@ inline int qsa_kv_format(const QsaState& st) {
     // block is silent about both, so the format has to carry them.
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydLs) return strata::kernels::kKvQ4lmS;
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd) return strata::kernels::kKvQ4lm;
+    // WP-2 3-bit probe: the same blocks, the 8-level table on both tensors / on K only / on V only.
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8) return strata::kernels::kKvQ4lm8;
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8K) return strata::kernels::kKvQ4lm8K;
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8V) return strata::kernels::kKvQ4lm8V;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

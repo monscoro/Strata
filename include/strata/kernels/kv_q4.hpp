@@ -82,17 +82,42 @@ enum class Q4Mode : int {
     kUniform = 0,  ///< `--kv q4_0`: ggml's grid, value = (code - 8) * d
     kLloyd = 1,    ///< `--kv q4lm32`: the levels below, d = max|x| / 87
     kLloydLs = 2,  ///< `--kv q4lm32s`: the levels below, d = sum(l * x) / sum(l * l)
+    // WP-2 probe (`--kv q4lm8`, `q4lm8k`, `q4lm8v`): the same 18-byte block, rotation and readers, with an 8-level
+    // table for N(0,1) - a 3-bit *codebook* in 4-bit *bytes*. It is a quality probe, not a byte layout: the point is
+    // to see whether the fixed Hadamard survives 3 bits on this model before any 3-bit packing is built. Three modes
+    // so the probe can also ask which tensor of the pair the bits belong on at an equal average width (3.5 bits).
+    kLloyd8 = 3,   ///< `--kv q4lm8`:  8 levels on K and V
+    kLloyd8K = 4,  ///< `--kv q4lm8k`: 8 levels on K, 16 on V
+    kLloyd8V = 5,  ///< `--kv q4lm8v`: 16 levels on K, 8 on V
 };
 
-/// True for both level-table modes. A *reader* (gather, fused attention, a block move) only has to know the table,
+/// True for every level-table mode. A *reader* (gather, fused attention, a block move) only has to know the table,
 /// not how the scale was chosen - the scale is in the block - so the read side collapses to this one bit.
 inline constexpr bool q4_lloyd(Q4Mode m) { return m != Q4Mode::kUniform; }
 
-inline constexpr int8_t kQ4lMax = 87;   // == max |level|
+inline constexpr int8_t kQ4lMax = 87;   // == max |level|, the 16-level table
+inline constexpr int8_t kQ4l8Max = 69;  // == max |level|, the 8-level table (2.1519 sigma)
+
+/// The 8-level ladder is Max-Lloyd's optimum for N(0,1) (0.2451, 0.7560, 1.3439, 2.1519 sigma) rounded to int8 by the
+/// same x32 rule as the 16-level table above, so the writer divides the block maximum by 69 instead of 87.
+inline constexpr int8_t kQ4l8Levels[8] = {-69, -43, -24, -8, 8, 24, 43, 69};
+
+/// Which tensor of the pair carries the 8-level table - the probe's only knob (q4l_group<FIT, N> turns it into the
+/// scale divisor 69 instead of 87).
+inline constexpr bool q4_l8_k(Q4Mode m) { return m == Q4Mode::kLloyd8 || m == Q4Mode::kLloyd8K; }
+inline constexpr bool q4_l8_v(Q4Mode m) { return m == Q4Mode::kLloyd8 || m == Q4Mode::kLloyd8V; }
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 /// The dequant map: the nibble a q4lm32 block stores, to the integer level it stands for.
 static __constant__ int8_t kQ4lMap[16] = {-87, -66, -52, -40, -30, -21, -12, -4, 4, 12, 21, 30, 40, 52, 66, 87};
+
+/// The 8-level map. Codes 0..7 are the ladder; 8..15 are never written by an 8-level block (it stores the level
+/// index 0..7) and are clamped to the widest level so a stray code cannot run away.
+static __constant__ int8_t kQ4l8Map[16] = {-69, -43, -24, -8, 8, 24, 43, 69, 69, 69, 69, 69, 69, 69, 69, 69};
+
+/// The map a block written under `m` needs on the K side / the V side. Never called for kUniform (that uses code-8).
+__device__ __forceinline__ const int8_t* q4l_map_k(Q4Mode m) { return q4_l8_k(m) ? kQ4l8Map : kQ4lMap; }
+__device__ __forceinline__ const int8_t* q4l_map_v(Q4Mode m) { return q4_l8_v(m) ? kQ4l8Map : kQ4lMap; }
 #endif
 
 /// Orthonormal Fast Walsh-Hadamard Transform of rows of 256 floats (scale 1/16): its own inverse.

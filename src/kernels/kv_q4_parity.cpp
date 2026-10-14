@@ -131,6 +131,49 @@ void quantize_block_q4l_host(const float* x, k::block_q4_0& blk) {
     quantize_block_q4l_at_host(x, amax / (float) k::kQ4lMax, blk);   // 87: the largest level lands on the maximum
 }
 
+// The 8-level ladder of the WP-2 probe (kv_q4.hpp's kQ4l8Map): Max-Lloyd's optimum for N(0, 1) - 0.2451, 0.7560,
+// 1.3439, 2.1519 sigma - rounded to int8 by the same x32 rule, so the midpoints are the ones the kernel's
+// q4l_level8 spells out and the divisor is 69.
+int q4l8_level_host(float y) {
+    int k = 0;
+    if (y >= -56.0f) k = 1;
+    if (y >= -33.5f) k = 2;
+    if (y >= -16.0f) k = 3;
+    if (y >= 0.0f) k = 4;
+    if (y >= 16.0f) k = 5;
+    if (y >= 33.5f) k = 6;
+    if (y >= 56.0f) k = 7;
+    return k;
+}
+
+const int8_t* kQ4l8LevelsHost = k::kQ4l8Levels;   // the shared declaration, not a copy the test could drift from
+
+void quantize_block_q4l8_at_host(const float* x, float d, k::block_q4_0& blk) {
+    blk.d = k::f16_from_f32(d);
+    for (int i = 0; i < 16; ++i) {
+        const int k0 = q4l8_level_host(d != 0.0f ? x[i] / d : 0.0f);
+        const int k1 = q4l8_level_host(d != 0.0f ? x[i + 16] / d : 0.0f);
+        blk.qs[i] = (uint8_t) (k0 | (k1 << 4));
+    }
+}
+
+void quantize_block_q4l8_host(const float* x, k::block_q4_0& blk) {
+    float amax = 0.0f;
+    for (int i = 0; i < 32; ++i) amax = std::max(amax, std::fabs(x[i]));
+    quantize_block_q4l8_at_host(x, amax / (float) k::kQ4l8Max, blk);   // 69: the widest of the 8 levels
+}
+
+// One value of an 8-level block, as the readers reconstruct it: the level the nibble indexes, times the stored
+// (fp16) scale. The code is masked to 0..7 because the writer only ever stores a level index there.
+float dequant_q4l8_host(const k::block_q4_0& blk, int j) {
+    const uint8_t byte = blk.qs[j < 16 ? j : j - 16];
+    const int n = j < 16 ? (byte & 0x0F) : (byte >> 4);
+    return k::f32_from_f16(k::f16_from_f32((float) kQ4l8LevelsHost[n & 7] * k::f32_from_f16(blk.d)));
+}
+
+// Which tensor of the pair an arm puts the 8-level table on: arm 0 both, arm 1 K only, arm 2 V only.
+bool probe_eight(int arm, bool is_v) { return arm == 0 || ((arm == 1) != is_v); }
+
 // The same 16 levels with the scale the block's own RMS asks for: the table is round(32 * level for N(0, 1)), so
 // the scale that matches the distribution is sigma / 32 - and the RMS of 32 rotated values estimates sigma. This
 // is what a scale rule free of `max|x|` would give at the cost of one sum of squares (a butterfly reduction, so
@@ -223,7 +266,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 1: Orthonormal Fast Walsh-Hadamard Transform (D=256)
     // -------------------------------------------------------------
-    std::printf("[1/6] Verifying FWHT-256 CUDA kernel vs exact mathematical reference...\n");
+    std::printf("[1/7] Verifying FWHT-256 CUDA kernel vs exact mathematical reference...\n");
     constexpr int n_vectors = 64;
     std::vector<float> h_in(n_vectors * 256);
     std::vector<float> h_ref(n_vectors * 256);
@@ -280,7 +323,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 2: Invariance of Attention Scores under Hadamard Rotation
     // -------------------------------------------------------------
-    std::printf("[2/6] Verifying Attention Score Invariance: <H*q, H*k> == <q, k>...\n");
+    std::printf("[2/7] Verifying Attention Score Invariance: <H*q, H*k> == <q, k>...\n");
     double max_dot_diff = 0.0;
     for (int r = 0; r < n_vectors; r += 2) {
         const float* q = h_in.data() + r * 256;
@@ -307,7 +350,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 3: Q4_0 Paged KV Append & Gather against Host Reference
     // -------------------------------------------------------------
-    std::printf("[3/6] Verifying Q4_0 KV append and gather against host reference...\n");
+    std::printf("[3/7] Verifying Q4_0 KV append and gather against host reference...\n");
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;
     const int H = (int) s.n_head_kv; // 2
@@ -408,7 +451,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 4: Gather Q4_0 into FP16 Scratch and verify accuracy
     // -------------------------------------------------------------
-    std::printf("[4/6] Verifying Q4_0 gather unpacking and dequantization...\n");
+    std::printf("[4/7] Verifying Q4_0 gather unpacking and dequantization...\n");
     const int max_ids = 128;
     int32_t* d_ids = dalloc<int32_t>(max_ids);
     uint16_t* d_k_scratch = dalloc<uint16_t>((size_t) max_ids * H * D);
@@ -453,7 +496,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 5: `--kv q4lm32` - the same blocks with Max-Lloyd's levels
     // -------------------------------------------------------------
-    std::printf("[5/6] Verifying q4lm32: bitwise append, reader map, and its error next to q4_0's...\n");
+    std::printf("[5/7] Verifying q4lm32: bitwise append, reader map, and its error next to q4_0's...\n");
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
@@ -625,7 +668,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 6: `--kv q4lm32s` - the same levels, one least-squares pass for the block scale
     // -------------------------------------------------------------
-    std::printf("[6/6] Verifying q4lm32s: bitwise append with the one-step scale, reader map, and its error...\n");
+    std::printf("[6/7] Verifying q4lm32s: bitwise append with the one-step scale, reader map, and its error...\n");
     std::printf("  (the same pools, positions and rotated vectors as test 5: only the writer's scale rule changes)\n");
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
@@ -776,6 +819,109 @@ int main() {
         std::fprintf(stderr, "FAIL: q4lm32s's error is not below q4lm32's (%.3e vs %.3e)\n", mse_ls, mse_l);
         ++g_fail;
     }
+
+    // -------------------------------------------------------------
+    // Test 7: the WP-2 probe - the 8-level table on both tensors, on K only, on V only (`--kv q4lm8*`)
+    // -------------------------------------------------------------
+    std::printf("[7/7] Verifying the probe's 8-level table: q4lm8 (both), q4lm8k (K), q4lm8v (V)...\n");
+    const k::Q4Mode probe_mode[3] = {k::Q4Mode::kLloyd8, k::Q4Mode::kLloyd8K, k::Q4Mode::kLloyd8V};
+    const char* probe_name[3] = {"q4lm8 (8 on K and V)", "q4lm8k (8 on K, 16 on V)", "q4lm8v (16 on K, 8 on V)"};
+    double mse8[3] = {0.0, 0.0, 0.0};
+    for (int arm = 0; arm < 3; ++arm) {
+        for (int n = 0; n < n_fill; ++n) {
+            const int pos = positions[n];
+            int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
+            ck(cudaMemcpy(d_step, hstep, sizeof(hstep), cudaMemcpyHostToDevice), "memcpy step");
+            ck(cudaMemcpy(d_kcur, host_k[pos].data(), host_k[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+               "memcpy k");
+            ck(cudaMemcpy(d_vcur, host_v[pos].data(), host_v[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+               "memcpy v");
+            k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
+                                 probe_mode[arm]);
+            ck(cudaDeviceSynchronize(), "kv_append_q4_step probe");
+        }
+        ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4");
+        ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4");
+
+        long bad8 = 0, n_vals = 0;
+        double sse8 = 0.0;
+        for (int n = 0; n < n_fill; ++n) {
+            const int pos = positions[n];
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                const bool eight = probe_eight(arm, is_v != 0);
+                for (int h = 0; h < H; ++h) {
+                    const long long page = (long long) table[pos / P];
+                    const long long row = (page * H + h) * P + (pos % P);
+                    const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                    const float* raw_vec = (is_v ? host_v[pos].data() : host_k[pos].data()) + h * D;
+                    for (int b = 0; b < blocks_per_head; ++b) {
+                        k::block_q4_0 host_blk;
+                        if (eight) quantize_block_q4l8_host(raw_vec + b * 32, host_blk);
+                        else quantize_block_q4l_host(raw_vec + b * 32, host_blk);
+                        const k::block_q4_0* gpu_blk = reinterpret_cast<const k::block_q4_0*>(pool_ptr) + b;
+                        if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
+                            if (bad8 == 0)
+                                std::printf("PROBE MISMATCH %s at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n",
+                                            probe_name[arm], n, pos, is_v, h, b);
+                            ++bad8;
+                        }
+                        for (int j = 0; j < 32; ++j) {
+                            const float want = eight ? dequant_q4l8_host(host_blk, j) : dequant_q4l_host(host_blk, j);
+                            const double e = (double) want - (double) raw_vec[b * 32 + j];
+                            sse8 += e * e;
+                        }
+                        n_vals += 32;
+                    }
+                }
+            }
+        }
+        mse8[arm] = sse8 / (double) n_vals;
+        if (bad8 > 0) {
+            std::fprintf(stderr, "FAIL: %ld %s blocks differ from host reference\n", bad8, probe_name[arm]);
+            ++g_fail;
+        }
+
+        // The reader has to pick the table per tensor, so the gather is replayed over the blocks just written and
+        // every gathered value must be the level of the table that tensor was written with, times its own scale.
+        int32_t hstep8[k::kStepCount] = {0, 0, 0, max_ids};
+        ck(cudaMemcpy(d_step, hstep8, sizeof(hstep8), cudaMemcpyHostToDevice), "memcpy step gather probe");
+        k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch, nullptr,
+                             probe_mode[arm]);
+        ck(cudaDeviceSynchronize(), "kv_gather_q4_step probe");
+        ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+           "memcpy d2h k_scratch probe");
+        ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+           "memcpy d2h v_scratch probe");
+        long bad_read8 = 0;
+        for (int i = 0; i < max_ids; ++i) {
+            const int cell = ids[i];
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                const bool eight = probe_eight(arm, is_v != 0);
+                for (int h = 0; h < H; ++h) {
+                    const long long page = (long long) table[cell / P];
+                    const long long row = (page * H + h) * P + (cell % P);
+                    const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                    const uint16_t* gathered = (is_v ? h_v_scratch.data() : h_k_scratch.data()) + (i * H + h) * D;
+                    for (int d = 0; d < D; ++d) {
+                        const k::block_q4_0* blk = reinterpret_cast<const k::block_q4_0*>(pool_ptr) + d / 32;
+                        const float want
+                            = eight ? dequant_q4l8_host(*blk, d % 32) : dequant_q4l_host(*blk, d % 32);
+                        if (k::f32_from_f16(gathered[d]) != want) ++bad_read8;
+                    }
+                }
+            }
+        }
+        if (bad_read8 > 0) {
+            std::fprintf(stderr, "FAIL: %ld gathered %s values are not level * scale\n", bad_read8, probe_name[arm]);
+            ++g_fail;
+        }
+    }
+    if (g_fail == 0) std::printf("  -> All three probe arms: blocks bitwise equal, reader picks the table per tensor (OK)\n");
+    std::printf("  -> MSE over %d values per arm: q4lm8 %.3e, q4lm8k %.3e, q4lm8v %.3e\n", 498688, mse8[0],
+                mse8[1], mse8[2]);
+    std::printf("     (q4lm32's 16-level MSE was %.3e; the 8-level table is the codebook, not the 4-bit bytes)\n",
+                mse_l);
+
     cudaFree(d_src);
     cudaFree(d_dst);
     cudaFree(d_table);
