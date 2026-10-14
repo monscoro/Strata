@@ -198,9 +198,11 @@ Sonden-Bytes (576 B/Zelle) — wegwerfbar bis auf den Gewinner, der in WP-2 echt
 Zwei Arme, beide **ohne Byte-Änderung**, beide vor jedem Layout-Bau — sie entscheiden, was das Layout überhaupt
 tragen muss:
 
-1. **Clipped-Scale.** Skala aus dem κ-Quantil statt `max|x|` (Start κ≈0,96/0,92 nach OSCAR-Tab. 6, dann Grid auf
-   Swift), Tabelle/Blöcke/Leser unverändert. Null Bytes, nur Schreiber + Parity + cwe-2k-Arm. Schwellen fix =
-   datenblind; aus Kalibrierung = opt-in.
+1. **Clipped-Scale.** Skala aus dem κ-Quantil statt `max|x|` (Start κ≈0,92–0,96 — OSCAR-Tab. 6 und
+   FlatQuant-fix 0,9/0,95 konvergieren dorthin; dann Grid auf Swift), Tabelle/Blöcke/Leser unverändert. Das
+   Clipping greift **nach** der Rotation (der Schreiber sieht post-FWHT-Werte), wie FlatQuant-Tab. 15 verlangt
+   (nachher 6,98 vs vorher 7,37; fix fängt ~70 % des Gewinns ohne jede Kalibrierung). Null Bytes, nur Schreiber
+   + Parity + cwe-2k-Arm. Schwellen fix = datenblind; aus Kalibrierung = opt-in.
 2. **Fenster.** Der q2k-Mechanismus (`--kv-window`/`--kv-sink`, vgl. #2318) auf die Sonden-Arme erweitert:
    jüngste S + erste R Zellen exakt, Rest quantisiert. Misst den Fensterbeitrag bei 3–4 Bit direkt auf unserem
    Modell (OSCAR-Tab. 5: (0,0) ist tot; wo unser Knie liegt, wird gemessen, nicht übernommen).
@@ -533,6 +535,10 @@ Vergleichsarm (WP-3)**. Begründung vollständig in §6.12; die Kurzform:
 Was aus Plan v1 ausdrücklich überlebt: Harness + gepaarte Auslesung + McNemar (§7.1/§7.2, `compare`/`areport
 --paired`), die Sonden-Verdrahtung als bewiesene Parität (§7.3/§7.5), Q2_0 als untere Schranke, QJL-Verbot,
 Identitäts-Gate + Speed-A/B vor jedem PR (§8.1/§8.3), Sonden-Code geht in keinen PR (§6).
+
+Die „K4/V3-Klasse" in WP-2 ist keine runde Zahl: FlatQuant-Tab. 11 misst K4V3 auf LLaMA-3-8B KV-only bei −0,08
+QA (nahezu verlustfrei) — die Referenzform fürs Layout, mit Undamped-Caveat (dort fp16-Rest, Head-dim 128,
+dicht, PPL/QA statt Retrieval).
 
 ## 8. Messplan und Gate
 

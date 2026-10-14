@@ -506,7 +506,8 @@ numbers stay as the bound and as proof that the probe's wiring is self-diagnosin
 Read in full for this review: WUSH-KV (all sections and tables - every number quoted in §6.9 verified against
 the source) and KIVI (2402.02750, full text); as abstracts plus their reception inside KIVI: SmoothQuant,
 LLM.int8(), GPTQ, AWQ; as practitioner voice: ik_llama.cpp thread #1509 (March-April 2026) in full; now also
-OSCAR (2605.17757, all sections, tables) and FlatQuant (2410.09426, §§1-4, tables). Not read in full: KVQuant
+OSCAR (2605.17757, all sections, tables) and FlatQuant (2410.09426, §§1-4 plus App. C KV tables 11/12/15
+and W3A3KV3 table 13). Not read in full: KVQuant
 (abstract + survey state), QuaRot/SpinQuant/RotateKV (survey state).
 
 **What holds.** The paired decision test over MSE (ikawrakow: "RMSE is not a very good predictor"); the QJL
@@ -541,19 +542,23 @@ tail later) stands it on its head. Consequence, now adopted: a **clipped-scale a
 blocks** (scale from the k-quantile, nothing else moves) - zero bytes, writer-only, potentially as large as the
 whole transform slot.
 
-**Objection 4: K-vs-V is 2:2, and n=8 does not resolve it.** Our probe + 2502.15075 (K4V2 keeps 98.3 %) against
-#2318 (K2c+V4 > K4+V2c) + jagmarques in the ik thread (April 2026: "values need more precision than keys",
-K3V8). But that comparison was dismantled in-thread (K3V8 at 6 bpw is dominated on both axes by Q4_0 at 4.5 bpw
-- conceded), ran on Mistral-7B ("quantizes exceptionally well", Q4_0 +0.3 %) at 1742-token PPL. So no
-counter-proof - but the dispute is real and model-dependent, and ikawrakow's "typical example" warning then
-covers us too: our direction holds for one model, one pack, 2K context. Power math from our numbers
-(q4lm8k-q4lm8v: +0.00129, sem 0.00213, t 0.60): t=2.0 needs sem <= 0.00065, i.e. ~11x segments, ~87 segments at
-~75 s on Swift ~ 11 h for 6 arms - an overnight run. Cheaper per unit of power: cwe-4k (built; amplify the
-effect instead of averaging the noise) or McNemar as the primary criterion (5:0 stands at p=0.062; a few more
-segments decide it).
+**Objection 4: K-vs-V was 2:2; FlatQuant's Table 11 makes it 4:2.** Our probe + 2502.15075 (K4V2 keeps 98.3 %)
+against #2318 (K2c+V4 > K4+V2c) + jagmarques in the ik thread (April 2026: "values need more precision than
+keys", K3V8 - dismantled in-thread: K3V8 at 6 bpw is dominated on both axes by Q4_0 at 4.5 bpw, conceded;
+Mistral-7B at 1742-token PPL). FlatQuant, read in full since, measures the split systematically on LLaMA-3-8B
+KV-only (Table 11, group-128 asymmetric, everything else fp16): at equal 6 bits K4V2 beats K2V4 decisively (PPL
+6.60 vs 7.70, QA avg 71.04 vs 68.07); at 7 bits K4V3 vs K3V4 is nearly tied (6.25/73.15 vs 6.35/72.59); K4V3
+alone is nearly lossless (QA -0.08). The paper states it outright - "keys are more sensitive to quantization
+than values" - as "consistent with previous studies (Hooper et al., 2024; Liu et al., 2024c; Ashkboos et al.,
+2024)". Caveats stand: LLaMA-3-8B dense, head-dim 128, KV-only with fp16 rest (the undamped regime), PPL/QA
+metrics rather than retrieval - and ikawrakow's "typical example" warning now covers every side including the
+new one. Our direction still holds for one model, one pack, 2K context until Swift + power decide. Power math
+unchanged (t=2.0 needs ~87 segments, ~11 h; or cwe-4k; or McNemar-primary at 5:0, p=0.062).
 
 **Objection 5: the 4-bit tie is a finding, not a placeholder.** WUSH-KV's own Table 1: calibration buys 0.04 PPL
-at 4 bits. Ours: three 4-bit maps inseparable. Together: **the transform slot is not a 4-bit lever.** WP-1 stays
+at 4 bits. Ours: three 4-bit maps inseparable. FlatQuant Table 12 is the third witness, KV-only: K4V4 tied
+(7B PPL 5.50 vs 5.51, 13B 4.91 vs 4.91), K3V3 nearly (5.61 vs 5.68), and only K2V2 separates (6.66 vs 9.23) -
+the calibrated advantage lives at <=3 bits. Together: **the transform slot is not a 4-bit lever.** WP-1 stays
 "half the bytes for measurable +0.13 %", and anything calibrated must prove itself at <=3.5 bits against the
 cheaper opponents from objections 2 and 3 - not against fixed Hadamard alone, or window/clipping gains get
 attributed to the transform.
@@ -577,6 +582,17 @@ clipping) - our plan now measures all three separately instead of buying them as
 more": one calibration serves several widths - calibration cost amortizes. And Figure 2: the largest errors sit
 at pivot tokens (sinks again), where scaling *and* Hadamard are "powerless" - a third vote for windows from an
 unexpected corner.
+
+**FlatQuant's KV appendix (C.1/C.2) upgrades two plan points.** Table 11 (objection 4 above) makes K4V3 the
+reference shape for the WP-2 layout: QA -0.08, nearly lossless on LLaMA-3-8B KV-only. Table 15 orders the
+clipping work: clip *after* the transform (PPL 6.98, QA 71.23) beats clip-before (7.37/68.62) and the QuaRot
+fixed threshold (0.9 act / 0.95 KV: 7.25/69.87) - while the fixed threshold already captures ~70 % of the
+no-clip-to-learned gap (7.95 to 6.98) at zero calibration cost, which is exactly the WP-2a sequencing
+(fixed-kappa first, learned later). The two groups' kappas converge (OSCAR 0.96/0.92, FlatQuant-fixed 0.9/0.95)
+- a usable prior, not a tuned constant. Table 13 bounds the ambition below (W3A3KV3: QuaRot 686 PPL dead vs
+FlatQuant 10.82 alive; "4-bit remains a better balance", their words). Table 14 (calibration on
+WikiText2/C4/Pile: PPL 6.98-7.04) says the transform generalizes because it learns an equivalent map, not
+weights - the mild version of our data-obliviousness demand.
 
 **The path (adopted as Plan v2 in `docs/KV_QUANT_WORKPACKAGE.md` §7.6).** Clipped-scale arm (days, writer-only,
 zero bytes) first; window arm (the q2k mechanism exists) alongside it; power (overnight segments or cwe-4k, or
@@ -623,8 +639,10 @@ Literature:
 24. RotateKV (IJCAI 2025; outlier-aware pre-RoPE grouped-head rotation, attention-sink protection, 2-bit) —
     <https://www.ijcai.org/proceedings/2025/0690>
 25. FlatQuant (ICML 2025; learned Kronecker affine transforms P=P1xP2 + per-channel scaling + learnable
-    clipping; read §§1-4: ablation LT 1266->8.50 PPL, +PS 0.55, +LCT 0.84; per-head P_h/P_v not decomposed;
-    "train one, get more"; pivot-token errors) —
+    clipping; read §§1-4 + App. C: ablation LT 1266->8.50 PPL, +PS 0.55, +LCT 0.84; per-head P_h/P_v not
+    decomposed; "train one, get more"; pivot-token errors; Tab. 11 K-sensitivity K4V2>>K2V4, K4V3 -0.08 QA;
+    Tab. 12 calibrated advantage only <=3 bits; Tab. 15 clip-after-transform, fixed kappa ~70 % of the gain;
+    Tab. 13 W3A3KV3 QuaRot dead / FlatQuant alive) —
     <https://arxiv.org/abs/2410.09426>
 26. RULER (the long-context benchmark whose FWE/CWE retrieval tasks the decision test borrows) —
     <https://arxiv.org/abs/2404.06654>
