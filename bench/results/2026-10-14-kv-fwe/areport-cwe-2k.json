@@ -1,0 +1,32 @@
+{
+ "cwe-fp16.tsv": {
+  "positions": 266,
+  "hit": 241,
+  "agree": 266,
+  "kl": 0.0
+ },
+ "cwe-int8.tsv": {
+  "positions": 266,
+  "hit": 241,
+  "agree": 266,
+  "kl": 0.789719067185253
+ },
+ "cwe-q4_0.tsv": {
+  "positions": 266,
+  "hit": 243,
+  "agree": 264,
+  "kl": 2.105492254130912
+ },
+ "cwe-q4lm32.tsv": {
+  "positions": 266,
+  "hit": 242,
+  "agree": 262,
+  "kl": 2.475515526919706
+ },
+ "cwe-q4lm32s.tsv": {
+  "positions": 266,
+  "hit": 243,
+  "agree": 263,
+  "kl": 2.387925222890727
+ }
+}

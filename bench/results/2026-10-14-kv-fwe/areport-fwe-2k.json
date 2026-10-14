@@ -1,0 +1,20 @@
+{
+ "fwe-fp16.tsv": {
+  "positions": 84,
+  "hit": 68,
+  "agree": 84,
+  "kl": 0.0
+ },
+ "fwe-int8.tsv": {
+  "positions": 84,
+  "hit": 68,
+  "agree": 84,
+  "kl": 0.5464916748674559
+ },
+ "fwe-q4_0.tsv": {
+  "positions": 84,
+  "hit": 68,
+  "agree": 83,
+  "kl": 0.6246630006657696
+ }
+}
