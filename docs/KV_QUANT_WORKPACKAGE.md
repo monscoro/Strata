@@ -43,18 +43,22 @@ darüber, mit **einer Skala je 32 Werte**. Nach der Rotation sind die Werte aber
 uniformer Gitter-Quantisierer mit 16 Stufen ist dafür nicht der passende (und der per-32-Skalierer re-normalisiert
 jeden Block noch einmal, was den Verteilungsbezug zerstört).
 
-## 4. Die Kandidaten (Wirkung gegen Aufwand)
+## 4. Die Kandidaten (Wirkung gegen Aufwand) — Stand Plan v2 (2026-10-14, nach Review §6.12 des Surveys)
 
-| # | Kandidat | Belegte Wirkung | Aufwand | Datenblind? | Schon woanders? |
+| # | Kandidat | Belegte Wirkung | Aufwand | Datenblind? | Stand |
 | --- | --- | --- | --- | --- | --- |
-| **A** | `q4lm`: Rotation + **eine max-abs-Skala je Head** + 16-Level-Lloyd-Max-Codebook | klein (~1 % rel. in quant.cpp) | klein | **ja** | nein, nirgends |
-| **B** | `--kv-window N` + `--kv-sink S`: die jüngsten/ersten Zellen exakt | **groß** (nimmt fast die ganze 4-bit-Strafe) | mittel bis groß | ja | offener PR **#2318** |
-| **C** | SRHT: Zufallsvorzeichen auf H | unklar, theorie-nah | winzig | ja | in unserem Survey vorgeschlagen |
+| **A** | **Asymmetrisch-4-Bit im Direktvergleich** (§5.5): K/V verschiedene Skalenregel bei gleichen Bytes + Bit-Asymmetrie K16/V8 + No-Rotation-Ablation | Richtung K-will-Bits (Sonde §7.5); KIVI: K pro-Kanal / V pro-Token; KVQuant <0,1 PPL bei 3 Bit | S–M | ja | **WP-1 neu, läuft zuerst** |
+| **B** | **Clipped-Scale**: Skala aus κ-Quantil statt `max\|x\|`, sonst identische 18-B-Blöcke | OSCAR-Tab. 6: κ aus Kalibrierung 0,15 am Grid-Besten; FlatQuant-LCT +0,84 PPL | S (nur Schreiber) | Schwellen fix = ja / kalibriert = opt-in | **WP-2a, vor jedem Layout** |
+| **C** | **Fenster/Sink**: jüngste/erste Zellen exakt | KIVI: Fenster trägt 2 Bit (ohne → GSM8K-Kollaps); OSCAR-Tab. 5: (0,0) = 0,00 überall, Knie (64,256) | M (q2k-Mechanismus existiert) | ja | **WP-2a, vor jedem Layout** |
+| **D** | **Echtes asymmetrisches Layout** (K4/V3-Klasse, echte Bytes, ehrliche BPE-Bilanz) mit vorbereitetem, unbestücktem Slot für kalibriert-nur-K | A–C entscheiden die Form | L | ja (+ opt-in Slot) | WP-2, nach A–C |
+| **E** | **Kalibriert-nur-K als Vergleichsarm** (WUSH geschlossen / OSCAR Kovarianz; V fest; **kein V-Folding**) | WUSH 2-Bit 10,51 vs H 258,29; OSCAR 2,28 BPE ≈ BF16 auf 32B; bei 4 Bit 0,04 (kein Hebel) | M–L + Kalibrierung (~8k Tokens nach OSCAR-Tab. 7) | nein (opt-in) | WP-3, **Vergleich, nicht Hauptlinie** |
+| **F** | **No-Rotation-Ablation + SRHT** | OSCAR-Ablation: ohne H 51,74 vs voll 70,01 (H trägt dort!); nur U 32,82 | S | ja | mitlaufend (Skepsis wird gemessen) |
 
-**Empfehlung:** **A zuerst.** Es ist der kleinste Eingriff, unser eigener Beitrag, und respektiert die Gate-Policy
-(neues Format = opt-in, Default byte-identisch). **B direkt danach** — es hat den größeren Beleg, berührt aber
-Selektion/Streaming/Snapshot und überschneidet sich mit dem offenen PR #2318 (dort abstimmen oder messen statt
-doppeln). **C** als billiger Toggle, sobald A oder B steht.
+**Empfehlung (Plan v2):** **A zuerst im Direktvergleich auf Swift** — einziger Kandidat mit eigener Sonden-Evidenz
+und ohne Kalibrierungs-/Download-/Byte-Kosten. **B+C vor jedem Layout** — Null-Byte-Arme, die entscheiden, was das
+Layout überhaupt tragen muss (ohne sie attribuiert man Fenster-/Clipping-Gewinne der Transformation). **D
+danach**, **E daneben als Vergleichsarm** (WUSH bleibt Vergleich, wird nicht Hauptlinie), **F mitlaufend**.
+Explizit nicht: QJL, symmetrisch-2-Bit, V-Folding in quantisierte Gewichte (§10).
 
 ## 5. Design
 
@@ -140,7 +144,7 @@ Ansatz von **#2318** (dort `--kv-window`/`--kv-sink` für `q2k`) — vor Baubegi
 Default aus. Beachte: quant.cpp fährt die Rotation mit **konstantem** Seed, ist also selbst kein echtes SRHT
 (§6.4 des Surveys).
 
-### 5.4 Die 3-Bit-Sonde (WP-2a) — erst messen, dann bauen
+### 5.4 Die 3-Bit-Sonde (WP-2a-Sonde) — erst messen, dann bauen
 
 **Die Frage.** Der Survey (§6.9) hat den Transform-Hebel bei 4 Bit erledigt: WUSH-KVs kalibrierte Transformation
 bringt dort 9,77 → 9,73 gegen fp16 9,72, während sie bei 3 Bit 10,06 → 9,82 und bei 2 Bit 258,29 → 10,51 holt.
@@ -166,11 +170,40 @@ Drei Modi, damit die K-vs-V-Frage bei **gleicher mittlerer Breite** gestellt wir
 
 **Warum das die richtige Frage-Reihenfolge ist.** `q4lm8` sagt, ob 3 Bit auf diesem Modell überhaupt lebensfähig
 sind; `q4lm8k` gegen `q4lm8v` ist **byte-exakt gleich** und beantwortet #2318-vs-2502.15075 direkt an unserem
-Modell, ohne dass ein Byte-Layout-Entwurf vorher festgelegt werden müßte. Erst wenn die Zuteilung steht, bekommt das
-Layout in WP-2 seinen Transform-Slot (festes Hadamard als datenblinder Default, kalibrierte Transformation opt-in).
+Modell, ohne dass ein Byte-Layout-Entwurf vorher festgelegt werden müßte. Erst wenn Zuteilung (§5.5), Schwanz
+(§5.6, Clipped-Scale) und Fenster (§5.6) stehen, bekommt das Layout in WP-2 seine Form — mit vorbereitetem, aber
+unbestücktem Slot für kalibriert-nur-K (WP-3 als Vergleich, nicht Hauptlinie).
 
 **Die Sonde ist Wegwerf-Code.** Sie ist als solcher gekennzeichnet, lebt nur auf `KV_QUANT_research` und geht
 **nicht** in den WP-1/WP-2-PR.
+
+### 5.5 Asymmetrisch-4-Bit im Direktvergleich (WP-1 neu)
+
+Drei Arme, alle auf **Swift**, cwe-2k (+ Power nach §8), alle gegen `q4_0`/`q4lm32`/`int8`/fp16, alle in
+Sonden-Bytes (576 B/Zelle) — wegwerfbar bis auf den Gewinner, der in WP-2 echte Bytes bekommt:
+
+1. **Behandlung.** K `max|x|`/32 wie bisher, V RMS/32 (Norm-ähnlich). Gleiche Bytes, nur die Skalenregel je
+   Tensor — der Arm prüft, ob V das wirklich billiger sieht als der MSE (Parity: RMS-Skala −0,82 dB gegen
+   `max|x|`, §7.3). KIVI/KVQuant-Behandlung (K pro-Kanal-Skalen vor Rotation) wäre der nächste Schritt, nicht
+   dieser: erst klären, ob die Skalenregel-Asymmetrie allein trägt.
+2. **Bit.** K16/V8 (`q4lm8v`-Sondenstand als Referenzarm, Sonden-Bytes) — die Sonden-Richtung als wiederholter
+   Arm auf Swift, nicht als Behauptung aus Q2_0.
+3. **Ablation: ohne Rotation.** `q4lm32` ohne FWHT (Schreiber + Leser, Tabelle/Skala gleich, Parität gegen
+   Host-Referenz wie üblich). Die Hadamard-Skepsis wird gemessen, nicht gemeint — in beide Richtungen:
+   OSCAR-Ablation (INT2, deren Pipeline) sagt H trägt ~18 Punkte, das ist das Gegengewicht, kein Urteil über
+   unsere Geometrie.
+
+### 5.6 Clipped-Scale + Fenster vor dem Layout (WP-2a neu)
+
+Zwei Arme, beide **ohne Byte-Änderung**, beide vor jedem Layout-Bau — sie entscheiden, was das Layout überhaupt
+tragen muss:
+
+1. **Clipped-Scale.** Skala aus dem κ-Quantil statt `max|x|` (Start κ≈0,96/0,92 nach OSCAR-Tab. 6, dann Grid auf
+   Swift), Tabelle/Blöcke/Leser unverändert. Null Bytes, nur Schreiber + Parity + cwe-2k-Arm. Schwellen fix =
+   datenblind; aus Kalibrierung = opt-in.
+2. **Fenster.** Der q2k-Mechanismus (`--kv-window`/`--kv-sink`, vgl. #2318) auf die Sonden-Arme erweitert:
+   jüngste S + erste R Zellen exakt, Rest quantisiert. Misst den Fensterbeitrag bei 3–4 Bit direkt auf unserem
+   Modell (OSCAR-Tab. 5: (0,0) ist tot; wo unser Knie liegt, wird gemessen, nicht übernommen).
 
 ## 6. Berührte Dateien und Backends (Landkarte am Beispiel `q4_0`)
 
@@ -199,16 +232,18 @@ erfüllt, ohne einen hier nicht baubaren SYCL-Build zu behaupten.
 
 | WP | Inhalt | Deliverable | Aufwand |
 | --- | --- | --- | --- |
-| **WP-0** | KV-Qualitäts-Harness: **steht** — `tools/quant_quality.py --kv FMT` (§7.1). Offen: Baselines fp16/int8/q4_0/k8v4 bei 1K/8K/32K auf {Q2_0, IQ3_S} fixieren (Top-1, KL, PPL + `needle_bench.py` + Speed-A/B) | `bench/results/<datum>-kv-baseline/` | S |
-| **WP-1** | `--kv q4lm32` / `--kv q4lm32s` — **Format steht, modellfrei gemessen** (§5.1-Nachtrag, §7.3); CUDA/HIP gebaut, SYCL gespiegelt (hier nicht baubar); Parity-Tests grün. Offen: Speed-A/B (`kQ4lMap` erst in Shared Memory) | Format + Tests + Meßbericht | M |
-| **WP-2a** | 3-Bit-**Sonde** (§5.4, §7.5): 8-Level-Tabelle in den **unveränderten** 18-B-Blöcken, K-vs-V am Modell entschieden. **Gebaut, modellfrei gemessen, Modelllauf läuft** | Sonden-Code + Meßbericht | S |
-| **WP-2** | **echtes** 3-Bit-Layout mit Transform-Slot: festes Hadamard als datenblinder Default, kalibrierte per-Head-Transformation opt-in. **Bau erst nach WP-2a** | Format + Tests + Meßbericht | L |
-| **WP-3** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
-| **WP-4** (später) | Delta-Modus für 3-bit; Per-Layer-Bit-Zuteilung nach Kurtosis | — | L |
-| **WP-5** (zurückgestellt) | `--kv-window` / `--kv-sink` auf `q4_0` (und `k8v4`), mit #2318 abgestimmt. Zurückgestellt, weil die 3-Bit-Frage (WP-2a) vorgezogen wurde | Format + Tests + Messbericht | M-L |
+| **WP-0** | KV-Qualitäts-Harness: **steht** — `tools/quant_quality.py --kv FMT` (§7.1). Baselines fp16/int8/q4_0/k8v4 auf **Swift** fixieren (Top-1, KL, PPL + Power nach §8 + Speed-A/B) | `bench/results/<datum>-kv-baseline/` | S |
+| **WP-1a** (erledigt) | `--kv q4lm32` / `--kv q4lm32s` — Format steht, Messberichte §7.3/§7.4 + bench | — | — |
+| **WP-2a-Sonde** (erledigt) | 3-Bit-Sonde Q2_0 — Richtung K-will-Bits, §7.5 + bench | — | — |
+| **WP-1** (neu) | **Asymmetrisch-4-Bit im Direktvergleich** (§5.5, §7.6): Behandlung K/V + Bit K16/V8 + No-Rotation-Ablation, Swift, Power nach §8 | Messbericht + Gewinner-Arm | M |
+| **WP-2a** (neu) | **Null-Byte-Arme vor dem Layout** (§5.6, §7.6): Clipped-Scale + Fenster auf Sonden-Armen | Messbericht (was das Layout tragen muss) | S–M |
+| **WP-2** | **Echtes asymmetrisches Layout** (K4/V3-Klasse, echte Bytes, ehrliche BPE-Bilanz nach OSCAR) mit vorbereitetem, unbestücktem Slot für kalibriert-nur-K. **Bau erst nach WP-1 + WP-2a** | Format + Tests + Messbericht | L |
+| **WP-3** | **Kalibriert-nur-K als Vergleichsarm** (WUSH geschlossen / OSCAR Kovarianz; V fest; kein V-Folding; Kalibrierung ~8k Tokens). **Vergleich, nicht Hauptlinie** | Vergleichsarm + Messbericht | M–L |
+| **WP-4** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
+| **WP-5** (später) | Delta-Modus für 3-bit; Per-Layer-Bit-Zuteilung nach Kurtosis/Sensitivität | — | L |
 
-Reihenfolge: **WP-0 → WP-1 → WP-2a → WP-2 → (WP-3 ‖ WP-5) → WP-4.** Jedes WP ist **ein** PR (AGENTS.md: eine
-Änderung je PR). WP-2a ist die Ausnahme: es ist ausdrücklich Sonden-Code und geht in **keinen** PR.
+Reihenfolge: **WP-0 → WP-1 → WP-2a → WP-2 → WP-3 → (WP-4 ‖ WP-5).** Jedes WP ist **ein** PR (AGENTS.md: eine
+Änderung je PR). WP-2a-Sonde ist die Ausnahme: sie ist ausdrücklich Sonden-Code und geht in **keinen** PR.
 
 ### 7.1 WP-0: der Harness steht, der erste Meßpunkt liegt vor
 
@@ -478,6 +513,27 @@ SYCL-Port hat einen eigenen Schreiber (`kQ4lMapDev`) und bräuchte eine eigene D
 additiven Enum-Werte in `kv_q4.hpp` stehen hinter dem `__CUDACC__`/`__HIPCC__`-Guard und ändern SYCL nicht.
 Metal hat nur einen KV-Stub.
 
+### 7.6 Plan v2 (2026-10-14, nach Review §6.12 des Surveys)
+
+Der Umbau in einem Absatz: Die alte Reihenfolge (symmetrisch-4-Bit → Sonde → 3-Bit-Layout mit Transform-Slot,
+Fenster zurückgestellt, WUSH als Hauptlinie) ist ersetzt durch **asymmetrisch-4-Bit im Direktvergleich (WP-1)
+→ Null-Byte-Arme Clipped-Scale + Fenster (WP-2a) → asymmetrisches Layout (WP-2) → kalibriert-nur-K als
+Vergleichsarm (WP-3)**. Begründung vollständig in §6.12; die Kurzform:
+
+- Die Sonde hat die Richtung (K-will-Bits), aber kein Urteil — WP-1 wiederholt sie auf Swift **mit** Power
+  (§8) und legt Behandlung, Bit und Rotation in drei getrennten Armen auf den Tisch (§5.5).
+- Clipping und Fenster sind in der Literatur die tragenden Achsen bei niedrigen Bits (OSCAR-Tab. 5/6, KIVI,
+  FlatQuant-Ablation) und kosten **null Bytes** — sie werden gemessen, bevor ein Layout ihre Gewinne der
+  Transformation zuschreiben kann (§5.6).
+- WUSH bleibt Vergleich, weil V-Folding auf quantisierten Gewichten tot ist und 4 Bit keinen
+  Transform-Hebel haben (§6.12 Einwände 1+5); kalibriert wird nur K, V bleibt fest.
+- Die Hadamard-Skepsis bekommt ihren Arm (No-Rotation-Ablation in WP-1) statt einer Meinung — mit OSCARs
+  Gegengewicht im Rücken (ohne H −18 Punkte bei INT2, deren Pipeline).
+
+Was aus Plan v1 ausdrücklich überlebt: Harness + gepaarte Auslesung + McNemar (§7.1/§7.2, `compare`/`areport
+--paired`), die Sonden-Verdrahtung als bewiesene Parität (§7.3/§7.5), Q2_0 als untere Schranke, QJL-Verbot,
+Identitäts-Gate + Speed-A/B vor jedem PR (§8.1/§8.3), Sonden-Code geht in keinen PR (§6).
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist
@@ -500,6 +556,13 @@ Für jedes WP:
 3. **Speed und Speicher.** Decode-A/B mit `--kv-resident`, wie in `bench/results/2026-09-27-kv-q4`.
 4. **Akzeptanz.** Ein WP wird nur vorgeschlagen, wenn es die q4_0-Lücke bei **gleicher oder kleinerer** Byte-Zahl
    messbar schließt und die Speed-A/B nicht verliert. Sonst bleibt es opt-in/experimentell oder wird verworfen.
+5. **BPE-Bilanz (ab Plan v2).** Für jedes Layout mit echten Bytes: ehrliche Bits-pro-Element-Rechnung nach OSCAR
+   (Payload + Skalen-/Nullpunkt-Metadaten + Fenster bei **genannter** Kontextlänge, z. B. 128K). Sonden-Bytes
+   zählen nicht — wer Bytes behauptet, zeigt die Bilanz.
+6. **Power (ab Plan v2).** Ein K-vs-V-Effekt der Sonden-Größe (t≈0,6 bei n=8) braucht ~87 Segmente für t=2,0
+   (≈11 h für 6 Arme auf Swift) — oder cwe-4k (Effekt verstärken statt Rauschen mitteln) oder McNemar-primär
+   (5:0 steht bei p=0,062; wenige Segmente mehr entscheiden ihn). Vor einem Layout-Urteil eine der drei
+   einlösen; „Richtung" ohne eingelöste Power ist kein Bauauftrag.
 
 ## 9. Risiken und offene Fragen
 
@@ -530,17 +593,22 @@ Für jedes WP:
   wiederholt, wo der KV-Fehler sichtbar wird. Die Sonde verbraucht **keine** Bytes (576 B/Zelle wie `q4_0`), also
   ist selbst ein gutes Ergebnis **kein** Halbierungs-Beleg, sondern nur die Lizenz, das echte Layout in WP-2 zu
   bauen. Offen bleibt, ob 8 Pegel genug sind oder ob der Transform-Slot die 3-Bit-Stufe erst trägt.
-- **Hauptrichtung mit Falsifikationspflicht.** Die Hauptrichtung ist der **kalibrierte Transform-Slot** (WP-2:
-  festes Hadamard als datenblinder Default, per-Head gelernte Transformation opt-in). Sie wird an **jeder** Messung
-  kritisch hinterfragt, nicht nur einmal begründet:
-  1. Kalibriert muß festes Hadamard bei **gleichen Bits** auf cwe-2k (**Swift**) in gepaarter KL *und*
-     Antwortgenauigkeit schlagen — sonst bleibt es ungebaut bzw. opt-in.
-  2. Das Kostenbudget gilt mit: Kalibrierzeit, Downloadgröße der Transformation, Online-K-Kosten pro Token.
-  3. Die Alternativen bleiben auf dem Tisch: asymmetrische K/V-Zuteilung (die Sonde zeigt K-will-die-Bits, aber
-     etabliert ist das noch nicht), Residualkorrektur nur bei neuer Evidenz (QJL ist derzeit per Messung
-     ausgeschlossen, Survey §5.2).
-  4. Wenn Swift die K-vs-V-Richtung dreht, ändert sich das WP-2-Layout — die Q2_0-Richtung ist eine Richtung, kein
-     Gesetz.
+- **Linien mit Falsifikationspflicht (Plan v2).** Hauptlinie: asymmetrisch-4-Bit (WP-1) → Null-Byte-Arme
+  (WP-2a) → asymmetrisches Layout (WP-2). WUSH kalibriert-nur-K bleibt **Vergleichsarm** (WP-3) mit denselben
+  Kriterien: gleiche Bits, Swift, gepaart + McNemar, Kostenbudget (Kalibrierzeit, Download ~9 MB, Online-K) —
+  sonst ungebaut bzw. opt-in. Die Hadamard-Skepsis bekommt ihren Arm (No-Rotation-Ablation in WP-1) statt einer
+  Meinung; OSCARs Gegengewicht (ohne H −18 Punkte bei INT2, deren Pipeline) steht daneben, als Messung fremder
+  Geometrie, nicht als Urteil über unsere.
+- **Kein V-Folding in quantisierte Gewichte.** WUSH (§4.2) wie OSCAR (§4) falten T_V in W_V/W_O — auf Swift
+  IQ3_XXS wäre das ein abgeleitetes Pack (dicht-transformierte Projektionen in 3-Bit-Gewichte requantisiert)
+  oder eine Online-V-Transformation (dann ist „gratis" weg). Deshalb: nur K wird kalibriert, V bleibt fest.
+  (§10)
+- **(0,0)-Fenster sind tot.** OSCAR-Tab. 5: INT2 mit Rotation+Clip, aber ohne Sink/Recent = 0,00 überall; Knie
+  bei (64,256). Jedes Sub-4-Bit-Layout ohne eigenen Fenster-Arm ist blind — WP-2a misst ihn zuerst.
+- **Kalibrierung ist leicht, aber eigene Arbeit.** OSCAR: ein Pass, ~8k Tokens, domänenrobust (Tab. 7) — weit
+  unter WUSHs 128×32K; FlatQuant: ~0,9 h für 8B (gelernt, teurer als geschlossen-form). Für unseren Hybrid
+  (48 Layer, QSA+PLE+HC, Head-dim 256) heißt das: geschlossene Kovarianz-Form (OSCAR-Stil) zuerst, Lern-Verfahren
+  nur bei Bedarf; eine Kalibrierung soll mehrere Breiten bedienen („train one, get more").
 - **Identitäts-Gate und Speed-A/B für WP-1a stehen noch aus** (§8.1/§8.3). Der A/B in §7.4 ist ein
   *Qualitäts*-Vergleich gegen den fp16-KV-Arm; „byte-identisch mit dem neuen Format aus" und der Decode-Durchsatz
   sind noch nicht gemessen. Vor einem PR beides nachholen, dann `kQ4lMap` zuerst in Shared Memory.
@@ -548,5 +616,6 @@ Für jedes WP:
 ## 10. Was wir bewusst nicht machen
 
 - Kein QJL-Residuum.
+- Kein V-Folding in quantisierte Gewichte (T_V bleibt fest oder online; kalibriert wird nur K, WP-3).
 - Kein Kalibrierungs-/Eigenbasis-Default (SpinQuant/OSCAR/OptR) — wenn überhaupt, nur opt-in in einem späteren WP.
-- Kein 2-bit; 3-bit für jetzt **ohne** Delta (WP-2a mißt zuerst die K/V-Zuteilung; ein Delta-Modus bleibt WP-4).
+- Kein 2-bit; 3-bit für jetzt **ohne** Delta (WP-1 misst zuerst die K/V-Zuteilung; ein Delta-Modus bleibt WP-5).

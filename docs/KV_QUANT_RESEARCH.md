@@ -501,6 +501,91 @@ K-vs-V decision is therefore repeated on **Swift IQ3_XXS**, which is the measure
 numbers stay as the bound and as proof that the probe's wiring is self-diagnosing. Table and full readouts:
 `bench/results/2026-10-14-kv-3bit-probe/`.
 
+### 6.12 Critical review (2026-10-14): what the literature says about our plan
+
+Read in full for this review: WUSH-KV (all sections and tables - every number quoted in §6.9 verified against
+the source) and KIVI (2402.02750, full text); as abstracts plus their reception inside KIVI: SmoothQuant,
+LLM.int8(), GPTQ, AWQ; as practitioner voice: ik_llama.cpp thread #1509 (March-April 2026) in full; now also
+OSCAR (2605.17757, all sections, tables) and FlatQuant (2410.09426, §§1-4, tables). Not read in full: KVQuant
+(abstract + survey state), QuaRot/SpinQuant/RotateKV (survey state).
+
+**What holds.** The paired decision test over MSE (ikawrakow: "RMSE is not a very good predictor"); the QJL
+exclusion (quant.cpp: "contributed exactly nothing"; AMD: harmful on K through the softmax; vLLM ships Hadamard
+*without* QJL - so stated in the WUSH-KV paper itself); Swift over Q2_0 (ikawrakow's "forgiving model" and
+"typical example" warnings cut the same way); probe-before-layout (the anchors reproduced to the digit).
+
+**Objection 1: V-folding is dead on quantized weights.** WUSH-KV (§4.2) and OSCAR (§4) both fold the value
+transform into W_V/W_O - "adds no online cost" - which assumes fp16 weights. On Swift IQ3_XXS folding means a
+derived pack (re-quantizing dense-transformed projections into 3-bit weights) or an online V transform (which
+kills the "free"). The arithmetic is friendly - 12 QSA layers x 2 KV heads x (T_K + T_K^{-T} + T_V) = 72
+transforms of 256^2 fp16, ~9 MB download per model - but only without V-folding. Consequence, now adopted: the
+Strata shape is **calibrated-K-only with fixed Hadamard on V**, which happens to be the probe's direction.
+Nobody has shown calibrated-K-only; that is the innovation gap, not a deficit.
+
+**Objection 2: windows are prerequisite at low bits, and they sit at WP-5.** KIVI in full: fake 2-bit without
+the R<=128 fp16 residual window collapses on GSM8K; *with* it, ~2 % drop. OSCAR Table 5: INT2 with
+rotation+clip but windows (0,0) scores **0.00 on every task**; the knee is at sink 64 + recent 256. WUSH-KV's
+2/3-bit numbers all include sink+recent windows. Our probe has neither - so "symmetric 3-bit is too expensive"
+(1.65x KL) is **conditional on windowless**, and every sub-4-bit layout, calibrated or not, likely needs
+windows first. Consequence, now adopted: a window arm (the q2k mechanism exists) and the clipped-scale arm
+below precede any layout.
+
+**Objection 3: clipping is the cheapest unmeasured axis.** Our scale is `max|x|` - hostage to the largest
+outlier, which is exactly the pathology behind WUSH-KV's H-2-bit collapse (first-module key spikes spread onto
+level midpoints). OSCAR's clip thresholds (k 0.96, v 0.92) come out of calibration within 0.15 points of the
+best grid point (Table 6) - no hand-tuning. FlatQuant's ablation (Table 4, LLaMA-3-8B): transform 1266 -> 8.50
+PPL, then per-channel scaling +0.55, then **learnable clipping +0.84**. The older line converges on the same
+lesson - LLM.int8() isolates 0.1 % outlier dims in fp16, SmoothQuant migrates difficulty, AWQ protects 1 %
+salient channels, GPTQ weights by the Hessian: **tail first, bulk cheap**. Our order (codebook, then transform,
+tail later) stands it on its head. Consequence, now adopted: a **clipped-scale arm on the unchanged 18-byte
+blocks** (scale from the k-quantile, nothing else moves) - zero bytes, writer-only, potentially as large as the
+whole transform slot.
+
+**Objection 4: K-vs-V is 2:2, and n=8 does not resolve it.** Our probe + 2502.15075 (K4V2 keeps 98.3 %) against
+#2318 (K2c+V4 > K4+V2c) + jagmarques in the ik thread (April 2026: "values need more precision than keys",
+K3V8). But that comparison was dismantled in-thread (K3V8 at 6 bpw is dominated on both axes by Q4_0 at 4.5 bpw
+- conceded), ran on Mistral-7B ("quantizes exceptionally well", Q4_0 +0.3 %) at 1742-token PPL. So no
+counter-proof - but the dispute is real and model-dependent, and ikawrakow's "typical example" warning then
+covers us too: our direction holds for one model, one pack, 2K context. Power math from our numbers
+(q4lm8k-q4lm8v: +0.00129, sem 0.00213, t 0.60): t=2.0 needs sem <= 0.00065, i.e. ~11x segments, ~87 segments at
+~75 s on Swift ~ 11 h for 6 arms - an overnight run. Cheaper per unit of power: cwe-4k (built; amplify the
+effect instead of averaging the noise) or McNemar as the primary criterion (5:0 stands at p=0.062; a few more
+segments decide it).
+
+**Objection 5: the 4-bit tie is a finding, not a placeholder.** WUSH-KV's own Table 1: calibration buys 0.04 PPL
+at 4 bits. Ours: three 4-bit maps inseparable. Together: **the transform slot is not a 4-bit lever.** WP-1 stays
+"half the bytes for measurable +0.13 %", and anything calibrated must prove itself at <=3.5 bits against the
+cheaper opponents from objections 2 and 3 - not against fixed Hadamard alone, or window/clipping gains get
+attributed to the transform.
+
+**OSCAR deltas that change our plan.** The rotation is R = U.H.P_br: an attention-aware eigenbasis (query
+covariance for K, score-weighted for V), *then* Hadamard, then a bit-reversal permutation - even the calibrated
+SOTA keeps Hadamard inside the composition. Ablation (Table 4, Qwen3-8B INT2, mean over 5 tasks): full 70.01,
+w/o Hadamard 51.74, w/o eigenbasis (QuaRot+P_br) 32.82, no rotation (clip+sink+recent only) 4.23. Both factors
+contribute; the steelman for Hadamard is measured, not assumed. Calibration is light: one pass dumping Q,K,V
+(8878 tokens x layers), 8k tokens enough and domain-robust (Table 7: MMLU/WikiText/GPQA within noise) - far
+below WUSH's 128 x 32K sequences, which reframes our calibration budget. Bit accounting is honest (2.28 BPE
+*including* scale/zero metadata and windows at 128K) - our future layout needs the same rule. RULER-NIAH holds
+to 128K while QuaRot-INT2 collapses past 16k on 8B. Theory scope as with WUSH: optimality under a frozen-error
+surrogate, not covering the deployed quantizer.
+
+**FlatQuant deltas that change our plan.** Per-layer affine P = P1xP2 (Kronecker: memory n/2, compute sqrt(n)/2)
++ per-channel scaling + learnable clipping, block-wise MSE training (~0.9 h, 26 GB for LLaMA-3-8B); per-head P_h,
+P_v deliberately *not* decomposed; P_o fused into P_v (QuaRot-style); transform+quant in one Triton kernel,
+overhead 0.26x (QuaRot) -> 0.07x. The ablation splits the prize three ways (transform, scaling granularity,
+clipping) - our plan now measures all three separately instead of buying them as one transform. "Train one, get
+more": one calibration serves several widths - calibration cost amortizes. And Figure 2: the largest errors sit
+at pivot tokens (sinks again), where scaling *and* Hadamard are "powerless" - a third vote for windows from an
+unexpected corner.
+
+**The path (adopted as Plan v2 in `docs/KV_QUANT_WORKPACKAGE.md` §7.6).** Clipped-scale arm (days, writer-only,
+zero bytes) first; window arm (the q2k mechanism exists) alongside it; power (overnight segments or cwe-4k, or
+McNemar-primary); then the asymmetric real layout (K4/V3 class, honest BPE); calibrated-K-only beside it as the
+comparison arm, never folded into quantized weights; SRHT/no-rotation ablation riding along (the Hadamard
+skepticism gets measured, both directions). Explicitly not: QJL, symmetric 2-bit, delta mode (stays WP-4),
+V-folding into quantized weights.
+
+
 ## 7. Sources
 
 Repository: `include/strata/kernels/kv_q4.hpp`, `bench/results/2026-09-27-kv-q4/README.md`, `docs/DETAILS.md:86`,
@@ -537,7 +622,9 @@ Literature:
     <https://arxiv.org/abs/2609.38121>
 24. RotateKV (IJCAI 2025; outlier-aware pre-RoPE grouped-head rotation, attention-sink protection, 2-bit) —
     <https://www.ijcai.org/proceedings/2025/0690>
-25. FlatQuant (ICML 2025; learned Kronecker affine transforms, applied to the KV cache at group size 128) —
+25. FlatQuant (ICML 2025; learned Kronecker affine transforms P=P1xP2 + per-channel scaling + learnable
+    clipping; read §§1-4: ablation LT 1266->8.50 PPL, +PS 0.55, +LCT 0.84; per-head P_h/P_v not decomposed;
+    "train one, get more"; pivot-token errors) —
     <https://arxiv.org/abs/2410.09426>
 26. RULER (the long-context benchmark whose FWE/CWE retrieval tasks the decision test borrows) —
     <https://arxiv.org/abs/2404.06654>
