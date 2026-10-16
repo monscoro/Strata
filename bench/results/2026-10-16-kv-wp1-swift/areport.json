@@ -1,0 +1,44 @@
+{
+ "fp16.tsv": {
+  "positions": 266,
+  "hit": 244,
+  "agree": 266,
+  "kl": 0.0
+ },
+ "int8.tsv": {
+  "positions": 266,
+  "hit": 244,
+  "agree": 264,
+  "kl": 0.7961093056990591
+ },
+ "q4_0.tsv": {
+  "positions": 266,
+  "hit": 245,
+  "agree": 265,
+  "kl": 2.051947314613982
+ },
+ "q4lm32.tsv": {
+  "positions": 266,
+  "hit": 245,
+  "agree": 264,
+  "kl": 1.7350683397417859
+ },
+ "q4lm32t.tsv": {
+  "positions": 266,
+  "hit": 246,
+  "agree": 264,
+  "kl": 2.071179190974505
+ },
+ "q4lm8v.tsv": {
+  "positions": 266,
+  "hit": 245,
+  "agree": 262,
+  "kl": 3.4545969047107112
+ },
+ "q4lm32nr.tsv": {
+  "positions": 266,
+  "hit": 243,
+  "agree": 264,
+  "kl": 2.8285215552595893
+ }
+}
