@@ -594,18 +594,27 @@ Shipped tables:
   needs the Q2_0 model fixture). setup uses it only when the installed hipBLASLt reports 1.4.0. The prompt speed
   of a whole model with this table is not measured yet.
 - `gfx1200-hipblaslt-100100.txt`: RX 9060 XT (gfx1200, 16 GB), calibrated with the ROCm 7.1 HIP SDK for Windows
-  (hipBLASLt 1.1.0, version number 100100) and the engine's 32 MiB workspace. 67 rows from the shipped gfx1200
-  geometries plus 12 rows for the four bf16 shapes a 2045-token Q2_0 prompt actually launches (N = 1/4/128/512,
-  K = 2560/10240, T = 64/512/2048 each) - without them that prompt read 216 of 566 launches through plain hipBLAS.
-  `hip_prefill_hipblaslt_gemm` passes (`launches=4 fallbacks=0`), and a 2045-token Q2_0 prefill with
-  `STRATA_HIPBLASLT_VERBOSE=1` reports `launches=782 fallbacks=0`. Prompt speed on that 2K prompt: 289.6 tok/s
-  without the table, 287.9 tok/s with it (single runs each, inside this box's ~2 % run drift - the prompt is
-  expert-streaming-bound at 19,238 streamed experts, not GEMM-bound; the long-context win is not measured yet).
-  Every row beats plain hipBLAS per GEMM except `bf16 T=2048 N=1 K=2560` (0.07x - a vecmat hipBLAS already does
-  in ~2 us); it is kept so the shape stays on a measured solution, its absolute cost is microseconds.
-  Note: the pre-existing `gfx1200-hipblaslt-100500.txt` is a byte-identical copy of the 100202 table (its header
-  says 100202), so setup's header check ignores it - it calibrates nothing and should be removed or recalibrated,
-  not copied as a template.
+  (hipBLASLt 1.1.0, version number 100100) and the engine's 32 MiB workspace. 94 rows: 67 from the shipped gfx1200
+  geometries, 12 for the four bf16 shapes a 2K Q2_0 prompt launches (N = 1/4/128/512, T = 64/512/2048 each), and 15
+  for the chunk size long prompts actually run at (T = 6144, all 15 dense geometries a 64K prompt launches).
+  `hip_prefill_hipblaslt_gemm` passes (`launches=4 fallbacks=0`). Coverage: `fallbacks=0` at 2K (782 launches),
+  64K (8,602) and 128K (17,204). Every row beats plain hipBLAS per GEMM (1.03-2.14x at T = 6144). Wall time is a
+  small, consistent win: 2K median 282.9 -> 284.9 tok/s, 64K median 780.2 -> 784.2 tok/s (interleaved, 3+3 runs
+  each, no overlap; Q2_0, `--kv int8`). Small because these prompts are expert-streaming-bound (232K streamed
+  experts at 64K), not GEMM-bound - and single non-interleaved runs scatter ±15 % at identical work, so only
+  interleaved medians count. The 2K prompt without the 12 extra rows read 216 of 566 launches through plain
+  hipBLAS; the 64K prompt without the T = 6144 rows read everything through small-T solutions and 19 % slower
+  than hipBLAS. Note: one row (`bf16 T=2048 N=1 K=2560`, 0.07x) is slower per GEMM than hipBLAS and is kept so
+  the shape stays on a measured solution; its absolute cost is microseconds.
+- `gfx1200-hipblaslt-100500.txt`: the same card for the ready-made engine's stack (ROCm 10.2 nightly,
+  hipBLASLt 1.5.0, `engine/rocm/`), 57 genuine rows - this file used to be a byte-identical copy of the 100202
+  table and calibrated nothing. Calibrated by pointing `tune_hipblaslt` at the ready-made stack's libraries
+  (PATH first), same 94 geometries as above. 37 geometries have no valid 1.5.0 solution on this box
+  (`no_valid_heuristics` in the accuracy check, also with the ready-made stack's own rocBLAS - a library hole,
+  not a mixing artifact); those launches fall back to plain hipBLAS. All 57 written rows beat hipBLAS per GEMM
+  (min 1.20x, median 11.65x). The `hip_prefill_hipblaslt_gemm` smoke test still reports its two probe shapes as
+  missing (bf16 N=48, f16 N=512 - two of the holes), which is correct behavior, not a table defect. No wall-time
+  A/B on the ready-made engine yet.
 
 - `gfx1150-hipblaslt-100401.txt`: Radeon 890M (gfx1150, Strix Point APU, 16 CUs), calibrated with AMD's TheRock ROCm 7.14.1 for
   gfx1150 (hipBLASLt 1.4.1 `cd957402`, version number 100401) and the engine's 32 MiB workspace. The 16 dense GEMM geometries a
