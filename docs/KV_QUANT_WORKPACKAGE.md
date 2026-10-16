@@ -656,6 +656,15 @@ schwanzarm (max/32 ≈ 2,36σ); Clippen wirft echte Masse weg, statt Ausreißer 
 0,96/0,92 gelten für unrotierte K-Kanäle, nicht für unsere Geometrie. Das Modell entscheidet (3 Arme
 laufen: (1,0/1,0)-Identität, (0,94/0,94), OSCAR-Paar (0,96/0,92)); Anker aus WP-1 werden wiederverwendet.
 
+### 7.11 WP-2a-Clip-Urteil: Tails sind Signal (2026-10-16, Swift cwe-2k)
+
+`bench/results/2026-10-16-kv-wp2a-clip/`. Identität dreifach bewiesen (Parity-memcmp, Smoke-Tokens,
+Modell-KL exakt 0,01183, sd 0). (0,94/0,94) +34 % KL (t −2,29), OSCAR-Paar (0,96/0,92) +111 % (t −6,66,
+0/8). Asymmetrisch verliert MEHR als symmetrisch (t −5,16) — die härter geclippte V-Seite kostet am
+meisten (V ist die fragile Seite, konsistent mit §7.5). **Folge für WP-2:** kein Clipping post-rotation
+im Layout. **Folge für den Fenster-Arm:** wird gebaut (§5.6.2) — Tails sind Signal, exakte Tails könnten
+Qualität zurückkaufen.
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist

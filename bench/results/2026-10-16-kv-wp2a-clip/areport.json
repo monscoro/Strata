@@ -1,0 +1,32 @@
+{
+ "fp16.tsv": {
+  "positions": 266,
+  "hit": 244,
+  "agree": 266,
+  "kl": 0.0
+ },
+ "q4lm32.tsv": {
+  "positions": 266,
+  "hit": 245,
+  "agree": 264,
+  "kl": 1.7350683397417859
+ },
+ "clip-k1.0-v1.0.tsv": {
+  "positions": 266,
+  "hit": 245,
+  "agree": 264,
+  "kl": 1.7350683397417859
+ },
+ "clip-k0.94-v0.94.tsv": {
+  "positions": 266,
+  "hit": 244,
+  "agree": 262,
+  "kl": 4.013101073275587
+ },
+ "clip-k0.96-v0.92.tsv": {
+  "positions": 266,
+  "hit": 245,
+  "agree": 262,
+  "kl": 5.1274339468509185
+ }
+}
