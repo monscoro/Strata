@@ -186,12 +186,53 @@ __device__ __forceinline__ uint16_t q4l_group_vrms(float x, uint8_t& byte) {
     return f16_from_f32(d);
 }
 
-// `is_v` is the tensor of the pair this block belongs to; the kLloyd8* probe modes and the WP-1 treatment
-// mode (kLloydVrms) look at it, the rest quantize K and V alike.
+// The WP-2a clipping arm's scale (kv_q4.hpp, kLloydClip): d = quantile(|x|, kappa) / 87 over the block's own
+// 32 magnitudes, same 16-level table and nearest-level assignment as q4l_group<false, 16> - only the scale rule
+// differs, so outliers saturate instead of stretching the grid. The 32 magnitudes sort through a bitonic network
+// (one value per lane, uniform shuffles, no divergence), then every lane reads the quantile's own lane - so all
+// lanes hold the identical scale with no reduction-order question at all, and the host replays it line for line.
+// kappa = 1 sorts index 31 to the maximum, which is exactly q4l_group<false, 16> (the arm's identity check).
+__device__ __forceinline__ float q4l_quantile(float ax, float kappa) {
+    float a = ax;
+    for (int k = 2; k <= 32; k <<= 1) {
+        for (int j = k >> 1; j > 0; j >>= 1) {
+            const int lane = threadIdx.x;
+            const float o = __shfl_xor_sync(0xffffffffu, a, j);
+            const bool up = (((lane & k) == 0) != ((lane & j) != 0));
+            a = up ? fminf(a, o) : fmaxf(a, o);
+        }
+    }
+    int idx = (int) (kappa * 32.0f);
+    if (idx < 0) idx = 0;
+    if (idx > 31) idx = 31;
+    return __shfl_sync(0xffffffffu, a, idx);
+}
+
+namespace {
+// Set by qsa_set_kv_clip (host): the WP-2a arm's per-tensor quantiles. __constant__ so the writer reads them
+// free and every grid point is an env var, not a new mode.
+__constant__ float kQ4lClipKappaK = 0.94f;
+__constant__ float kQ4lClipKappaV = 0.94f;
+}  // namespace
+
+__device__ __forceinline__ uint16_t q4l_group_clip(float x, uint8_t& byte, bool is_v) {
+    const float kappa = is_v ? kQ4lClipKappaV : kQ4lClipKappaK;
+    float d = q4l_quantile(fabsf(x), kappa) * (1.0f / (float) kQ4lMax);
+    const float y = d != 0.0f ? x / d : 0.0f;
+    int k = q4l_level(y);
+    const uint8_t kc = (uint8_t) k;
+    const uint8_t khi = __shfl_down_sync(0xffffffffu, kc, 16);
+    byte = (uint8_t) (kc | (khi << 4));
+    return f16_from_f32(d);
+}
+// `is_v` is the tensor of the pair this block belongs to; the kLloyd8* probe modes, the WP-1 treatment mode
+// (kLloydVrms) and the WP-2a clipping mode (kLloydClip) look at it, the rest quantize K and V alike.
 template <Q4Mode M>
 __device__ __forceinline__ uint16_t q4_group_any(float x, int lane, uint8_t& byte, bool is_v = false) {
     if constexpr (M == Q4Mode::kUniform) {
         return q4_group(x, lane, byte);
+    } else if constexpr (M == Q4Mode::kLloydClip) {
+        return q4l_group_clip(x, byte, is_v);
     } else if constexpr (M == Q4Mode::kLloydVrms) {
         if (is_v) return q4l_group_vrms(x, byte);
         return q4l_group<false, 16>(x, byte);
@@ -432,6 +473,7 @@ void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table,
     else if (mode == Q4Mode::kLloyd) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd);
     else if (mode == Q4Mode::kLloydVrms) STRATA_KV_Q4_APPEND(Q4Mode::kLloydVrms);
     else if (mode == Q4Mode::kLloydNoRot) STRATA_KV_Q4_APPEND(Q4Mode::kLloydNoRot);
+    else if (mode == Q4Mode::kLloydClip) STRATA_KV_Q4_APPEND(Q4Mode::kLloydClip);
     else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8);
     else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8K);
     else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8V);
@@ -464,6 +506,7 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
         else if (mode == Q4Mode::kLloyd) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd);
         else if (mode == Q4Mode::kLloydVrms) STRATA_KV_Q4_BATCH(Q4Mode::kLloydVrms);
         else if (mode == Q4Mode::kLloydNoRot) STRATA_KV_Q4_BATCH(Q4Mode::kLloydNoRot);
+        else if (mode == Q4Mode::kLloydClip) STRATA_KV_Q4_BATCH(Q4Mode::kLloydClip);
         else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8);
         else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8K);
         else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8V);
@@ -513,6 +556,15 @@ KvStatsAccum*& kvst_acc() {
     return p;
 }
 }  // namespace
+
+// The WP-2a clipping arm's per-tensor quantiles (kv_q4.hpp): copied to __constant__ so the writer reads them
+// free. Called at startup (layer.cpp) and by the parity test; never fails the engine (a bad value keeps 0.94).
+void qsa_set_kv_clip(float kappa_k, float kappa_v) {
+    if (!(kappa_k > 0.0f) || !(kappa_k <= 1.0f)) kappa_k = 0.94f;
+    if (!(kappa_v > 0.0f) || !(kappa_v <= 1.0f)) kappa_v = 0.94f;
+    if (cudaMemcpyToSymbol(kQ4lClipKappaK, &kappa_k, sizeof(float)) != cudaSuccess) return;
+    if (cudaMemcpyToSymbol(kQ4lClipKappaV, &kappa_v, sizeof(float)) != cudaSuccess) return;
+}
 
 // Eager startup allocation (generate.cpp serve init): the first window recordings happen before any
 // launcher could allocate, and a graph recorded without tap kernels replays empty for every reuse - so the

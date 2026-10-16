@@ -62,7 +62,7 @@ struct KvHostPools {
 /// V scale (like kKvQ4lmS it gets its own value because a scale rule is write-side state); the no-rotation arm
 /// gets one because its blocks hold unrotated values, which no rotated reader may touch.
 enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ4lm = 4, kKvQ4lmS = 5,
-                      kKvQ4lm8 = 6, kKvQ4lm8K = 7, kKvQ4lm8V = 8, kKvQ4lmT = 9, kKvQ4lmNR = 10 };
+                      kKvQ4lm8 = 6, kKvQ4lm8K = 7, kKvQ4lm8V = 8, kKvQ4lmT = 9, kKvQ4lmNR = 10, kKvQ4lmC = 11 };
 
 /// True for every 4-bit block format: same blocks, same bytes - only the nibble -> value rule (and, for
 /// kKvQ4lmS and kKvQ4lmT, the writer's scale) differs. A block-mover that only copies bytes can test this.
@@ -70,7 +70,7 @@ enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ4lm
 /// rotation is the attention path's business, never a byte count.)
 inline constexpr bool kv_fmt_q4(int fmt) {
     return fmt == kKvQ4 || fmt == kKvQ4lm || fmt == kKvQ4lmS || fmt == kKvQ4lm8 || fmt == kKvQ4lm8K ||
-           fmt == kKvQ4lm8V || fmt == kKvQ4lmT || fmt == kKvQ4lmNR;
+           fmt == kKvQ4lm8V || fmt == kKvQ4lmT || fmt == kKvQ4lmNR || fmt == kKvQ4lmC;
 }
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's

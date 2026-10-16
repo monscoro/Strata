@@ -344,6 +344,8 @@ inline int qsa_kv_format(const QsaState& st) {
     // WP-1: the treatment arm (V rms scale, same table) and the no-rotation arm (unrotated blocks).
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydVrms) return strata::kernels::kKvQ4lmT;
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydNoRot) return strata::kernels::kKvQ4lmNR;
+    // WP-2a: the clipping arm (kappa-quantile scale, same table).
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydClip) return strata::kernels::kKvQ4lmC;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

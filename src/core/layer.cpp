@@ -189,6 +189,14 @@ bool qsa_kv_q4() { return g_kv_q4; }
 void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
     g_kv_q4_mode = mode;
     g_kv_q4 = g_kv_q4 || (mode != strata::kernels::Q4Mode::kUniform);
+    if (mode == strata::kernels::Q4Mode::kLloydClip) {
+        // WP-2a grid without new modes: STRATA_KV_CLIP_K/_V carry kappa_K/_V (default 0.94, kappa = 1 is kLloyd).
+        // The harness passes them per run (--env); the parity test sets them directly (qsa_set_kv_clip).
+        const char* ek = std::getenv("STRATA_KV_CLIP_K");
+        const char* ev = std::getenv("STRATA_KV_CLIP_V");
+        strata::kernels::qsa_set_kv_clip(ek != nullptr ? (float) std::atof(ek) : 0.94f,
+                                         ev != nullptr ? (float) std::atof(ev) : 0.94f);
+    }
 }
 strata::kernels::Q4Mode qsa_kv_q4_mode() { return g_kv_q4_mode; }
 void qsa_set_kv_hybrid(bool enabled) { g_kv_hybrid = enabled; }

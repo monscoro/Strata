@@ -639,6 +639,23 @@ Antwort-Übereinstimmung).
 - Nadel-Gate für die WP-1-Arme entfällt begründet: ohne Gewinner gibt es kein KL-Urteil, das ein Gate
   bräuchte; die Anker (fp16/int8 18/18) bleiben für WP-2a Vergleichsmaßstab.
 
+### 7.10 WP-2a Clip gebaut, Parität 10/10, Messung offen (2026-10-16)
+
+Ein Modus (`kLloydClip` 8 = `--kv q4lm32c`), keine Enum-Explosion: κ_K/κ_V sind Device-Konstanten
+(`qsa_set_kv_clip`, Default 0,94, Grid per `STRATA_KV_CLIP_K/_V` — der Harness reicht sie per `--env`
+durch, `.seg.json` protokolliert sie). Skala = κ-Quantil von |x| durch Bitonic-Netz (eine Lane pro Wert,
+alle lesen dieselbe Lane — kein Reduktions-Ulp-Risiko), Tabelle/Leser unverändert, eigener Format-Int
+(`kKvQ4lmC`).
+
+**Parität 10/10 grün**, inkl. κ=1.0-Identität (MSE 2,740e−02 = `q4lm32` exakt) und Engine-Smoke (κ=1.0
+token-identisch zu `q4lm32`, Default-κ verschieden). SYCL/Metal unangefaßt (Präzedenz §7.5).
+
+**MSE-Vorbefund (gfx1200, synthetisch N(0,1) + 498.688 rotierte Werte, Python-Replay bestätigt):**
+κ=0,94 → 5,346e−02 (2× schlechter als `q4lm32`), κ=0,92 → 9,139e−02 (3,3×). Post-FWHT-Werte sind
+schwanzarm (max/32 ≈ 2,36σ); Clippen wirft echte Masse weg, statt Ausreißer zu zähmen — OSCRARs
+0,96/0,92 gelten für unrotierte K-Kanäle, nicht für unsere Geometrie. Das Modell entscheidet (3 Arme
+laufen: (1,0/1,0)-Identität, (0,94/0,94), OSCAR-Paar (0,96/0,92)); Anker aus WP-1 werden wiederverwendet.
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist

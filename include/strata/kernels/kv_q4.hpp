@@ -101,6 +101,11 @@ enum class Q4Mode : int {
     // The Hadamard skepticism gets measured, not opined - in both directions (OSCAR's INT2 ablation says H
     // carries ~18 points in their pipeline; this arm says what it carries in ours).
     kLloydNoRot = 7,  ///< `--kv q4lm32nr`: kLloyd's writer with no Hadamard anywhere (ablation arm)
+    // WP-2a (workpackage section 5.6): clipped scale - the block scale from the kappa-quantile of |x| instead
+    // of max|x|, same 16-level table, same readers. K and V clip separately (kappa_k, kappa_v: device constants
+    // set by qsa_set_kv_clip, default 0.94, grid via STRATA_KV_CLIP_K/_V): OSCAR clips K less than V. kappa = 1
+    // is exactly kLloyd (quantile index 31 is the maximum), which is the arm's built-in identity check.
+    kLloydClip = 8,  ///< `--kv q4lm32c`: 16 levels, d = quantile(|x|, kappa)/87 per tensor (clipping arm)
 };
 
 /// True for every level-table mode. A *reader* (gather, fused attention, a block move) only has to know the table,
@@ -122,6 +127,11 @@ inline constexpr int8_t kQ4l8Levels[8] = {-69, -43, -24, -8, 8, 24, 43, 69};
 /// scale divisor 69 instead of 87).
 inline constexpr bool q4_l8_k(Q4Mode m) { return m == Q4Mode::kLloyd8 || m == Q4Mode::kLloyd8K; }
 inline constexpr bool q4_l8_v(Q4Mode m) { return m == Q4Mode::kLloyd8 || m == Q4Mode::kLloyd8V; }
+
+/// The WP-2a clipping arm's per-tensor quantiles (kLloydClip): d = quantile(|x|, kappa) / 87 with these kappas,
+/// default 0.94 (workpackage section 5.6), grid via the STRATA_KV_CLIP_K / STRATA_KV_CLIP_V environment variables.
+/// kappa = 1 is kLloyd (index 31 of 32 sorted magnitudes is the maximum). Set by qsa_set_kv_clip (CUDA/HIP).
+void qsa_set_kv_clip(float kappa_k, float kappa_v);
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 /// The dequant map: the nibble a q4lm32 block stores, to the integer level it stands for.

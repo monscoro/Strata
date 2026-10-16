@@ -17,6 +17,9 @@
 // 9. The WP-1 no-rotation arm (`--kv q4lm32nr`, Q4Mode::kLloydNoRot): the writer IS kLloyd's writer (same table,
 //    same scale), bitwise against q4lm32's host reference. The rotation skip itself (kv_rot false) is engine
 //    wiring, not kernel arithmetic - the smoke test covers it, not this file.
+// 10. The WP-2a clipping arm (`--kv q4lm32c`, Q4Mode::kLloydClip): d from the kappa-quantile of |x| through a
+//    bitonic network, bitwise against a host replay - including kappa = 1, which must equal q4lm32's own
+//    reference bit for bit (the arm's identity check), plus the reader reading 16 levels and the MSE report.
 
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -218,6 +221,36 @@ void quantize_block_q4l_vrms_host(const float* x, k::block_q4_0& blk) {
     const float ss = warp_sum32_host(sq);
     const float d = sqrtf(ss * (1.0f / 32.0f)) * (1.0f / 32.0f);
     quantize_block_q4l_at_host(x, d, blk);
+}
+
+// The WP-2a clipping arm's scale (Q4Mode::kLloydClip, q4l_quantile in kv_q4.cu) replayed line for line: the 32
+// magnitudes through the kernel's own bitonic network (same pairing, fminf/fmaxf - std::fmin/std::fmax here),
+// then the quantile's lane picked out. kappa = 1 sorts index 31 to the maximum, which must equal
+// quantize_block_q4l_host bit for bit (the arm's built-in identity check). idx clamps like the kernel.
+float q4l_quantile_host(const float* x, float kappa) {
+    float lane[32];
+    for (int i = 0; i < 32; ++i) lane[i] = std::fabs(x[i]);
+    for (int k = 2; k <= 32; k <<= 1) {
+        for (int j = k >> 1; j > 0; j >>= 1) {
+            float nxt[32];
+            for (int i = 0; i < 32; ++i) {
+                const float o = lane[i ^ j];
+                const bool up = (((i & k) == 0) != ((i & j) != 0));
+                nxt[i] = up ? std::fmin(lane[i], o) : std::fmax(lane[i], o);
+            }
+            for (int i = 0; i < 32; ++i) lane[i] = nxt[i];
+        }
+    }
+    int idx = (int) (kappa * 32.0f);
+    if (idx < 0) idx = 0;
+    if (idx > 31) idx = 31;
+    return lane[idx];
+}
+
+void quantize_block_q4lc_host(const float* x, float kappa, k::block_q4_0& blk) {
+    // Multiply, not divide: the kernel scales by (1/87), and Test 5's divide form only matches it empirically.
+    // The twin must use the kernel's own expression.
+    quantize_block_q4l_at_host(x, q4l_quantile_host(x, kappa) * (1.0f / (float) k::kQ4lMax), blk);
 }
 
 // `--kv q4lm32s`: the block scale from ONE least-squares pass over the same levels - d0 = max|x| / 87 fixes the
@@ -844,7 +877,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 7: the WP-2 probe - the 8-level table on both tensors, on K only, on V only (`--kv q4lm8*`)
     // -------------------------------------------------------------
-    std::printf("[7/9] Verifying the probe's 8-level table: q4lm8 (both), q4lm8k (K), q4lm8v (V)...\n");
+    std::printf("[7/10] Verifying the probe's 8-level table: q4lm8 (both), q4lm8k (K), q4lm8v (V)...\n");
     const k::Q4Mode probe_mode[3] = {k::Q4Mode::kLloyd8, k::Q4Mode::kLloyd8K, k::Q4Mode::kLloyd8V};
     const char* probe_name[3] = {"q4lm8 (8 on K and V)", "q4lm8k (8 on K, 16 on V)", "q4lm8v (16 on K, 8 on V)"};
     double mse8[3] = {0.0, 0.0, 0.0};
@@ -946,7 +979,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 8: the WP-1 treatment arm - K keeps max|x|/87, V takes rms/32 (`--kv q4lm32t`)
     // -------------------------------------------------------------
-    std::printf("[8/9] Verifying the treatment arm: q4lm32t (K max|x|/87, V rms/32)...\n");
+    std::printf("[8/10] Verifying the treatment arm: q4lm32t (K max|x|/87, V rms/32)...\n");
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
@@ -1037,7 +1070,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 9: the WP-1 no-rotation arm - the writer IS kLloyd's writer (`--kv q4lm32nr`)
     // -------------------------------------------------------------
-    std::printf("[9/9] Verifying the no-rotation arm: q4lm32nr writes kLloyd's blocks...\n");
+    std::printf("[9/10] Verifying the no-rotation arm: q4lm32nr writes kLloyd's blocks...\n");
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
@@ -1082,6 +1115,106 @@ int main() {
     } else {
         std::printf("  -> No-rotation arm: writer bitwise identical to kLloyd's writer (OK)\n");
     }
+
+    // -------------------------------------------------------------
+    // Test 10: the WP-2a clipping arm - d from the kappa-quantile of |x| (`--kv q4lm32c`)
+    // -------------------------------------------------------------
+    std::printf("[10/10] Verifying the clipping arm: q4lm32c (kappa-quantile scale)...\n");
+    // The test drives kappa directly (the engine reads it from STRATA_KV_CLIP_K/_V at startup).
+    const float clip_grid[3] = {1.0f, 0.94f, 0.92f};
+    double mse_c[3] = {0.0, 0.0, 0.0};
+    for (int arm = 0; arm < 3; ++arm) {
+        k::qsa_set_kv_clip(clip_grid[arm], clip_grid[arm]);
+        for (int n = 0; n < n_fill; ++n) {
+            const int pos = positions[n];
+            int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
+            ck(cudaMemcpy(d_step, hstep, sizeof(hstep), cudaMemcpyHostToDevice), "memcpy step");
+            ck(cudaMemcpy(d_kcur, host_k[pos].data(), host_k[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+               "memcpy k");
+            ck(cudaMemcpy(d_vcur, host_v[pos].data(), host_v[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+               "memcpy v");
+            k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
+                                 k::Q4Mode::kLloydClip);
+            ck(cudaDeviceSynchronize(), "kv_append_q4_step clip");
+        }
+        ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4");
+        ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4");
+
+        long bad_c = 0, n_c = 0;
+        double sse_c = 0.0;
+        for (int n = 0; n < n_fill; ++n) {
+            const int pos = positions[n];
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                for (int h = 0; h < H; ++h) {
+                    const long long page = (long long) table[pos / P];
+                    const long long row = (page * H + h) * P + (pos % P);
+                    const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                    const float* raw_vec = (is_v ? host_v[pos].data() : host_k[pos].data()) + h * D;
+                    for (int b = 0; b < blocks_per_head; ++b) {
+                        k::block_q4_0 host_blk;
+                        // kappa = 1 must equal kLloyd's own reference (identity); the rest the clip twin.
+                        if (clip_grid[arm] == 1.0f) quantize_block_q4l_host(raw_vec + b * 32, host_blk);
+                        else quantize_block_q4lc_host(raw_vec + b * 32, clip_grid[arm], host_blk);
+                        const k::block_q4_0* gpu_blk = reinterpret_cast<const k::block_q4_0*>(pool_ptr) + b;
+                        if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
+                            if (bad_c == 0)
+                                std::printf("CLIP MISMATCH kappa=%.2f at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n",
+                                            clip_grid[arm], n, pos, is_v, h, b);
+                            ++bad_c;
+                        }
+                        for (int j = 0; j < 32; ++j) {
+                            const double e =
+                                (double) dequant_q4l_host(host_blk, j) - (double) raw_vec[b * 32 + j];
+                            sse_c += e * e;
+                        }
+                        n_c += 32;
+                    }
+                }
+            }
+        }
+        mse_c[arm] = sse_c / (double) n_c;
+        if (bad_c > 0) {
+            std::fprintf(stderr, "FAIL: %ld clip blocks (kappa=%.2f) differ from host reference\n", bad_c,
+                         clip_grid[arm]);
+            ++g_fail;
+        }
+    }
+    // The reader sees 16 levels (replay the gather once, kappa 0.92 still set): level * stored scale.
+    k::qsa_set_kv_clip(0.92f, 0.92f);
+    int32_t hstepc[k::kStepCount] = {0, 0, 0, max_ids};
+    ck(cudaMemcpy(d_step, hstepc, sizeof(hstepc), cudaMemcpyHostToDevice), "memcpy step gather clip");
+    k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch, nullptr,
+                         k::Q4Mode::kLloydClip);
+    ck(cudaDeviceSynchronize(), "kv_gather_q4_step clip");
+    ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h k_scratch clip");
+    ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h v_scratch clip");
+    long bad_read_c = 0;
+    for (int i = 0; i < max_ids; ++i) {
+        const int cell = ids[i];
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            const long long page = (long long) table[cell / P];
+            const long long row = (page * H) * P + (cell % P);
+            const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+            const uint16_t* gathered = (is_v ? h_v_scratch.data() : h_k_scratch.data()) + i * H * D;
+            for (int h = 0; h < H; ++h) {
+                for (int d = 0; d < D; ++d) {
+                    const k::block_q4_0* blk =
+                        reinterpret_cast<const k::block_q4_0*>(pool_ptr + h * P * bytes_per_head) + d / 32;
+                    if (k::f32_from_f16(gathered[h * D + d]) != dequant_q4l_host(*blk, d % 32)) ++bad_read_c;
+                }
+            }
+        }
+    }
+    if (bad_read_c > 0) {
+        std::fprintf(stderr, "FAIL: %ld gathered clip values are not level * scale\n", bad_read_c);
+        ++g_fail;
+    }
+    if (g_fail == 0)
+        std::printf("  -> Clipping arm: blocks bitwise equal (incl. kappa=1 identity), reader 16-level (OK)\n");
+    std::printf("  -> Clip MSE over %d values: kappa=1 %.3e (q4lm32 %.3e, must match), 0.94 %.3e, 0.92 %.3e\n",
+                498688, mse_c[0], mse_l, mse_c[1], mse_c[2]);
 
     cudaFree(d_src);
     cudaFree(d_dst);
