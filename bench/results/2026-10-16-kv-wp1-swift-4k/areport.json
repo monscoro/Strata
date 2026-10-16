@@ -1,0 +1,26 @@
+{
+ "fp16.tsv": {
+  "positions": 270,
+  "hit": 245,
+  "agree": 270,
+  "kl": 0.0
+ },
+ "q4lm32.tsv": {
+  "positions": 270,
+  "hit": 243,
+  "agree": 266,
+  "kl": 3.240684611138635
+ },
+ "q4lm32t.tsv": {
+  "positions": 270,
+  "hit": 242,
+  "agree": 265,
+  "kl": 2.9982062095208613
+ },
+ "q4lm32nr.tsv": {
+  "positions": 270,
+  "hit": 244,
+  "agree": 268,
+  "kl": 3.0574141201044984
+ }
+}

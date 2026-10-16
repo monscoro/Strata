@@ -623,6 +623,22 @@ drei verschiedenen Ausgaben (`q4lm32t` 198 19747 5587…, `q4lm32nr` 198 19747 1
 bei 32K. **Offen:** Phase 1 (cwe-2k Swift mit Power: fp16/int8/q4_0/q4lm32 + Behandlung + `q4lm8v` + No-Rotation),
 dann cwe-4k für die Gewinner; Nadel-Gate 32K für die neuen Arme vor ihrem KL-Urteil.
 
+### 7.9 WP-1-Urteil: Bit tot, zwei Gleichstände (2026-10-16, cwe-2k + cwe-4k auf Swift)
+
+`bench/results/2026-10-16-kv-wp1-swift/` (2K) und `...-4k/` (4K, ohne den entschiedenen Bit-Arm). Anker
+reproduzieren exakt. McNemar überall p ≥ 0,25 (16 Segmente ändern daran prinzipiell nichts: 98–99 %
+Antwort-Übereinstimmung).
+
+- **Bit (`q4lm8v`, K16/V8): tot.** 2K +51 % KL gegen `q4lm32` (t −3,60, 0/8). Die 3-Bit-Hoffnung endet hier.
+- **Behandlung (`q4lm32t`): toter Gleichstand auf beiden Längen** (beide Male t +0,21 ganz). Kein Mandat,
+  kein Veto für WP-2.
+- **No-Rotation (`q4lm32nr`): Gleichstand** (2K t +0,21, 4K t −1,31/−0,17, nirgends signifikant). Hadamard
+  trägt bei 4-Bit-Lloyd nichts Messbares; Produktionsnutzen (3 FWHTs gespart) ist WP-2-/WP-4-Sache.
+- Zwei stille Engine-Tode auf dem NoRot-Arm (2 von 4 Läufen, beide früh, kein Log, zwei saubere 8/8
+  dazwischen): intermittente Treiber-Instabilität, kein verfolgtes Muster.
+- Nadel-Gate für die WP-1-Arme entfällt begründet: ohne Gewinner gibt es kein KL-Urteil, das ein Gate
+  bräuchte; die Anker (fp16/int8 18/18) bleiben für WP-2a Vergleichsmaßstab.
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist
