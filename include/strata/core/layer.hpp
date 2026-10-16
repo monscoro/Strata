@@ -223,7 +223,8 @@ struct QsaState {
     /// with Max-Lloyd's 16 levels in place of ggml's uniform grid (kv_q4.hpp, kQ4lMap). Sets kv_q4 too - every pool,
     /// page, stream and snapshot rule is Q4_0's - and this carries the two things that differ: the nibble -> value
     /// map (both modes) and the writer's scale rule (kLloyd 1 = max|x|/87, kLloydLs 2 = the block's least-squares
-    /// scale). kUniform is plain q4_0.
+    /// scale). kUniform is plain q4_0. WP-1 adds kLloydVrms 6 (V rms/32 scale, same table) and kLloydNoRot 7
+    /// (kLloyd's blocks with no rotation anywhere - kv_rot stays false, see qsa_state_init).
     strata::kernels::Q4Mode kv_q4_mode = strata::kernels::Q4Mode::kUniform;
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
@@ -329,7 +330,7 @@ strata::kernels::Q4Mode qsa_kv_q4_mode();
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
 /// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvQ4lm /
-/// kKvQ4lmS / kKvHybrid).
+/// kKvQ4lmS / kKvQ4lmT / kKvQ4lmNR / kKvHybrid).
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
     // q4lm32 / q4lm32s: kKvQ4's blocks with another nibble -> value map (and, for q4lm32s, another scale rule) - a
@@ -340,6 +341,9 @@ inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8) return strata::kernels::kKvQ4lm8;
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8K) return strata::kernels::kKvQ4lm8K;
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8V) return strata::kernels::kKvQ4lm8V;
+    // WP-1: the treatment arm (V rms scale, same table) and the no-rotation arm (unrotated blocks).
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydVrms) return strata::kernels::kKvQ4lmT;
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydNoRot) return strata::kernels::kKvQ4lmNR;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

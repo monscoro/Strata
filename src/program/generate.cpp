@@ -727,6 +727,12 @@ void usage() {
                  "  --kv q4lm32s         the same levels with each block's own least-squares scale instead of\n"
                  "                       max|x|/87: one extra reduction per block in the writer, the lowest error\n"
                  "                       of the three (docs/KV_QUANT_WORKPACKAGE.md)\n"
+                 "  --kv q4lm32t         WP-1 TREATMENT (measurement only): q4lm32's blocks and rotation, but V\n"
+                 "                       with an RMS scale (rms/32, norm-like) instead of max|x|/87 - K keeps\n"
+                 "                       max|x|/87. Same 576 B/cell; asks whether V sees RMS cheaper than the MSE\n"
+                 "  --kv q4lm32nr        WP-1 ABLATION (measurement only): q4lm32's blocks, table and scale with no\n"
+                 "                       Hadamard anywhere - K/V unrotated, query unrotated, no rotate-back.\n"
+                 "                       Same 576 B/cell; measures what H carries in our geometry\n"
                  "  --kv q4lm8[q4lm8k|q4lm8v]  WP-2 PROBE (measurement only, not a byte layout): the same blocks\n"
                  "                       and the same 576 B/cell, with Max-Lloyd's 8-level (3-bit) table for N(0,1)\n"
                  "                       on both tensors, on K only, or on V only. Answers whether the fixed\n"
@@ -2554,20 +2560,26 @@ int main(int argc, char** argv) {
     }
     if (o.kv == "q4") o.kv = "q4_0";
     if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "q4lm32" && o.kv != "q4lm32s" &&
-        o.kv != "q4lm8" && o.kv != "q4lm8k" && o.kv != "q4lm8v" && o.kv != "k8v4") {
+        o.kv != "q4lm8" && o.kv != "q4lm8k" && o.kv != "q4lm8v" && o.kv != "q4lm32t" && o.kv != "q4lm32nr" &&
+        o.kv != "k8v4") {
         std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, q4lm32, q4lm32s, q4lm8, q4lm8k, "
-                             "q4lm8v or k8v4\n");
+                             "q4lm8v, q4lm32t, q4lm32nr or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0" || o.kv == "q4lm32" || o.kv == "q4lm32s" ||   // PR #21: 4-bit after a Hadamard rotation
-                                o.kv == "q4lm8" || o.kv == "q4lm8k" || o.kv == "q4lm8v");
+                                o.kv == "q4lm8" || o.kv == "q4lm8k" || o.kv == "q4lm8v" || o.kv == "q4lm32t" ||
+                                o.kv == "q4lm32nr");
     // `--kv q4lm32` / `q4lm32s`: the same 4-bit blocks with Max-Lloyd's levels instead of ggml's uniform grid,
     // and either max|x|/87 or the block's own least-squares scale (kv_q4.hpp, Q4Mode).  `--kv q4lm8*` is the WP-2
     // probe: the same blocks and bytes with the 8-level (3-bit) table on K and V / K only / V only - a quality
-    // measurement of a 3-bit codebook, not a 3-bit layout.
+    // measurement of a 3-bit codebook, not a 3-bit layout.  `--kv q4lm32t` / `q4lm32nr` are the WP-1 arms
+    // (workpackage section 5.5): the treatment arm (V rms/32 scale, same table) and the no-rotation ablation
+    // (kLloyd's blocks with no Hadamard anywhere).
     strata::core::qsa_set_kv_q4_mode(o.kv == "q4lm32s" ? strata::kernels::Q4Mode::kLloydLs
                                      : o.kv == "q4lm32" ? strata::kernels::Q4Mode::kLloyd
+                                     : o.kv == "q4lm32t" ? strata::kernels::Q4Mode::kLloydVrms
+                                     : o.kv == "q4lm32nr" ? strata::kernels::Q4Mode::kLloydNoRot
                                      : o.kv == "q4lm8"  ? strata::kernels::Q4Mode::kLloyd8
                                      : o.kv == "q4lm8k" ? strata::kernels::Q4Mode::kLloyd8K
                                      : o.kv == "q4lm8v" ? strata::kernels::Q4Mode::kLloyd8V

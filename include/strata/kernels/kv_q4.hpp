@@ -89,11 +89,27 @@ enum class Q4Mode : int {
     kLloyd8 = 3,   ///< `--kv q4lm8`:  8 levels on K and V
     kLloyd8K = 4,  ///< `--kv q4lm8k`: 8 levels on K, 16 on V
     kLloyd8V = 5,  ///< `--kv q4lm8v`: 16 levels on K, 8 on V
+    // WP-1 (workpackage section 5.5): two asymmetric-4-bit arms in the same 18-byte blocks at 576 B/cell.
+    // kLloydVrms keeps K's rule (d = max|x| / 87) and gives V a norm-like RMS scale (d = rms / 32 over the
+    // block's own 32 values) - the same bytes, only the scale rule differs per tensor. The reader cannot tell:
+    // both sides use the 16-level table, so it reads exactly like kLloyd. Parity measured the RMS rule at
+    // -0.82 dB against max|x| on synthetic N(0,1) (section 7.3) - the arm asks whether V sees it cheaper
+    // than the MSE does.
+    kLloydVrms = 6,  ///< `--kv q4lm32t`: 16 levels both sides, K max|x|/87, V rms/32 (treatment arm)
+    // kLloydNoRot writes exactly kLloyd's blocks (same table, same scale) but nothing is ever rotated: the
+    // FWHT on write, on the query, and the output rotate-back are all skipped (kv_rot stays false, layer.cpp).
+    // The Hadamard skepticism gets measured, not opined - in both directions (OSCAR's INT2 ablation says H
+    // carries ~18 points in their pipeline; this arm says what it carries in ours).
+    kLloydNoRot = 7,  ///< `--kv q4lm32nr`: kLloyd's writer with no Hadamard anywhere (ablation arm)
 };
 
 /// True for every level-table mode. A *reader* (gather, fused attention, a block move) only has to know the table,
 /// not how the scale was chosen - the scale is in the block - so the read side collapses to this one bit.
 inline constexpr bool q4_lloyd(Q4Mode m) { return m != Q4Mode::kUniform; }
+
+/// True when nothing is ever rotated (kLloydNoRot): the FWHT on write, on the query, and the output
+/// rotate-back are all skipped. The writer and the table are kLloyd's.
+inline constexpr bool q4_norot(Q4Mode m) { return m == Q4Mode::kLloydNoRot; }
 
 inline constexpr int8_t kQ4lMax = 87;   // == max |level|, the 16-level table
 inline constexpr int8_t kQ4l8Max = 69;  // == max |level|, the 8-level table (2.1519 sigma)

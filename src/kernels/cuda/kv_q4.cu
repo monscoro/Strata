@@ -169,11 +169,32 @@ __device__ __forceinline__ uint16_t q4l_group(float x, uint8_t& byte) {
     return f16_from_f32(d);
 }
 
-// `is_v` is the tensor of the pair this block belongs to; only the kLloyd8* probe modes look at it.
+// The WP-1 treatment arm's V scale (kv_q4.hpp, kLloydVrms): d = rms / 32 over the block's own 32 values, with the
+// same 16-level table and the same nearest-level assignment as q4l_group<false, 16> - only the scale rule differs.
+// The sum of squares runs through the same xor-butterfly as the max above (and the FIT sums), so every lane
+// reaches the same value whatever the pairing and the host reference can replay it line for line.
+__device__ __forceinline__ uint16_t q4l_group_vrms(float x, uint8_t& byte) {
+    float ss = x * x;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor_sync(0xffffffffu, ss, o);
+    float d = sqrtf(ss * (1.0f / 32.0f)) * (1.0f / 32.0f);
+    const float y = d != 0.0f ? x / d : 0.0f;
+    int k = q4l_level(y);
+    const uint8_t kc = (uint8_t) k;
+    const uint8_t khi = __shfl_down_sync(0xffffffffu, kc, 16);
+    byte = (uint8_t) (kc | (khi << 4));
+    return f16_from_f32(d);
+}
+
+// `is_v` is the tensor of the pair this block belongs to; the kLloyd8* probe modes and the WP-1 treatment
+// mode (kLloydVrms) look at it, the rest quantize K and V alike.
 template <Q4Mode M>
 __device__ __forceinline__ uint16_t q4_group_any(float x, int lane, uint8_t& byte, bool is_v = false) {
     if constexpr (M == Q4Mode::kUniform) {
         return q4_group(x, lane, byte);
+    } else if constexpr (M == Q4Mode::kLloydVrms) {
+        if (is_v) return q4l_group_vrms(x, byte);
+        return q4l_group<false, 16>(x, byte);
     } else if constexpr (M == Q4Mode::kLloyd8) {
         return q4l_group<false, 8>(x, byte);
     } else if constexpr (M == Q4Mode::kLloyd8K) {
@@ -409,6 +430,8 @@ void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table,
     const dim3 grid((unsigned) s.n_head_kv, (unsigned) (s.head_dim / QK4_0), (unsigned) (n_steps * planes));
     if (mode == Q4Mode::kLloydLs) STRATA_KV_Q4_APPEND(Q4Mode::kLloydLs);
     else if (mode == Q4Mode::kLloyd) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd);
+    else if (mode == Q4Mode::kLloydVrms) STRATA_KV_Q4_APPEND(Q4Mode::kLloydVrms);
+    else if (mode == Q4Mode::kLloydNoRot) STRATA_KV_Q4_APPEND(Q4Mode::kLloydNoRot);
     else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8);
     else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8K);
     else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8V);
@@ -439,6 +462,8 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
     for (int is_v = 0; is_v < 2; ++is_v) {
         if (mode == Q4Mode::kLloydLs) STRATA_KV_Q4_BATCH(Q4Mode::kLloydLs);
         else if (mode == Q4Mode::kLloyd) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd);
+        else if (mode == Q4Mode::kLloydVrms) STRATA_KV_Q4_BATCH(Q4Mode::kLloydVrms);
+        else if (mode == Q4Mode::kLloydNoRot) STRATA_KV_Q4_BATCH(Q4Mode::kLloydNoRot);
         else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8);
         else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8K);
         else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8V);

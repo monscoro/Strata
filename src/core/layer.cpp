@@ -710,7 +710,9 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         st.kv_int8 = false;
         st.kv_q4 = false;
     }
-    st.kv_rot = st.kv_q4 || (st.kv_int8 && g_kv_int8_rot);   // K8V4 rotates only V (below)
+    st.kv_rot = (st.kv_q4 || (st.kv_int8 && g_kv_int8_rot)) &&
+                !strata::kernels::q4_norot(st.kv_q4_mode);   // K8V4 rotates only V (below); WP-1's q4lm32nr
+                                                            // rotates nothing anywhere (ablation arm)
     st.kv_mode = p.mode;
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots

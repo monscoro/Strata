@@ -812,7 +812,7 @@ def main() -> int:
     p.add_argument("--wrap", help="a command prefix for the engine, e.g. 'systemd-run --user --scope -p MemoryMax=200G'")
     p.add_argument("--kv", default="fp16", metavar="FMT",
                    help=("the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | "
-                         "q4lm32 | q4lm32s | q4lm8 | q4lm8k | q4lm8v | k8v4"))
+                         "q4lm32 | q4lm32s | q4lm8 | q4lm8k | q4lm8v | q4lm32t | q4lm32nr | k8v4"))
     p = sub.add_parser("kvstats", help="per-layer K/V distribution stats for one calibration text "
                                        "(STRATA_KVSTATS tap + aggregation: kurtosis, crest, block-max, channels)")
     p.add_argument("--config", required=True)
@@ -836,7 +836,7 @@ def main() -> int:
     p.add_argument("--wrap")
     p.add_argument("--kv", default="fp16", metavar="FMT",
                    help=("the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | "
-                         "q4lm32 | q4lm32s | q4lm8 | q4lm8k | q4lm8v | k8v4"))
+                         "q4lm32 | q4lm32s | q4lm8 | q4lm8k | q4lm8v | q4lm32t | q4lm32nr | k8v4"))
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")

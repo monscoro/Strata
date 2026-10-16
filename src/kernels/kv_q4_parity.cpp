@@ -9,6 +9,14 @@
 //    and its reconstruction error next to q4_0's on the same input - the point of the format.
 // 6. `--kv q4lm32s` (Q4Mode::kLloydLs): the same levels with ONE least-squares pass for the block scale, bitwise
 //    against a host reference that replays the writer's butterfly in the kernel's own lane pairing.
+// 7. The WP-2 probe (`--kv q4lm8*`): the 8-level table on both tensors / K only / V only, bitwise, plus the
+//    reader picking the table per tensor.
+// 8. The WP-1 treatment arm (`--kv q4lm32t`, Q4Mode::kLloydVrms): K keeps max|x|/87, V takes rms/32 - bitwise
+//    against a host reference that replays the writer's sum-of-squares butterfly line for line, plus the reader
+//    reading both sides as 16-level.
+// 9. The WP-1 no-rotation arm (`--kv q4lm32nr`, Q4Mode::kLloydNoRot): the writer IS kLloyd's writer (same table,
+//    same scale), bitwise against q4lm32's host reference. The rotation skip itself (kv_rot false) is engine
+//    wiring, not kernel arithmetic - the smoke test covers it, not this file.
 
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -197,6 +205,19 @@ float warp_sum32_host(const float* v) {
         for (int i = 0; i < 32; ++i) lane[i] = nxt[i];
     }
     return lane[0];
+}
+
+// The WP-1 treatment arm's V scale (Q4Mode::kLloydVrms, q4l_group_vrms in kv_q4.cu) replayed line for line: the
+// sum of squares through the kernel's own xor-butterfly pairing in float - NOT the double accumulation of
+// quantize_block_q4l_rms_host above. That one measures the RULE's merit for test 5's table; this one is the
+// WRITER's twin for test 8's bitwise compare (same squares, same pairing, sqrtf, two exact scalings by the
+// power of two 1/32).
+void quantize_block_q4l_vrms_host(const float* x, k::block_q4_0& blk) {
+    float sq[32];
+    for (int i = 0; i < 32; ++i) sq[i] = x[i] * x[i];
+    const float ss = warp_sum32_host(sq);
+    const float d = sqrtf(ss * (1.0f / 32.0f)) * (1.0f / 32.0f);
+    quantize_block_q4l_at_host(x, d, blk);
 }
 
 // `--kv q4lm32s`: the block scale from ONE least-squares pass over the same levels - d0 = max|x| / 87 fixes the
@@ -823,7 +844,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 7: the WP-2 probe - the 8-level table on both tensors, on K only, on V only (`--kv q4lm8*`)
     // -------------------------------------------------------------
-    std::printf("[7/7] Verifying the probe's 8-level table: q4lm8 (both), q4lm8k (K), q4lm8v (V)...\n");
+    std::printf("[7/9] Verifying the probe's 8-level table: q4lm8 (both), q4lm8k (K), q4lm8v (V)...\n");
     const k::Q4Mode probe_mode[3] = {k::Q4Mode::kLloyd8, k::Q4Mode::kLloyd8K, k::Q4Mode::kLloyd8V};
     const char* probe_name[3] = {"q4lm8 (8 on K and V)", "q4lm8k (8 on K, 16 on V)", "q4lm8v (16 on K, 8 on V)"};
     double mse8[3] = {0.0, 0.0, 0.0};
@@ -921,6 +942,146 @@ int main() {
                 mse8[1], mse8[2]);
     std::printf("     (q4lm32's 16-level MSE was %.3e; the 8-level table is the codebook, not the 4-bit bytes)\n",
                 mse_l);
+
+    // -------------------------------------------------------------
+    // Test 8: the WP-1 treatment arm - K keeps max|x|/87, V takes rms/32 (`--kv q4lm32t`)
+    // -------------------------------------------------------------
+    std::printf("[8/9] Verifying the treatment arm: q4lm32t (K max|x|/87, V rms/32)...\n");
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
+        ck(cudaMemcpy(d_step, hstep, sizeof(hstep), cudaMemcpyHostToDevice), "memcpy step");
+        ck(cudaMemcpy(d_kcur, host_k[pos].data(), host_k[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy k");
+        ck(cudaMemcpy(d_vcur, host_v[pos].data(), host_v[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy v");
+        k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
+                             k::Q4Mode::kLloydVrms);
+        ck(cudaDeviceSynchronize(), "kv_append_q4_step treatment");
+    }
+    ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4");
+    ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4");
+
+    long bad_t = 0, n_t = 0;
+    double sse_t = 0.0;
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            for (int h = 0; h < H; ++h) {
+                const long long page = (long long) table[pos / P];
+                const long long row = (page * H + h) * P + (pos % P);
+                const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                const float* raw_vec = (is_v ? host_v[pos].data() : host_k[pos].data()) + h * D;
+                for (int b = 0; b < blocks_per_head; ++b) {
+                    k::block_q4_0 host_blk;
+                    if (is_v) quantize_block_q4l_vrms_host(raw_vec + b * 32, host_blk);
+                    else quantize_block_q4l_host(raw_vec + b * 32, host_blk);
+                    const k::block_q4_0* gpu_blk = reinterpret_cast<const k::block_q4_0*>(pool_ptr) + b;
+                    if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
+                        if (bad_t == 0)
+                            std::printf("TREATMENT MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n", n, pos,
+                                        is_v, h, b);
+                        ++bad_t;
+                    }
+                    for (int j = 0; j < 32; ++j) {
+                        const double e = (double) dequant_q4l_host(host_blk, j) - (double) raw_vec[b * 32 + j];
+                        sse_t += e * e;
+                    }
+                    n_t += 32;
+                }
+            }
+        }
+    }
+    if (bad_t > 0) {
+        std::fprintf(stderr, "FAIL: %ld treatment blocks differ from host reference\n", bad_t);
+        ++g_fail;
+    }
+
+    // The reader must see both sides as 16-level (q4_lloyd, kv_q4.hpp): replay the gather over the blocks just
+    // written and compare against level * stored scale.
+    int32_t hstept[k::kStepCount] = {0, 0, 0, max_ids};
+    ck(cudaMemcpy(d_step, hstept, sizeof(hstept), cudaMemcpyHostToDevice), "memcpy step gather treatment");
+    k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch, nullptr,
+                         k::Q4Mode::kLloydVrms);
+    ck(cudaDeviceSynchronize(), "kv_gather_q4_step treatment");
+    ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h k_scratch treatment");
+    ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h v_scratch treatment");
+    long bad_read_t = 0;
+    for (int i = 0; i < max_ids; ++i) {
+        const int cell = ids[i];
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            const long long page = (long long) table[cell / P];
+            const long long row = (page * H) * P + (cell % P);
+            const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+            const uint16_t* gathered = (is_v ? h_v_scratch.data() : h_k_scratch.data()) + i * H * D;
+            for (int h = 0; h < H; ++h) {
+                for (int d = 0; d < D; ++d) {
+                    const k::block_q4_0* blk =
+                        reinterpret_cast<const k::block_q4_0*>(pool_ptr + h * P * bytes_per_head) + d / 32;
+                    if (k::f32_from_f16(gathered[h * D + d]) != dequant_q4l_host(*blk, d % 32)) ++bad_read_t;
+                }
+            }
+        }
+    }
+    if (bad_read_t > 0) {
+        std::fprintf(stderr, "FAIL: %ld gathered treatment values are not level * scale\n", bad_read_t);
+        ++g_fail;
+    }
+    if (g_fail == 0)
+        std::printf("  -> Treatment arm: K/V blocks bitwise equal, reader sees 16 levels both sides (OK)\n");
+    std::printf("  -> Treatment MSE over %ld values: %.3e (q4lm32 %.3e, %+.2f dB - the arm asks the model, not the MSE)\n",
+                n_t, sse_t / (double) n_t, mse_l, 10.0 * std::log10(mse_l / (sse_t / (double) n_t)));
+
+    // -------------------------------------------------------------
+    // Test 9: the WP-1 no-rotation arm - the writer IS kLloyd's writer (`--kv q4lm32nr`)
+    // -------------------------------------------------------------
+    std::printf("[9/9] Verifying the no-rotation arm: q4lm32nr writes kLloyd's blocks...\n");
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
+        ck(cudaMemcpy(d_step, hstep, sizeof(hstep), cudaMemcpyHostToDevice), "memcpy step");
+        ck(cudaMemcpy(d_kcur, host_k[pos].data(), host_k[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy k");
+        ck(cudaMemcpy(d_vcur, host_v[pos].data(), host_v[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy v");
+        k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
+                             k::Q4Mode::kLloydNoRot);
+        ck(cudaDeviceSynchronize(), "kv_append_q4_step norot");
+    }
+    ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4");
+    ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4");
+
+    long bad_nr = 0;
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            for (int h = 0; h < H; ++h) {
+                const long long page = (long long) table[pos / P];
+                const long long row = (page * H + h) * P + (pos % P);
+                const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                const float* raw_vec = (is_v ? host_v[pos].data() : host_k[pos].data()) + h * D;
+                for (int b = 0; b < blocks_per_head; ++b) {
+                    k::block_q4_0 host_blk;
+                    quantize_block_q4l_host(raw_vec + b * 32, host_blk);   // kLloyd's own reference
+                    const k::block_q4_0* gpu_blk = reinterpret_cast<const k::block_q4_0*>(pool_ptr) + b;
+                    if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
+                        if (bad_nr == 0)
+                            std::printf("NOROT MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n", n, pos, is_v,
+                                        h, b);
+                        ++bad_nr;
+                    }
+                }
+            }
+        }
+    }
+    if (bad_nr > 0) {
+        std::fprintf(stderr, "FAIL: %ld no-rotation blocks differ from kLloyd's reference\n", bad_nr);
+        ++g_fail;
+    } else {
+        std::printf("  -> No-rotation arm: writer bitwise identical to kLloyd's writer (OK)\n");
+    }
 
     cudaFree(d_src);
     cudaFree(d_dst);

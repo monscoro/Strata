@@ -598,6 +598,31 @@ Jede Stufe produziert genau eine Entscheidung. CPU-Arbeit (Bauen) läuft paralle
 Bestätigung nötig); ROT-Arm; 16K/32K-Framing (c); SRHT/WP-4; Delta/WP-5; Decode-only-Arm (braucht
 Engine-Prefill-Pfad); Teacher-forced-NIAH-Fallback.
 
+### 7.8 WP-1: beide Arme gebaut, Parität 9/9 grün (2026-10-16, Phase-0-Punkte 0+1 erledigt)
+
+Gebaut sind die zwei neuen `Q4Mode`-Werte aus §5.5 (`kLloydVrms` 6 = `--kv q4lm32t`, `kLloydNoRot` 7 =
+`--kv q4lm32nr`), die RMS-Skalenregel im Schreiber (`q4l_group_vrms`: Summe der Quadrate durch denselben
+Xor-Butterfly, `sqrtf`, zweimal exakt 1/32), der No-Rotation-Pfad (ein Einzeiler in `qsa_state_init`: `kv_rot`
+bleibt falsch — trägt automatisch Decode, Verify/Prompt und MTP, weil alle drei nur `st.kv_rot` lesen), zwei
+neue Format-Ints (`kKvQ4lmT` 9, `kKvQ4lmNR` 10 — Byte-Mover behandeln sie wie alle q4-Formate), CLI + Harness.
+Der Leser ist unverändert: beide Arme lesen 16-Pegel wie `q4lm32` (`q4_lloyd`, `pools.q4_mode`). SYCL-Zwilling
+und Metal-Stub sind absichtlich unangefaßt (wie die Sonde in §7.5: dort bauen/verifizieren wir nicht; neue Modi
+fallen dort in die bestehenden Zweige).
+
+**Parität** (`kv_q4_parity`, gfx1200): 9/9 grün. Tests 1–7 reproduzieren exakt die Zahlen aus §7.3/§7.5
+(q4lm32 2,740e−02, q4lm32s 2,551e−02, Sonde 7,672/7,662e−02, RMS-Regel 3,547e−02 = −0,82 dB) — der Default-Pfad
+ist unberührt. Neu: Test 8 schreibt `q4lm32t` bit-identisch zur Host-Referenz (K `max|x|`, V exakter
+Float-Butterfly-Replay) und liest beide Seiten 16-Pegel; gemischte Treatment-MSE 3,147e−02 (−0,60 dB gegen
+`q4lm32` — der Arm fragt das Modell, nicht den MSE). Test 9 schreibt `q4lm32nr` bit-identisch zu `q4lm32`s
+Referenz (Schreiber = kLloyd-Schreiber).
+
+**Engine-Smoke** (Q2_0/HIP, `--tokens 9707,1879,264,1229,13 --max-new 6 --greedy`): alle drei Arme Exit 0 mit
+drei verschiedenen Ausgaben (`q4lm32t` 198 19747 5587…, `q4lm32nr` 198 19747 10885…, `q4lm32` 198 257 621…).
+
+**Nadel-Anker** (Phase-0-Punkt 0): `bench/results/2026-10-16-needle-anchors-swift/` — fp16 und int8 je 18/18
+bei 32K. **Offen:** Phase 1 (cwe-2k Swift mit Power: fp16/int8/q4_0/q4lm32 + Behandlung + `q4lm8v` + No-Rotation),
+dann cwe-4k für die Gewinner; Nadel-Gate 32K für die neuen Arme vor ihrem KL-Urteil.
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist
