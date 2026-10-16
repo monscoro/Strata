@@ -55,6 +55,7 @@ import os
 import pathlib
 import random
 import string
+import struct
 import subprocess
 import sys
 import time
@@ -287,6 +288,180 @@ def cmd_run(a) -> int:
     pathlib.Path(str(out) + ".seg.json").write_text(json.dumps({"segments": segs, "config": a.config,
                                                                  "args": args, "env": a.env or [],
                                                                  "expert_cache_lines": cache}, indent=1))
+    return 0
+
+
+# ------------------------------------------------------------------------------------------------ kvstats
+KVSTATS_MAGIC = b"KVSTATS\x02"
+KVSTATS_GROUP = struct.Struct("<5d 24d 32Q 256f")   # cnt,sum,sumsq,sum4,mx + bsum/bsumsq/bmx x8 + hist + chmax
+KVSTATS_SECT = struct.Struct("<q q I")              # pos0, n_tok, ngroups, then (uint16 gidx + group) each
+KVSTATS_KAPPA = [0.80 + 0.02 * i for i in range(11)]
+KVSTATS_BINLO = [0.0] + [2.0 ** (b - 8) for b in range(1, 32)] + [float("inf")]   # bin b: [BINLO[b], BINLO[b+1])
+KVSTATS_BINMID = [math.sqrt(a * b) if a > 0 else 0.0 for a, b in zip(KVSTATS_BINLO, KVSTATS_BINLO[1:])]
+
+
+def kvstats_decode_gidx(gi: int) -> tuple[int, int, int, int]:
+    tap, r = gi % 2, gi // 2
+    is_v, r = r % 2, r // 2
+    return r // 8, r % 8, is_v, tap
+
+
+def kvstats_aggregate(raw: bytes, n_tokens: int) -> dict:
+    """The STRATA_KVSTATS sections file into per-(layer,head,tensor,tap) distribution stats. Stdlib only."""
+    if raw[:8] != KVSTATS_MAGIC:
+        raise SystemExit("kvstats: bad magic (is STRATA_KVSTATS the raw file, not the JSON?)")
+    groups: dict[tuple, dict] = {}
+    windows = []
+    off, n = 8, len(raw)
+    while off < n:
+        pos0, ntok, ng = KVSTATS_SECT.unpack_from(raw, off)
+        off += KVSTATS_SECT.size
+        windows.append((pos0, ntok))
+        for _ in range(ng):
+            gi = struct.unpack("<H", raw[off:off + 2])[0]
+            off += 2
+            vals = KVSTATS_GROUP.unpack_from(raw, off)
+            off += KVSTATS_GROUP.size
+            layer, head, is_v, tap = kvstats_decode_gidx(gi)
+            g = groups.setdefault((layer, head, is_v, tap),
+                                  {"cnt": 0.0, "s1": 0.0, "s2": 0.0, "s4": 0.0, "mx": 0.0,
+                                   "bs": [0.0] * 8, "bsq": [0.0] * 8, "bx": [0.0] * 8,
+                                   "hist": [0] * 32, "chmax": [0.0] * 256})
+            g["cnt"] += vals[0]
+            g["s1"] += vals[1]
+            g["s2"] += vals[2]
+            g["s4"] += vals[3]
+            g["mx"] = max(g["mx"], vals[4])
+            for b in range(8):
+                g["bs"][b] += vals[5 + b]
+                g["bsq"][b] += vals[13 + b]
+                g["bx"][b] = max(g["bx"][b], vals[21 + b])
+            for b in range(32):
+                g["hist"][b] += vals[29 + b]
+            for c in range(256):
+                g["chmax"][c] = max(g["chmax"][c], vals[61 + c])
+    out: dict = {"groups": {}, "checks": {}}
+    fwht_worst, fwht_n = 0.0, 0
+    pre_s2: dict[tuple, float] = {}
+    for key in sorted(groups):
+        layer, head, is_v, tap = key
+        if not tap:
+            pre_s2[(layer, head, is_v)] = groups[key]["s2"]
+    for key in sorted(groups):
+        layer, head, is_v, tap = key
+        g = groups[key]
+        nv = g["cnt"]
+        mean = g["s1"] / nv
+        m2 = g["s2"] / nv
+        var = m2 - mean * mean
+        rms = math.sqrt(max(m2, 0.0))
+        kurt = (g["s4"] / nv) / (var * var) - 3.0 if var > 0 else float("nan")
+        tot = sum(g["hist"]) or 1
+        acc, dec = 0, {}
+        for b in range(32):
+            acc += g["hist"][b]
+            for p in (0.50, 0.90, 0.99):
+                if p not in dec and acc >= p * tot:
+                    dec[p] = KVSTATS_BINLO[b]
+        exc = {}
+        for k in (2, 3, 4, 5):   # binned approximation by geometric bin midpoint (centers the straddle
+            thr = k * rms        # error instead of maximizing it); overflow bin midpoint is +inf: always in
+            exc[str(k)] = sum(h for b, h in enumerate(g["hist"]) if KVSTATS_BINMID[b] >= thr) / tot
+        uncl = {}   # binned approximation by lower edge (mild overestimate; keeps unclipped[1.00] == 1.0 exact)
+        if g["mx"] > 0:
+            for k in KVSTATS_KAPPA:
+                uncl[f"{k:.2f}"] = sum(h for b, h in enumerate(g["hist"])
+                                       if KVSTATS_BINLO[b] < k * g["mx"]) / tot
+        ch = sorted(g["chmax"], reverse=True)
+        ctot = sum(ch) or 1.0
+        name = f"L{layer:02d}.h{head}.{'V' if is_v else 'K'}.{'post' if tap else 'pre'}"
+        out["groups"][name] = {"values": nv, "mean": mean, "rms": rms, "kurtosis_excess": kurt,
+                               "maxabs": g["mx"], "crest": g["mx"] / rms if rms > 0 else float("nan"),
+                               "bmax_p50": dec.get(0.50, float("nan")), "bmax_p90": dec.get(0.90, float("nan")),
+                               "bmax_p99": dec.get(0.99, float("nan")), "exceed_rms": exc,
+                               "unclipped_kappa": uncl,
+                               "channels": {"top1_mass": ch[0] / ctot, "top8_mass": sum(ch[:8]) / ctot,
+                                            "top8_idx": sorted(range(256),
+                                                               key=lambda c: -g["chmax"][c])[:8]}}
+        if tap:
+            a = pre_s2.get((layer, head, is_v))
+            b = g["s2"]
+            if a is not None and a > 0:
+                fwht_n += 1
+                fwht_worst = max(fwht_worst, abs(b - a) / a)
+    cov = sum(nt for _, nt in windows)
+    out["checks"] = {"tokens": n_tokens, "covered_tokens": cov, "windows": [list(w) for w in windows],
+                     "ngroups": len(groups), "fwht_norm_matched": fwht_n,
+                     "fwht_norm_maxreldiff": fwht_worst}
+    return out
+
+
+def cmd_kvstats(a) -> int:
+    """One calibration text through the engine with STRATA_KVSTATS set, then aggregate to JSON."""
+    cfg = json.load(open(a.config, encoding="utf-8-sig"))
+    tok = load_tokenizer(cfg["tokenizer"])
+    text = pathlib.Path(a.text).read_text(encoding="utf-8")
+    ids = tok.encode(text)[:a.tokens]
+    if len(ids) < a.tokens:
+        raise SystemExit(f"{a.text}: only {len(ids)} tokens (< {a.tokens})")
+    out = pathlib.Path(a.out).resolve()
+    raw = pathlib.Path(a.raw or (str(out) + ".raw.bin")).resolve()
+    if raw.exists():
+        raw.unlink()
+    env = dict(os.environ)
+    env.update(cfg.get("env", {}))
+    if cfg.get("lib_dirs"):
+        # Windows loads the engine's HIP libraries from PATH (serve/server.py's child_env), Linux from LD_LIBRARY_PATH
+        var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+        env[var] = os.pathsep.join(cfg["lib_dirs"] + ([env[var]] if env.get(var) else []))
+    env.update(FIXED_ENV)
+    for kv in a.env or []:
+        k, _, v = kv.partition("=")
+        env[k] = v
+    env["STRATA_KVSTATS"] = str(raw)
+    # Force the serial verify loop (same path every measurement uses): with STRATA_LOGPOS unset the engine
+    # takes the pipelined prompt path, whose windows the stats drain does not cover. os.devnull discards it.
+    env["STRATA_LOGPOS"] = os.devnull
+    if mem_available_gb() < a.min_free_gb:
+        raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
+    args = engine_args(cfg, a.gpu_experts, a.tokens, a.kv)
+    if a.wrap:
+        args = a.wrap.split() + args
+    errf = open(str(out) + ".stderr.txt", "w")
+    print("engine:", " ".join(args), flush=True)
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf, text=True,
+                         cwd=cfg.get("cwd"), env=env, bufsize=1)
+    for line in p.stdout:
+        if line.startswith("READY"):
+            break
+    else:
+        raise SystemExit(f"the engine ended before READY (exit {p.wait()}); see {out}.stderr.txt")
+    # No warmup GEN: the tap accumulators are allocated at engine startup (kv_stats_alloc in the serve
+    # init), so the first recording already contains the tap kernels. Positions below are order markers.
+    p.stdin.write("GEN 1 " + ",".join(map(str, ids)) + "\n")
+    p.stdin.flush()
+    done = None
+    for line in p.stdout:
+        if line.startswith(("DONE", "ERR")):
+            done = line.strip()
+            break
+    if done is None or not done.startswith("DONE") or "nonfinite" in done:
+        p.kill()
+        raise SystemExit(f"kvstats: the engine answered {done!r}; see {out}.stderr.txt")
+    print(done, flush=True)
+    p.stdin.write("QUIT\n")
+    p.stdin.flush()
+    try:
+        p.wait(timeout=600)
+    except subprocess.TimeoutExpired:
+        p.kill()
+    errf.close()
+    agg = kvstats_aggregate(raw.read_bytes(), len(ids))
+    agg["meta"] = {"text": str(a.text), "tokens": len(ids), "kv": a.kv, "config": a.config}
+    out.write_text(json.dumps(agg, indent=1))
+    print(f"wrote {out} ({len(agg['groups'])} groups, "
+          f"fwht_norm_maxreldiff {agg['checks']['fwht_norm_maxreldiff']:.2e} over "
+          f"{agg['checks']['fwht_norm_matched']} matched steps)")
     return 0
 
 
@@ -638,6 +813,19 @@ def main() -> int:
     p.add_argument("--kv", default="fp16", metavar="FMT",
                    help=("the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | "
                          "q4lm32 | q4lm32s | q4lm8 | q4lm8k | q4lm8v | k8v4"))
+    p = sub.add_parser("kvstats", help="per-layer K/V distribution stats for one calibration text "
+                                       "(STRATA_KVSTATS tap + aggregation: kurtosis, crest, block-max, channels)")
+    p.add_argument("--config", required=True)
+    p.add_argument("--out", required=True, help="the aggregated JSON")
+    p.add_argument("--text", default=str(HERE.parent / "docs" / "DETAILS.md"))
+    p.add_argument("--tokens", type=int, default=2048)
+    p.add_argument("--raw", help="the engine's raw tap file (default: <out>.raw.bin, never committed)")
+    p.add_argument("--env", action="append")
+    p.add_argument("--gpu-experts", nargs="?", const=True, default=False)
+    p.add_argument("--min-free-gb", type=float, default=16)
+    p.add_argument("--wrap")
+    p.add_argument("--kv", default="q4_0", metavar="FMT",
+                   help="the KV path exercised (taps are pre-format; q4_0 rotates so both taps differ)")
     p = sub.add_parser("prompt", help="the batched prompt path's next-token logits after 20 prompts (a directory)")
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
@@ -672,8 +860,8 @@ def main() -> int:
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
     a = ap.parse_args()
-    return {"ids": cmd_ids, "fwe": cmd_fwe, "run": cmd_run, "prompt": cmd_prompt, "compare": cmd_compare,
-            "areport": cmd_areport, "pcompare": cmd_pcompare}[a.cmd](a)
+    return {"ids": cmd_ids, "fwe": cmd_fwe, "run": cmd_run, "kvstats": cmd_kvstats, "prompt": cmd_prompt,
+            "compare": cmd_compare, "areport": cmd_areport, "pcompare": cmd_pcompare}[a.cmd](a)
 
 
 if __name__ == "__main__":

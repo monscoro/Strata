@@ -1,13 +1,16 @@
 // src/kernels/cuda/kv_q4.cu - see include/strata/kernels/kv_q4.hpp. Q4_0 KV with Walsh-Hadamard rotation
 // (from PR #21 by code-martin; KV-streaming integration and the deterministic group maximum added on merge).
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_stats_accum.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_stream.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 namespace strata::kernels {
 namespace {
@@ -293,6 +296,103 @@ void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream) {
     check("fwht256 launch");
 }
 
+// The STRATA_KVSTATS accumulator (kv_stats.hpp): one block per (head, tensor), so every global update has a
+// single writer and no atomics exist anywhere - bit-identical across runs. A graph node, so it replays
+// correctly under CUDA-graph capture (unlike host math). Lanes own fixed channels (i = lane + 32j), the token
+// loop is sequential, cross-lane reduction runs through shared memory in fixed order.
+__global__ void kv_stats_accum_kernel(const float* __restrict__ kcur, const float* __restrict__ vcur,
+                                      KvStatsAccum* __restrict__ acc, int n_tok, int head_dim, int64_t qsa,
+                                      int tap, int nh) {
+    const int lane = threadIdx.x;
+    const int tensor = blockIdx.x / nh;   // 0 K, 1 V
+    const int h = blockIdx.x % nh;
+    __shared__ double shp[32][28];         // per-lane partials: sum,sq,s4,mx + bs/bsq/bx x8
+    __shared__ uint64_t shh[32][32];       // per-lane histogram slices (one writer per slice)
+    for (int b = 0; b < 32; ++b) shh[lane][b] = 0;   // the lane's whole slice (not one element!)
+    const int64_t per = (int64_t) nh * head_dim;
+    const float* base = (tensor == 0 ? kcur : vcur);
+    double sum = 0.0, sq = 0.0, s4 = 0.0, mx = 0.0;
+    double bs[8] = {0, 0, 0, 0, 0, 0, 0, 0}, bsq[8] = {0, 0, 0, 0, 0, 0, 0, 0},
+           bx[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    float chm[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int t = 0; t < n_tok; ++t) {
+        const float* row = base + (int64_t) t * per + (int64_t) h * head_dim;
+        for (int i = lane; i < head_dim; i += 32) {
+            const double x = (double) row[i];
+            sum += x;
+            sq += x * x;
+            s4 += x * x * x * x;
+            const double ax = x < 0.0 ? -x : x;
+            if (ax > mx) mx = ax;
+            const int b = i >> 5;
+            bs[b] += x;
+            bsq[b] += x * x;
+            if (ax > bx[b]) bx[b] = ax;
+            const int j = (i - lane) >> 5;
+            if ((float) ax > chm[j]) chm[j] = (float) ax;
+            int hb = 0;   // absolute log2 bins: 2^(b-8) <= |x|, bin 0 the tiny/zero, bin 31 the overflow
+            if (ax > 0.0) {
+                if (ax >= 1e30)
+                    hb = 31;
+                else {
+                    // floor, not truncation: (int) would lift [-1, 0) into the wrong bin (test_kvstats caught it).
+                    const double l = log2(ax);
+                    hb = l < -8.0 ? 0 : (l >= 24.0 ? 31 : (int) floor(l) + 8);
+                }
+            }
+            shh[lane][hb] += 1;
+        }
+    }
+    shp[lane][0] = sum;
+    shp[lane][1] = sq;
+    shp[lane][2] = s4;
+    shp[lane][3] = mx;
+    for (int b = 0; b < 8; ++b) {
+        shp[lane][4 + b] = bs[b];
+        shp[lane][12 + b] = bsq[b];
+        shp[lane][20 + b] = bx[b];
+    }
+    __syncthreads();
+    const uint64_t gi = (uint64_t) (((qsa * 8 + h) * 2 + tensor) * 2 + tap);
+    if (gi >= KVSTATS_NGROUPS) return;
+    KvStatsAccum* g = acc + gi;
+    if (lane == 0) {
+        double t0 = 0.0, t1 = 0.0, t2 = 0.0, t3 = 0.0;
+        double tb[8] = {0, 0, 0, 0, 0, 0, 0, 0}, tbq[8] = {0, 0, 0, 0, 0, 0, 0, 0},
+               tx[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        for (int l = 0; l < 32; ++l) {
+            t0 += shp[l][0];
+            t1 += shp[l][1];
+            t2 += shp[l][2];
+            if (shp[l][3] > t3) t3 = shp[l][3];
+            for (int b = 0; b < 8; ++b) {
+                tb[b] += shp[l][4 + b];
+                tbq[b] += shp[l][12 + b];
+                if (shp[l][20 + b] > tx[b]) tx[b] = shp[l][20 + b];
+            }
+        }
+        g->cnt += (double) n_tok * head_dim;
+        g->sum += t0;
+        g->sumsq += t1;
+        g->sum4 += t2;
+        if (t3 > g->mx) g->mx = t3;
+        for (int b = 0; b < 8; ++b) {
+            g->bsum[b] += tb[b];
+            g->bsumsq[b] += tbq[b];
+            if (tx[b] > g->bmx[b]) g->bmx[b] = tx[b];
+        }
+    }
+    if (lane < 32) {
+        uint64_t tot = 0;
+        for (int t = 0; t < 32; ++t) tot += shh[t][lane];
+        g->hist[lane] += tot;
+    }
+    for (int j = 0; j < 8; ++j) {
+        const int c = lane + (j << 5);
+        if (c < head_dim && chm[j] > g->chmax[c]) g->chmax[c] = chm[j];
+    }
+}
+
 // The append kernels are templated on the write side's full Q4Mode; the wrappers pick the variant so that no caller
 // has to know which kernel a format needs.
 #define STRATA_KV_Q4_APPEND(M)                                                                   \
@@ -372,5 +472,110 @@ void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* 
     check("kv_gather_q4 launch");
 }
 #undef STRATA_KV_Q4_GATHER
+
+namespace {
+// File-local diagnostic state (one instance: this TU is compiled once per build).
+bool kvst_enabled() {
+    static bool on = (std::getenv("STRATA_KVSTATS") != nullptr);
+    return on;
+}
+bool& kvst_broken() {
+    static bool b = false;
+    return b;
+}
+KvStatsAccum*& kvst_acc() {
+    static KvStatsAccum* p = nullptr;
+    return p;
+}
+}  // namespace
+
+// Eager startup allocation (generate.cpp serve init): the first window recordings happen before any
+// launcher could allocate, and a graph recorded without tap kernels replays empty for every reuse - so the
+// accumulators must exist before the first recording, not after the first consume.
+void kv_stats_alloc() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    if (std::getenv("STRATA_KVSTATS") == nullptr) return;
+    KvStatsAccum*& acc = kvst_acc();
+    if (acc == nullptr && cudaMalloc((void**) &acc, sizeof(KvStatsAccum) * KVSTATS_NGROUPS) == cudaSuccess &&
+        acc != nullptr)
+        cudaMemset(acc, 0, sizeof(KvStatsAccum) * KVSTATS_NGROUPS);
+}
+
+// One branch when the env var is unset. Never fails the engine: no exits, silent disable on any error.
+void kv_stats_launch(const float* kcur, const float* vcur, int n_head_kv, int head_dim, int64_t qsa, int n_tok,
+                     bool rotated, void* stream) {
+    KvStatsAccum*& acc = kvst_acc();
+    if (!kvst_enabled() || kvst_broken() || kcur == nullptr || vcur == nullptr || n_head_kv <= 0 ||
+        head_dim <= 0 || n_tok <= 0 || qsa < 0 || qsa >= KVSTATS_MAX_QSA || n_head_kv > KVSTATS_MAX_HEAD ||
+        head_dim % 32 != 0 || head_dim > 256)
+        return;
+    if (acc == nullptr) {
+        // Allocating inside a capture errors - skip recording windows (a few tokens); replays accumulate.
+        // The harness sends a tiny warmup GEN so the main run records with accumulators present.
+        const cudaStream_t cs0 = (cudaStream_t) stream;
+        if (cs0 != nullptr) {
+            cudaStreamCaptureStatus cap = cudaStreamCaptureStatusNone;
+            if (cudaStreamIsCapturing(cs0, &cap) != cudaSuccess || cap != cudaStreamCaptureStatusNone) return;
+        }
+        if (cudaMalloc((void**) &acc, sizeof(KvStatsAccum) * KVSTATS_NGROUPS) != cudaSuccess || acc == nullptr) {
+            kvst_broken() = true;
+            return;
+        }
+        if (cudaMemset(acc, 0, sizeof(KvStatsAccum) * KVSTATS_NGROUPS) != cudaSuccess) {
+            kvst_broken() = true;
+            return;
+        }
+    }
+    const int blocks = n_head_kv * 2;
+    kv_stats_accum_kernel<<<blocks, 32, 0, (cudaStream_t) stream>>>(kcur, vcur, acc, n_tok, head_dim, qsa,
+                                                                     rotated ? 1 : 0, n_head_kv);
+    if (cudaGetLastError() != cudaSuccess) kvst_broken() = true;   // silent from here: never break the engine
+}
+
+// Driver-side: copy the accumulators out, append one section, reset. Call outside capture, after the window's
+// work has landed (generate.cpp's serial loop, next to the LOGPOS block).
+void kv_stats_consume_window(int64_t pos0, int64_t n_tok) {
+    static std::FILE* f = [] {
+        const char* p = std::getenv("STRATA_KVSTATS");
+        return p != nullptr ? std::fopen(p, "ab") : nullptr;
+    }();
+    static std::vector<unsigned char> staging;
+    static bool header_done = false;
+    if (f == nullptr || !kvst_enabled()) return;
+    if (!header_done) {
+        header_done = true;
+        const char magic[8] = {'K', 'V', 'S', 'T', 'A', 'T', 'S', 2};
+        std::fwrite(magic, 1, 8, f);
+    }
+    // Allocate here too (eager, outside capture): the first recordings happen before any launcher could
+    // allocate, and the harness sends a tiny warmup GEN so the main run records with accumulators present.
+    KvStatsAccum*& acc = kvst_acc();
+    if (acc == nullptr) {
+        if (cudaMalloc((void**) &acc, sizeof(KvStatsAccum) * KVSTATS_NGROUPS) != cudaSuccess || acc == nullptr)
+            return;
+        if (cudaMemset(acc, 0, sizeof(KvStatsAccum) * KVSTATS_NGROUPS) != cudaSuccess) return;
+    }
+    const size_t bytes = sizeof(KvStatsAccum) * KVSTATS_NGROUPS;
+    staging.resize(bytes);
+    if (cudaDeviceSynchronize() != cudaSuccess) return;   // diagnostic-only full sync
+    if (cudaMemcpy(staging.data(), acc, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return;
+    if (cudaMemset(acc, 0, bytes) != cudaSuccess) return;
+    const KvStatsAccum* g = reinterpret_cast<const KvStatsAccum*>(staging.data());
+    uint32_t ng = 0;
+    for (uint32_t i = 0; i < KVSTATS_NGROUPS; ++i)
+        if (g[i].cnt > 0.0) ++ng;
+    if (ng == 0) return;   // warmup windows leave no trace; coverage counts scored tokens only
+    std::fwrite(&pos0, 8, 1, f);
+    std::fwrite(&n_tok, 8, 1, f);
+    std::fwrite(&ng, 4, 1, f);
+    for (uint32_t i = 0; i < KVSTATS_NGROUPS; ++i) {
+        if (g[i].cnt == 0.0) continue;
+        const uint16_t gi = (uint16_t) i;
+        std::fwrite(&gi, 2, 1, f);
+        std::fwrite(&g[i], sizeof(KvStatsAccum), 1, f);
+    }
+}
 
 }  // namespace strata::kernels

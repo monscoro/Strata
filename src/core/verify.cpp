@@ -31,6 +31,7 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_stats.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_gr_postops.hpp"
@@ -1281,12 +1282,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
                 if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
+                strata::kernels::kv_stats_launch(kcur_ + tb * NKV * HD, vcur_ + tb * NKV * HD, (int) NKV,
+                                                  (int) HD, qi, (int) (te - tb), false,
+                                                  cs);   // tap A: pre-rotation
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
                     fwht256_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 } else if (st.kv_hybrid) {   // K8V4: only V is rotated
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 }
+                if (st.kv_rot)
+                    strata::kernels::kv_stats_launch(kcur_ + tb * NKV * HD, vcur_ + tb * NKV * HD, (int) NKV,
+                                                     (int) HD, qi, (int) (te - tb), true,
+                                                     cs);   // tap B: quantizer input
                 stamp(l, 8, grp);
                 if (batch_rec_) {   // snapshot each slot's indexer tail before its first proposed row
                     for (int t = tb; t < te; ++t)

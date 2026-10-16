@@ -449,4 +449,10 @@ void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* 
     check("kv_gather_q4 launch");
 }
 
+// STRATA_KVSTATS tap (diagnostic, CUDA/HIP-only): silent stubs - the tap never fires without the env var,
+// and the diagnostic is documented harness-on-CUDA/HIP-only (docs/KV_QUANT_WORKPACKAGE.md 5.5).
+void kv_stats_launch(const float*, const float*, int, int, int64_t, int, bool, void*) {}
+void kv_stats_consume_window(int64_t, int64_t) {}
+void kv_stats_alloc() {}
+
 }  // namespace strata::kernels

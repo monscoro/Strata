@@ -57,6 +57,7 @@
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_stats.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
@@ -7263,6 +7264,9 @@ int main(int argc, char** argv) {
         // neither fires, plain one-token-per-round decoding - slower, never wrong: the verify window still
         // confirms every emitted token against the real model regardless of where the draft came from.
         const bool use_mtp = !o.mtp.empty();
+        // STRATA_KVSTATS (diagnostic): allocate the tap accumulators here, eagerly, before any window records -
+        // a graph recorded without tap kernels replays empty for every reuse, so lazy allocation is always late.
+        strata::kernels::kv_stats_alloc();
         // STRATA_PREFILL_HELPER_SOURCE (opt-in): the prompt path may take a blob a helper's VRAM cache already
         // holds from that cache instead of reading the files again.  The helpers are idle while a prompt is read
         // (the serve path is serial: no batch slots), so the copy needs no ordering against their kernel streams.
@@ -11415,6 +11419,9 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
+                    // STRATA_KVSTATS drain: the window's work has landed (commit synced it); copy the tap
+                    // accumulators out and reset them, one file section per window. A no-op without the env var.
+                    strata::kernels::kv_stats_consume_window(q, T);
                     q += T;
                     pp_reached = q;   // #471
                     pp_exact = true;
