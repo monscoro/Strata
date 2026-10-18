@@ -228,12 +228,14 @@ struct QsaState {
     /// kLloydClip 8 (kappa-quantile scale) and kLloydWin 9 (kLloyd's blocks with an exact fp16 window, below).
     strata::kernels::Q4Mode kv_q4_mode = strata::kernels::Q4Mode::kUniform;
     /// WP-2a window (kLloydWin `--kv q4lm32w`, or STRATA_KV_WINDOW=1 on any q4 arm): the first R (sink) and
-    /// most recent S cells read exact fp16 from here instead of q4. Flat [(max_cells, kv_head, head_dim)] fp16
-    /// per tensor - no paging, no streaming, no snapshot (refused, not silent): indexed directly by cell,
-    /// filled by every append next to the q4 blocks (rotated, like them). Null when the window is off
-    /// (S + R = 0) or the state is a ring.
+    /// most recent S cells read exact fp16 from here instead of q4. Rows [R sinks][S + B recent ring],
+    /// [(row, kv_head, head_dim)] fp16 per tensor - no paging, no streaming, no snapshot (refused, not silent):
+    /// the row is derived from the cell by `qsa_win_slot`, and every append writes next to the q4 blocks
+    /// (rotated, like them). B is the largest append batch (a prompt chunk whose queries each have their own
+    /// horizon), see STRATA_KV_WINDOW_BATCH. Null when the window is off (S + R = 0) or the state is a ring.
     uint16_t* k_win = nullptr;
     uint16_t* v_win = nullptr;
+    int32_t* win_tag = nullptr;   ///< cell id per recent ring row [(S + B)]: a stale row reads quantized, not wrong
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
@@ -370,9 +372,18 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st);
-/// WP-2a window grid (STRATA_KV_WINDOW_S/_R): the staged prefill path overlays these on stage pools.
+/// WP-2a window grid (STRATA_KV_WINDOW_S/_R/_B): the staged prefill path overlays these on stage pools.
 int qsa_kv_win_s();
 int qsa_kv_win_r();
+/// Recent ring rows beyond S: the largest append batch the ring must serve at once (STRATA_KV_WINDOW_BATCH,
+/// default: the prompt chunk, at least 512 = the harness's `--prefill 512`). Every query of a batch has its own
+/// horizon, so the batch's whole window span [pos0 - S, pos0 + B) has to be resident when its attention runs - a
+/// smaller ring cannot serve it, and the append refuses that loudly instead of overwriting rows a reader still
+/// needs.
+int qsa_kv_win_b();
+/// Size the ring for the prompt chunk the engine settled on (generate.cpp, before the state is carved). An
+/// explicit STRATA_KV_WINDOW_BATCH wins over this, and it only ever grows the ring (never shrinks an explicit one).
+void qsa_set_kv_win_batch(const ModelGeometry& g, int64_t chunk);
 /// The overlay switch itself (qsa_set_kv_q4_mode sets it from `--kv q4lm32w` / `STRATA_KV_WINDOW`): the MTP
 /// drafter turns it off around its state init so no side pool is carved for a state whose readers never take one.
 bool qsa_kv_win();

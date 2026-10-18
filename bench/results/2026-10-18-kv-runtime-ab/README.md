@@ -51,8 +51,9 @@ deshalb weniger als die Antwortlänge.
 
 ## Speicher: was das Fenster wirklich kostet (R3)
 
-Der Seitenpool ist **flach, pro QSA-Layer, immer resident** und wird von `max_cells` bemessen
-(`qsa_win_bytes`, `layer.cpp:196`): `max_cells × n_head_kv × head_dim × 4 B` = **2.048 B je Zelle** je Layer.
+Der Seitenpool der **Probe** war **flach, pro QSA-Layer, immer resident** und wurde von `max_cells` bemessen
+(`qsa_win_bytes(s, max_cells)` bis `d98f6472`): `max_cells × n_head_kv × head_dim × 4 B` = **2.048 B je Zelle** je
+Layer.
 Der Kopf ist bei diesem Modell `n_head_kv = 2`, `head_dim = 256` (GGUF), und **12 Layer** tragen einen
 QSA-Zustand (`qsa_interval = 4` von 48, `geometry.hpp:26/66`) → **24 KiB je Kontextzelle** über alle Layer.
 
@@ -72,10 +73,16 @@ Er skaliert mit `max_context`, nicht mit dem Resident-Set — das Fenster hebelt
 16K ≈ 384 MiB, 64K ≈ 1,5 GiB, 128K ≈ 3 GiB, unabhängig von `--kv-resident`.
 
 **Aber:** das ist die Form der **Probe**, nicht die der Auslieferung. Der flache Pool hält fp16 für *jede* Zelle,
-weil der Leser direkt über die Zellnummer indiziert. Die Auslieferung wäre ein **Ring von `S + R` Zeilen**
-(Sinks `cell < R`, Ring `R + cell % S`) → bei 256/64 `320 × 2 KiB × 12 Layer = 7,5 MiB`, **kontextunabhängig**
-(512/128: 15 MiB). Das ist ein Rechenweg aus der exakten 2 KiB/Zelle/Layer der 64K-Messung, **keine** Messung:
-die Streaming-Unverträglichkeit gilt für die Probe, ein Ring würde sie nicht haben.
+weil der Leser direkt über die Zellnummer indiziert. Die Auslieferung ist ein **Ring** (seit §7.19 des Plans so
+gebaut): `R` zellen-adressierte Sink-Zeilen plus `S + B` Ringzeilen (`R + cell % (S + B)`), jede Ringzeile mit der
+Zelle, die sie hält, als Tag. Das `B` ist der größte Append-Batch (`STRATA_KV_WINDOW_BATCH`; ohne Angabe folgt er
+dem Prompt-Chunk des Laufs, mindestens 512 = `--prefill 512`), weil
+**jede Query eines Prefill-Batches ihren eigenen Horizont hat** — ein Batch von `T` Zellen
+braucht `S + T` Ringzeilen gleichzeitig. Bei 256/64 und `B = 512`: `(64 + 256 + 512) × 2 KiB × 12 Layer =
+**19,5 MiB**`, **kontextunabhängig** (512/128: 27 MiB; ein Token-für-Token-Lauf mit `B = 1` wäre 7,7 MiB, die Vorgabe
+ist aber der Prompt-Chunk mit mindestens 512). Das ist ein Rechenweg aus der exakten 2 KiB/Zelle/Layer der
+64K-Messung; die Ringgröße selbst ist in §7.19 gemessen. Die Streaming-Unverträglichkeit gilt für die Probe, der Ring
+hat sie nicht.
 
 **Korrektur einer Review-Zahl.** Der Code-Review hatte „2K ≈ 10 MB, 16K ≈ 64 MB, 128K ≈ 512 MB" und 48 Layer
 genannt. Beides war falsch: es sind **12** QSA-Layer (nicht 48) und **24 KiB pro Kontextzelle** (nicht ~4 KiB) →

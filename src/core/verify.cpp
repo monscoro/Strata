@@ -1324,8 +1324,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            &st.host, st.kv_q4_mode);
                         // WP-2a window twin (guard skips states without side pools).
                         if (st.k_win != nullptr)
-                            strata::kernels::kv_append_win_steps(st.k_win, st.v_win, step_b, kStepCount, n, kc_b,
-                                                                 vc_b, (int) (NKV), (int) (HD), cs, st.max_cells);
+                            strata::kernels::kv_append_win_steps(st.k_win, st.v_win, st.win_tag, step_b, kStepCount,
+                                                                 n, kc_b, vc_b, (int) (NKV), (int) (HD), cs,
+                                                                 qsa_kv_win_s(), qsa_kv_win_r(), qsa_kv_win_b());
                     }
                     else if (st.kv_int8)
                         kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_b, kStepCount,
@@ -1349,9 +1350,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, &st.host, st.kv_q4_mode);
                         if (st.k_win != nullptr)
-                            strata::kernels::kv_append_win_steps(st.k_win, st.v_win, step_t, kStepCount, 1,
+                            strata::kernels::kv_append_win_steps(st.k_win, st.v_win, st.win_tag, step_t, kStepCount, 1,
                                                                  kcur_ + t * NKV * HD, vcur_ + t * NKV * HD,
-                                                                 (int) (NKV), (int) (HD), cs, st.max_cells);
+                                                                 (int) (NKV), (int) (HD), cs, qsa_kv_win_s(),
+                                                                 qsa_kv_win_r(), qsa_kv_win_b());
                     }
                     else if (st.kv_int8)
                         kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t,

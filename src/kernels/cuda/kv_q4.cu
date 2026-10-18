@@ -4,6 +4,7 @@
 #include "strata/kernels/kv_stats_accum.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_stream.hpp"
+#include "strata/kernels/qsa_decode_attn.hpp"   // QsaAttnPools + qsa_win_slot: one definition of the window's row
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -307,7 +308,7 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
                                     const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
                                     uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch,
                                     const uint16_t* __restrict__ k_win, const uint16_t* __restrict__ v_win,
-                                    int win_s, int win_r) {
+                                    const int32_t* __restrict__ win_tag, int win_s, int win_r, int win_b) {
     const long long n_ids = (long long) __ldg(step + kStepWidth);
     const int blocks_per_head = head_dim / QK4_0;                        // 8
     const int bytes_per_head = blocks_per_head * sizeof(block_q4_0);    // 144
@@ -327,13 +328,21 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
     const long long row = (page * kv_heads + h) * page_size + (cell % page_size);
 
     const long long dst_offset = ((id * kv_heads + h) * head_dim) + (b * QK4_0 + t);
-    // WP-2a window: exact fp16 from the always-resident side pool (flat row, no paging) - also when the
-    // quantized block is not resident. The horizon is step[kStepNKv] (device-fresh, graph-safe). Null pools
-    // (every other mode) skip this uniformly.
-    if (k_win != nullptr && v_win != nullptr && (win_s > 0 || win_r > 0)) {
-        const long long nkv = (long long) __ldg(step + kStepNKv);
-        if (cell < win_r || cell >= nkv - win_s) {
-            const long long wrow = ((long long) cell * kv_heads + h) * head_dim + (b * QK4_0 + t);
+    // WP-2a window: exact fp16 from the always-resident side pool (row from qsa_win_slot, no paging) - also when
+    // the quantized block is not resident. The horizon is step[kStepNKv] (device-fresh, graph-safe). Null pools
+    // (every other mode) skip this uniformly; a recent ring row whose tag no longer names this cell (a rewind or
+    // a resume left a later cell there) reads quantized instead of wrong.
+    if (k_win != nullptr && v_win != nullptr) {
+        QsaAttnPools wq;
+        wq.k_win = k_win;
+        wq.v_win = v_win;
+        wq.win_tag = win_tag;
+        wq.win_s = win_s;
+        wq.win_r = win_r;
+        wq.win_b = win_b;
+        const long long ws = qsa_win_slot(wq, cell, (long long) __ldg(step + kStepNKv));
+        if (ws >= 0) {
+            const long long wrow = (ws * kv_heads + h) * head_dim + (b * QK4_0 + t);
             k_scratch[dst_offset] = k_win[wrow];
             v_scratch[dst_offset] = v_win[wrow];
             return;
@@ -533,64 +542,101 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
 }
 #undef STRATA_KV_Q4_BATCH
 
-// WP-2a window side pool (kv_q4.hpp, kLloydWin): the exact fp16 twin of every appended cell, flat
-// [(cell, kv_head, head_dim)] per tensor - indexed directly by position, no paging, always resident.
-// One kernel for every append shape: positions come from the same step array the q4 steps-kernel reads
-// (step[step_idx * step_stride + kStepPos]), or from a contiguous (pos0, T) batch. Called with the same
-// (already rotated) K/V the q4 append sees, right next to it, on every append path.
-__global__ void kv_win_append_kernel(uint16_t* __restrict__ win, const float* __restrict__ cur,
-                                     const int32_t* __restrict__ step, int step_stride, int n_head_kv,
-                                     int head_dim, int64_t win_cells) {
+// WP-2a window side pool (kv_q4.hpp, kLloydWin): the exact fp16 twin of the cells a windowed reader takes exact.
+// Rows [R sinks][S + B recent ring] per tensor, [(row, kv_head, head_dim)] - the row comes from the same formula
+// as `qsa_win_slot`, no paging, always resident. One kernel for every append shape: positions come from the same
+// step array the q4 steps-kernel reads (step[step_idx * step_stride + kStepPos]), or from a contiguous (pos0, T)
+// batch. Called with the same (already rotated) K/V the q4 append sees, right next to it, on every append path.
+//
+// The recent ring carries the cell it holds (`win_tag[row] = pos`), written by one thread of the block whose
+// values landed on that row - so tag and values belong together, which is what lets a reader trust the tag.
+//
+// R1: K and V are written in ONE launch (the kernel takes both pools and both sources and skips a side whose pool
+// is null), which halves the extra launches per append - a decode step went from 24 to 12, and the tag is written
+// once. The alternative - writing the twin inside the templated q4 append kernels, where `cur` is already in a
+// register - would also save the re-read of K/V (6345 cells x 49 KiB ~= 300 MiB over a 6.3K prefill), but it
+// would put a window branch into every mode's hot path. Not worth it (section 7.19).
+__device__ __forceinline__ long long win_row_of(int64_t pos, int win_s, int win_r, int win_b) {
+    if (pos < win_r) return pos;   // sink row: cell-addressed, written once, never moved
+    const long long ring = (long long) win_s + (long long) win_b;
+    return ring > 0 ? (long long) win_r + pos % ring : -1;
+}
+
+__global__ void kv_win_append_kernel(uint16_t* __restrict__ k_win, uint16_t* __restrict__ v_win,
+                                     int32_t* __restrict__ tag, const float* __restrict__ kcur,
+                                     const float* __restrict__ vcur, const int32_t* __restrict__ step,
+                                     int step_stride, int n_head_kv, int head_dim, int win_s, int win_r,
+                                     int win_b) {
     const int64_t step_idx = (int64_t) blockIdx.z;
     const int64_t pos = (int64_t) step[step_idx * step_stride + kStepPos];
     const int h = blockIdx.x, d0 = (blockIdx.y * (int) blockDim.x + (int) threadIdx.x);
     if (d0 >= head_dim) return;
-    // K3: the pool is indexed by absolute cell, so a position outside [0, win_cells) would reach into the
-    // neighbouring tensor's memory. The position is device-fresh (graph-safe) and a Release build has no
-    // device-side loud fail (NDEBUG drops assert, this codebase has no device printf), so the store is dropped.
-    // The host-side contract is that the pool is sized with the session's `max_cells` - the same bound the
-    // horizon (step[kStepNKv]) runs to; a hit here means that bookkeeping drifted, not a normal state.
-    if (pos < 0 || pos >= win_cells) return;
+    // The row is computed, not bounded: sinks are cell-addressed and the recent rows are a ring, so a position
+    // can only be dropped when the ring does not exist (sinks-only window) - never reach a neighbouring tensor.
+    const int64_t row = win_row_of(pos, win_s, win_r, win_b);
+    if (row < 0) return;
+    if (tag != nullptr && pos >= win_r && h == 0 && d0 == 0)
+        tag[pos % ((int64_t) win_s + win_b)] = (int32_t) pos;
     const int64_t n = (int64_t) n_head_kv * head_dim;
-    win[pos * n + h * head_dim + d0] = f16_from_f32(cur[step_idx * n + h * head_dim + d0]);
+    const int64_t i = row * n + h * head_dim + d0, s = step_idx * n + h * head_dim + d0;
+    if (k_win != nullptr) k_win[i] = f16_from_f32(kcur[s]);
+    if (v_win != nullptr) v_win[i] = f16_from_f32(vcur[s]);
 }
 
-void kv_append_win_steps(uint16_t* k_win, uint16_t* v_win, const int32_t* step, int step_stride, int n_steps,
-                         const float* kcur, const float* vcur, int n_head_kv, int head_dim, void* stream,
-                         int64_t win_cells) {
+void kv_append_win_steps(uint16_t* k_win, uint16_t* v_win, int32_t* win_tag, const int32_t* step, int step_stride,
+                         int n_steps, const float* kcur, const float* vcur, int n_head_kv, int head_dim,
+                         void* stream, int win_s, int win_r, int win_b) {
     if (n_steps <= 0) return;
     // K2: this used to return silently, leaving the side pool stale while the caller believed it was written.
     // A geometry the grid cannot cover is a programming error, so it fails like need_256 does.
-    if (head_dim <= 0 || head_dim % 32 != 0 || win_cells <= 0) {
+    if (head_dim <= 0 || head_dim % 32 != 0 || win_s < 0 || win_r < 0 || win_b < 0) {
         std::fprintf(stderr,
                      "strata: kv_append_win_steps: head_dim %d must be a positive multiple of 32 (the window "
-                     "writer's grid) and win_cells %lld must be positive - the exact side pool would not be "
-                     "written\n", head_dim, (long long) win_cells);
+                     "writer's grid) and the window grid (%d/%d/%d) non-negative - the exact side pool would not "
+                     "be written\n", head_dim, win_s, win_r, win_b);
         std::exit(1);
     }
-    if (k_win != nullptr)
+    // One call's cells must land on distinct recent rows: two cells of the same launch on one row would race the
+    // tag against the values (and the values against each other), which is exactly the silent wrongness the ring
+    // exists to avoid. The ring holds S + B rows, so a batch is bounded by S + B - and a prompt chunk that is
+    // larger fails here, loudly, naming the knob, instead of overwriting rows its own queries still need.
+    const int64_t ring = (int64_t) win_s + win_b;
+    if (ring > 0 && (int64_t) n_steps > ring) {
+        std::fprintf(stderr,
+                     "strata: kv_append_win_steps: %d cells in one batch do not fit the %lld-row recent ring "
+                     "(S %d + STRATA_KV_WINDOW_BATCH %d) - raise STRATA_KV_WINDOW_BATCH (or lower --prefill)\n",
+                     n_steps, (long long) ring, win_s, win_b);
+        std::exit(1);
+    }
+    if (k_win != nullptr || v_win != nullptr)
         kv_win_append_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) n_steps), 32, 0,
-                                    (cudaStream_t) stream>>>(k_win, kcur, step, step_stride, n_head_kv, head_dim,
-                                                             win_cells);
-    if (v_win != nullptr && (v_win != k_win || vcur != kcur))
-        kv_win_append_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) n_steps), 32, 0,
-                                    (cudaStream_t) stream>>>(v_win, vcur, step, step_stride, n_head_kv, head_dim,
-                                                             win_cells);
+                                    (cudaStream_t) stream>>>(k_win, v_win, win_tag, kcur, vcur, step, step_stride,
+                                                             n_head_kv, head_dim, win_s, win_r, win_b);
     check("kv_append_win launch");
 }
 
-// The contiguous batch twin (the prefill path's kv_append_q4 with pos0/T): same flat pool, positions pos0 + t.
-__global__ void kv_win_append_batch_kernel(uint16_t* __restrict__ win, const float* __restrict__ cur, int64_t pos0,
-                                           int n_head_kv, int head_dim) {
+// The contiguous batch twin (the prefill path's kv_append_q4 with pos0/T): same rows, positions pos0 + t, and the
+// same single launch for K and V.
+__global__ void kv_win_append_batch_kernel(uint16_t* __restrict__ k_win, uint16_t* __restrict__ v_win,
+                                           int32_t* __restrict__ tag, const float* __restrict__ kcur,
+                                           const float* __restrict__ vcur, int64_t pos0, int n_head_kv, int head_dim,
+                                           int win_s, int win_r, int win_b) {
     const int64_t t = (int64_t) blockIdx.z;
     const int h = blockIdx.x, d0 = (blockIdx.y * (int) blockDim.x + (int) threadIdx.x);
     if (d0 >= head_dim) return;
+    const int64_t pos = pos0 + t;
+    const int64_t row = win_row_of(pos, win_s, win_r, win_b);
+    if (row < 0) return;
+    if (tag != nullptr && pos >= win_r && h == 0 && d0 == 0)
+        tag[pos % ((int64_t) win_s + win_b)] = (int32_t) pos;
     const int64_t n = (int64_t) n_head_kv * head_dim;
-    win[(pos0 + t) * n + h * head_dim + d0] = f16_from_f32(cur[t * n + h * head_dim + d0]);
+    const int64_t i = row * n + h * head_dim + d0, s = t * n + h * head_dim + d0;
+    if (k_win != nullptr) k_win[i] = f16_from_f32(kcur[s]);
+    if (v_win != nullptr) v_win[i] = f16_from_f32(vcur[s]);
 }
 
-void kv_append_win(uint16_t* k_win, uint16_t* v_win, int64_t pos0, int64_t T, const float* K, const float* V,
-                   int n_head_kv, int head_dim, void* stream, int64_t win_cells) {
+void kv_append_win(uint16_t* k_win, uint16_t* v_win, int32_t* win_tag, int64_t pos0, int64_t T, const float* K,
+                   const float* V, int n_head_kv, int head_dim, void* stream, int win_s, int win_r, int win_b) {
     if (T <= 0) return;
     // K2: loud instead of the old silent return (a stale side pool the caller believes was written).
     if (head_dim <= 0 || head_dim % 32 != 0) {
@@ -598,30 +644,36 @@ void kv_append_win(uint16_t* k_win, uint16_t* v_win, int64_t pos0, int64_t T, co
                              "writer's grid) - the exact side pool would not be written\n", head_dim);
         std::exit(1);
     }
-    // K3: unlike the steps variant, these positions are host-known, so the pool bound IS checked here.
-    if (pos0 < 0 || pos0 + T > win_cells) {
-        std::fprintf(stderr, "strata: kv_append_win: cells [%lld, %lld) do not fit the exact side pool of %lld "
-                             "cells\n", (long long) pos0, (long long) (pos0 + T), (long long) win_cells);
+    // Same invariant as the steps variant: the batch's cells must land on distinct recent rows, so T <= S + B.
+    const int64_t ring = (int64_t) win_s + win_b;
+    if (ring > 0 && T > ring) {
+        std::fprintf(stderr,
+                     "strata: kv_append_win: %lld cells in one batch do not fit the %lld-row recent ring "
+                     "(S %d + STRATA_KV_WINDOW_BATCH %d) - raise STRATA_KV_WINDOW_BATCH (or lower --prefill)\n",
+                     (long long) T, (long long) ring, win_s, win_b);
         std::exit(1);
     }
-    if (k_win != nullptr)
+    if (pos0 < 0) {
+        std::fprintf(stderr, "strata: kv_append_win: cells start at %lld, before the window's first cell\n",
+                     (long long) pos0);
+        std::exit(1);
+    }
+    if (k_win != nullptr || v_win != nullptr)
         kv_win_append_batch_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) T), 32, 0,
-                                     (cudaStream_t) stream>>>(k_win, K, pos0, n_head_kv, head_dim);
-    if (v_win != nullptr && (v_win != k_win || V != K))
-        kv_win_append_batch_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) T), 32, 0,
-                                     (cudaStream_t) stream>>>(v_win, V, pos0, n_head_kv, head_dim);
+                                     (cudaStream_t) stream>>>(k_win, v_win, win_tag, K, V, pos0, n_head_kv,
+                                                              head_dim, win_s, win_r, win_b);
     check("kv_append_win batch launch");
 }
 
 #define STRATA_KV_Q4_GATHER(NK, NV)                                                                              \
     kv_gather_q4_kernel<NK, NV><<<dim3(num_blocks), dim3(32, rows_per_block), 0, (cudaStream_t) stream>>>(        \
         k_q4, v_q4, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size, k_scratch,     \
-        v_scratch, k_win, v_win, win_s, win_r)
+        v_scratch, k_win, v_win, win_tag, win_s, win_r, win_b)
 
 void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* page_table, const int32_t* ids,
                        const int32_t* step, int64_t max_ids, const QsaShapes& s, uint16_t* k_scratch,
                        uint16_t* v_scratch, void* stream, Q4Mode mode, const uint16_t* k_win,
-                       const uint16_t* v_win, int win_s, int win_r) {
+                       const uint16_t* v_win, const int32_t* win_tag, int win_s, int win_r, int win_b) {
     if (max_ids <= 0) return;
     const int blocks_per_head = (int) (s.head_dim / QK4_0);
     const int64_t total_blocks = max_ids * s.n_head_kv * blocks_per_head;

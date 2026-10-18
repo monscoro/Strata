@@ -1540,8 +1540,9 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
                                           st.kv_q4_mode);
             // WP-2a window twin (the drafter's own state never carries win pools - guard skips; kept uniform).
             if (st.k_win != nullptr)
-                strata::kernels::kv_append_win(st.k_win, st.v_win, c0, nb, Kc, Vc, (int) s.n_head_kv,
-                                               (int) s.head_dim, m.cs, st.max_cells);
+                strata::kernels::kv_append_win(st.k_win, st.v_win, st.win_tag, c0, nb, Kc, Vc, (int) s.n_head_kv,
+                                               (int) s.head_dim, m.cs, core::qsa_kv_win_s(), core::qsa_kv_win_r(),
+                                               core::qsa_kv_win_b());
         } else {
             kv_append(Kc, Vc, nb, c0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs, &st.host);
@@ -2779,9 +2780,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                           host_w, staged ? &m.stage : nullptr, st.kv_q4_mode);
                             // WP-2a window: the exact fp16 twin (rotated, like the q4 blocks above).
                             if (st.k_win != nullptr)
-                                strata::kernels::kv_append_win(st.k_win, st.v_win, p0, T, m.Kc, m.Vc,
+                                strata::kernels::kv_append_win(st.k_win, st.v_win, st.win_tag, p0, T, m.Kc, m.Vc,
                                                                (int) s.n_head_kv, (int) s.head_dim, m.cs,
-                                                               st.max_cells);
+                                                               core::qsa_kv_win_s(), core::qsa_kv_win_r(),
+                                                               core::qsa_kv_win_b());
                         } else
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
@@ -2934,8 +2936,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (st.k_win != nullptr && st.v_win != nullptr) {
                             pools.k_win = st.k_win;
                             pools.v_win = st.v_win;
+                            pools.win_tag = st.win_tag;
                             pools.win_s = core::qsa_kv_win_s();
                             pools.win_r = core::qsa_kv_win_r();
+                            pools.win_b = core::qsa_kv_win_b();
                         }
                     }
                     pt.mark(kPfQsaAttn, cs);

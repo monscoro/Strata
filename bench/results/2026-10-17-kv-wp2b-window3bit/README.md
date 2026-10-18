@@ -55,6 +55,12 @@ gespeichert **≈4,0 Bit/Wert** (Pegel + 0,5 Skalen-Overhead, wie der 18-B-Block
 | win 128/8 | ~4,8 | 0,00869 |
 | win 512/8 | ~7,1 | 0,00828 |
 | win 1024/8 | ~10,1 | 0,00741 |
+
+**Korrektur (§7.19, 2026-10-18).** Diese Spalte ist das Modell `Basis + (16 − Basis)·(S+R)/L` für 2K und **zu
+optimistisch**: die exakte Zelle wird **zusätzlich** zum quantisierten Wert gehalten (16 Bit, nicht 16 − Basis), und
+die feste Spanne der Auslieferung ist seit dem Ring `S + B` (jede Query eines Chunks hat ihren eigenen Horizont). Mit
+`Basis + 16·(S+B)/L` sind es für 256/64 ≈10,5 Bit bei 2K, 4,8 bei 16K, 4,2 bei 64K. Die **KL-Werte und die
+Rangfolge** bleiben unberührt.
 | `int8` (aus WP-1) | 8,25 | 0,00503 |
 
 ## Der Vergleich mit dem 4-Bit-Arm (der eigentliche Befund)

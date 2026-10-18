@@ -34,6 +34,16 @@ Punkt) und das reine **Sink-Paar** `512 / 128`, jeweils auf **beiden** Basen (`q
 | `32w-s512-r128` | 512 / 128 | 99,43 % | **0,00569** | 0,0729 | 2,994 | ≈8,1 |
 | `win-s1024-r8` | 1024 / 8 | 99,36 % | 0,00672 | 0,0766 | 2,994 | ≈10,3 |
 
+**Korrektur der Bit-Spalte (§7.19, 2026-10-18).** Die Spalte „Bit/Wert (Auslieferung, Modell)" rechnet
+`Basis + (16 − Basis)·(S+R)/L` mit `L ≈ 2044` (2K) — sie ist damit **zweifach zu optimistisch**: der Pool hält die
+exakte Zelle **zusätzlich** zum quantisierten Wert (volle 16 Bit, nicht die Differenz), und die feste Spanne der
+Auslieferung ist seit dem Ring `S + B`, nicht `S + R` (§7.19 des Plans: `R` Sink- plus `S + B` Ringzeilen mit
+Zell-Tag, 19,5 MiB konstant bei 256/64). Richtig ist `Basis + 16·(S+B)/L`: für 256/64 auf `q4lm8v`
+sind das **≈10,5 Bit bei 2K** (nicht 5,9), **4,8 bei 16K** und **4,2 bei 64K** (dort unter `int8`s 8,25). Die
+**Qualitätszahlen und die Rangfolge der Arme bleiben** — die Byte-Absolutwerte dieser Tabelle gelten nur für 2K und
+nur als Modell. Die Qualitätsmessung selbst lief auf der **Probe** (flacher Zwilling, 24 KiB/Zelle), deren Bytes für
+alle Arme gleich waren; sie sagt nichts über die Auslieferungsbytes.
+
 PPL fällt mehrfach unter den fp16-Wert (2,992 < 2,999) — derselbe Dämpfungs-Effekt wie in §7.11/§7.15. **KL ist der
 Leser, PPL nicht.**
 

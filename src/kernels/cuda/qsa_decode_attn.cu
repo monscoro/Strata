@@ -49,7 +49,7 @@ __device__ __forceinline__ void load8_f16(const QsaAttnPools& p, bool value, lon
         out[2 * j + 1] = f.y;
     }
 }
-// WP-2a window: 8 dims straight from the exact fp16 side pool (flat row wrow, same half2 unpack as above).
+// WP-2a window: 8 dims straight from the exact fp16 side pool (row wrow, same half2 unpack as above).
 // Called instead of load8_q4 when swin[c] >= 0; never for any other mode (swin is -1 there).
 // The uint4 load assumes the side pool's base (device allocation, >=256 B) and wrow * HD + d0 stay 16-byte
 // aligned: HD (=256) and every caller's d0 (l * 8 / lane * 8) are multiples of 8 uint16. Same assumption as
@@ -145,7 +145,8 @@ __device__ __forceinline__ int reduce12_head_of_lane(int lane) {
     return ((lane >> 4) & 1) * 8 + ((lane >> 3) & 1) * 4 + ((lane >> 2) & 1) * 2 + ((lane >> 1) & 1);
 }
 
-// WP-2a window: the flat side-pool row of each cell, or -1. Only the q4-Lloyd instantiation (KV_MODE 4) reads a
+// WP-2a window: the side-pool row of each cell, or -1 (qsa_win_slot: sink rows cell-addressed, recent rows a ring
+// guarded by its tag). Only the q4-Lloyd instantiation (KV_MODE 4) reads a
 // window; every other instantiation is empty, so its shared-memory footprint is exactly the pre-window kernel's
 // and its reads fold to the constant -1.
 // That is this *kernel's* rule, and since K1 the host matches it: `qsa_win_wanted()` (layer.cpp) attaches a pool
@@ -181,7 +182,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads
     __shared__ float sp[G][CHUNK];                // scores, then probabilities
     __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
-    __shared__ WinRows<KV_MODE> swin;             // WP-2a window: flat side-pool row, or -1 (see qsa_win_cell)
+    __shared__ WinRows<KV_MODE> swin;             // WP-2a window: side-pool row, or -1 (see qsa_win_slot)
     const int n_ids = __ldg(step + kStepWidth);
     const int chunk = blockIdx.x, kvh = blockIdx.y;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
@@ -211,10 +212,12 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
             if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
             // WP-2a window: the horizon is step[kStepNKv] (pos + 1, device-fresh and graph-safe - qsa_step_fill
             // derives all four step entries from one position). The side pool is always resident, so a windowed
-            // cell reads exact even when its quantized block is not. w is -1 whenever the window is off.
-            if (qsa_win_on(p) &&
-                qsa_win_cell(p, (long long) cell, (long long) __ldg(step + kStepNKv)))
-                w = (long long) cell * n_kv_heads + kvh;
+            // cell reads exact even when its quantized block is not. qsa_win_slot returns the ring row that holds
+            // this cell (its tag still names it) or -1; w is -1 whenever the window is off.
+            if (qsa_win_on(p)) {
+                const long long wslot = qsa_win_slot(p, (long long) cell, (long long) __ldg(step + kStepNKv));
+                if (wslot >= 0) w = wslot * n_kv_heads + kvh;
+            }
         }
         srow[t] = r;
         swin.set(t, w);
@@ -451,7 +454,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads (dead once the scores are done)
     __shared__ float sp[G][CHUNK];                // scores
     __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
-    __shared__ WinRows<KV_MODE> swin;             // WP-2a window: flat side-pool row, or -1
+    __shared__ WinRows<KV_MODE> swin;             // WP-2a window: side-pool row, or -1
     // probabilities, cell-major: the value loop reads one cell's 12 as three float4.  They are first written after the
     // __syncthreads that ends the score phase, the last reader of sq, so they share its storage (64 x 12 of its 256 x 12
     // floats) and the block's shared memory stays what it was before the cell-major layout.
@@ -478,10 +481,12 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
             if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
             // WP-2a window: the horizon is step[kStepNKv] (pos + 1, device-fresh and graph-safe - qsa_step_fill
             // derives all four step entries from one position). The side pool is always resident, so a windowed
-            // cell reads exact even when its quantized block is not. w is -1 whenever the window is off.
-            if (qsa_win_on(p) &&
-                qsa_win_cell(p, (long long) cell, (long long) __ldg(step + kStepNKv)))
-                w = (long long) cell * n_kv_heads + kvh;
+            // cell reads exact even when its quantized block is not. qsa_win_slot returns the ring row that holds
+            // this cell (its tag still names it) or -1; w is -1 whenever the window is off.
+            if (qsa_win_on(p)) {
+                const long long wslot = qsa_win_slot(p, (long long) cell, (long long) __ldg(step + kStepNKv));
+                if (wslot >= 0) w = wslot * n_kv_heads + kvh;
+            }
         }
         srow[t] = r;
         swin.set(t, w);

@@ -991,8 +991,9 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
                                st_.kv_q4_mode);
             // WP-2a window twin (the drafter's state never carries win pools - guard skips; kept uniform).
             if (st_.k_win != nullptr)
-                strata::kernels::kv_append_win_steps(st_.k_win, st_.v_win, step, 4, T, kcur_, vcur_, (int) NKV,
-                                                     (int) HD, cs, st_.max_cells);
+                strata::kernels::kv_append_win_steps(st_.k_win, st_.v_win, st_.win_tag, step, 4, T, kcur_, vcur_,
+                                                     (int) NKV, (int) HD, cs, qsa_kv_win_s(), qsa_kv_win_r(),
+                                                     qsa_kv_win_b());
         }
         else if (!no_batch_kv && st_.kv_int8)
             kv_append_q8_steps(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step, 4, kcur_, vcur_,
@@ -1003,9 +1004,10 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
                     kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
                                       vcur_ + t * NKV * HD, s, cs, &st_.host, st_.kv_q4_mode);
                     if (st_.k_win != nullptr)
-                        strata::kernels::kv_append_win_steps(st_.k_win, st_.v_win, step + t * 4, 4, 1,
+                        strata::kernels::kv_append_win_steps(st_.k_win, st_.v_win, st_.win_tag, step + t * 4, 4, 1,
                                                              kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, (int) NKV,
-                                                             (int) HD, cs, st_.max_cells);
+                                                             (int) HD, cs, qsa_kv_win_s(), qsa_kv_win_r(),
+                                                             qsa_kv_win_b());
                 }
                 else if (st_.kv_int8)
                     kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,

@@ -3275,6 +3275,13 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // WP-2a window: the recent ring must hold one prompt chunk's whole window span (every query of a chunk has
+    // its own horizon), and the chunk is only known here - so size it for `o.prefill_chunk` (<= 0 = no batched
+    // prefill). An explicit STRATA_KV_WINDOW_BATCH wins, and the append checks a too-small ring loudly. This is
+    // before the first `session_init`/`qsa_state_bytes`, i.e. before the side pool is carved.
+    if (strata::core::qsa_kv_win() && g.n_qsa_layers() > 0)
+        strata::core::qsa_set_kv_win_batch(g, o.prefill_chunk > 0 ? o.prefill_chunk : 512);
+
     strata::core::SessionState ss;
     void* sbuf = nullptr;   // allocated after the layer-split search, sized to CUDA0's own layer range (the carve)
     // **THE ENGINE RAN ON THE LEGACY DEFAULT STREAM, WHICH ON WDDM IS THE SLOW PATH.**  All four session

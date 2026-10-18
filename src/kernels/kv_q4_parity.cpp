@@ -1224,18 +1224,32 @@ int main() {
                 498688, mse_c[0], mse_l, mse_c[1], mse_c[2]);
 
     // -------------------------------------------------------------
-    // Test 11: the WP-2a window arm - kLloyd's writer, exact side pool, windowed gather (`--kv q4lm32w`)
+    // Test 11: the WP-2a window arm - kLloyd's writer, the exact side pool as a RING, the windowed gather
+    // (`--kv q4lm32w`). The geometry is fixed here and smaller than the drawn cell range on purpose, so the
+    // recent ring really wraps: W_R + W_S + W_B rows against `cells` = 512 appended cells.
     // -------------------------------------------------------------
-    std::printf("[11/11] Verifying the window arm: q4lm32w (exact side pool + windowed gather)...\n");
+    std::printf("[11/11] Verifying the window arm: q4lm32w (exact side-pool ring + windowed gather)...\n");
     int maxpos = 0;
     for (int n = 0; n < n_fill; ++n) maxpos = std::max(maxpos, positions[n]);
     const int win_cells = maxpos + 1;
-    const size_t win_bytes = (size_t) win_cells * H * D * sizeof(uint16_t);
+    const int W_R = 8, W_S = 32, W_B = 16;   // sinks, recent cells per horizon, one append batch
+    const int W_RING = W_S + W_B;            // recent rows: cell % W_RING
+    const int W_ROWS = W_R + W_RING;
+    // The row of a cell, exactly as qsa_win_slot derives it (sinks cell-addressed, recent rows a ring).
+    auto win_row = [](int pos, int ws, int wr, int wb) -> int {
+        if (pos < wr) return pos;
+        const int ring = ws + wb;
+        return ring > 0 ? wr + pos % ring : -1;
+    };
+    const size_t win_bytes = (size_t) W_ROWS * H * D * sizeof(uint16_t);
     uint16_t *d_k_win = nullptr, *d_v_win = nullptr;
+    int32_t* d_win_tag = nullptr;
     ck(cudaMalloc(&d_k_win, win_bytes), "alloc d_k_win");
     ck(cudaMalloc(&d_v_win, win_bytes), "alloc d_v_win");
+    ck(cudaMalloc(&d_win_tag, (size_t) W_RING * sizeof(int32_t)), "alloc d_win_tag");
     ck(cudaMemset(d_k_win, 0, win_bytes), "zero d_k_win");
     ck(cudaMemset(d_v_win, 0, win_bytes), "zero d_v_win");
+    ck(cudaMemset(d_win_tag, 0, (size_t) W_RING * sizeof(int32_t)), "zero d_win_tag");
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
@@ -1247,16 +1261,20 @@ int main() {
         k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
                              k::Q4Mode::kLloydWin);
         ck(cudaDeviceSynchronize(), "kv_append_q4_step window");
-        k::kv_append_win_steps(d_k_win, d_v_win, d_step, 0, 1, d_kcur, d_vcur, H, D, nullptr, win_cells);
+        k::kv_append_win_steps(d_k_win, d_v_win, d_win_tag, d_step, 0, 1, d_kcur, d_vcur, H, D, nullptr, W_S, W_R,
+                               W_B);
         ck(cudaDeviceSynchronize(), "kv_append_win_steps");
     }
     ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4");
     ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4");
-    std::vector<uint16_t> h_k_win(win_cells * H * D), h_v_win(win_cells * H * D);
+    std::vector<uint16_t> h_k_win((size_t) W_ROWS * H * D), h_v_win((size_t) W_ROWS * H * D);
     ck(cudaMemcpy(h_k_win.data(), d_k_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_win");
     ck(cudaMemcpy(h_v_win.data(), d_v_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_win");
+    std::vector<int32_t> h_win_tag(W_RING);
+    ck(cudaMemcpy(h_win_tag.data(), d_win_tag, (size_t) W_RING * sizeof(int32_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h win_tag");
 
-    // Writer identity (kLloyd's blocks) + side pool exactness (fp16 twin of the raw vectors).
+    // Writer identity (kLloyd's blocks) - unchanged by the ring: the blocks still hold the cell's own nibbles.
     long bad_w = 0;
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
@@ -1277,12 +1295,38 @@ int main() {
                         ++bad_w;
                     }
                 }
-                const uint16_t* win_ptr =
-                    (is_v ? h_v_win.data() : h_k_win.data()) + ((size_t) pos * H + h) * D;
+            }
+        }
+    }
+
+    // The ring model: which cell each row holds after the appends, and each recent row's tag. The appends run in
+    // `positions` order (shuffled), so a row holds the *last* appender, not the largest cell - exactly what the
+    // kernel does, and the reason a reader must check the tag instead of trusting the row.
+    std::vector<int> exp_row(W_ROWS, -1), exp_tag(W_RING, 0);
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        const int row = win_row(pos, W_S, W_R, W_B);
+        if (row >= 0) exp_row[row] = pos;
+        if (pos >= W_R && W_RING > 0) exp_tag[pos % W_RING] = pos;
+    }
+    for (int i = 0; i < W_RING; ++i) {
+        if (h_win_tag[i] != exp_tag[i]) {
+            if (bad_w == 0)
+                std::printf("WIN-TAG MISMATCH at ring row %d: %d != %d\n", i, h_win_tag[i], exp_tag[i]);
+            ++bad_w;
+        }
+    }
+    for (int row = 0; row < W_ROWS; ++row) {
+        const int cell = exp_row[row];
+        if (cell < 0) continue;   // never written: still the zeros the memset wrote
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            const float* raw_base = is_v ? host_v[cell].data() : host_k[cell].data();
+            const uint16_t* win_ptr = (is_v ? h_v_win.data() : h_k_win.data()) + ((size_t) row * H) * D;
+            for (int h = 0; h < H; ++h) {
                 for (int d = 0; d < D; ++d) {
-                    if (win_ptr[d] != k::f16_from_f32(raw_vec[d])) {
+                    if (win_ptr[h * D + d] != k::f16_from_f32(raw_base[h * D + d])) {
                         if (bad_w == 0)
-                            std::printf("WIN-POOL MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, d=%d\n", n, pos,
+                            std::printf("WIN-POOL MISMATCH at row=%d, cell=%d, is_v=%d, h=%d, d=%d\n", row, cell,
                                         is_v, h, d);
                         ++bad_w;
                     }
@@ -1291,23 +1335,61 @@ int main() {
         }
     }
     if (bad_w > 0) {
-        std::fprintf(stderr, "FAIL: %ld window writer/side-pool values differ from reference\n", bad_w);
+        std::fprintf(stderr, "FAIL: %ld window ring/tag/side-pool values differ from reference\n", bad_w);
         ++g_fail;
     } else {
-        std::printf("  -> Window arm: writer is kLloyd's writer, side pool is the exact fp16 twin (OK)\n");
+        std::printf("  -> Window arm: writer is kLloyd's writer, ring rows + tags match the model (OK)\n");
     }
 
-    // Windowed gather, two shapes: sinks-only (R covers everything -> all exact) and recent-only (S = 1 ->
-    // only the last cell exact, the rest 16-level). The horizon comes from step[kStepNKv] in-kernel (like the
-    // engine's own step arrays, filled by qsa_step_fill) - set it to win_cells here.
-    // (d_step still holds the last append's position - the gather needs the count form, like test 7.)
-    const int win_cases[2][2] = {{0, win_cells}, {1, 0}};   // {S, R}
-    for (int wc = 0; wc < 2; ++wc) {
-        const int ws = win_cases[wc][0], wr = win_cases[wc][1];
-        int32_t hstepw[k::kStepCount] = {0, win_cells, 0, max_ids};
+    // Windowed gather, four passes, all with the ring's own grid (W_S/W_R/W_B - the row formula has to match the
+    // one the pool was written with, unlike with the flat pool). What varies is the ids and the HORIZON
+    // step[kStepNKv], which is what makes a cell "recent":
+    //   pass 0  the drawn ids,    hor = maxpos + W_S + 1   no cell is recent -> sinks only
+    //   pass 1  the drawn ids,    hor = win_cells          recent by tag (here 2 of 128: the two sinks)
+    //   pass 2  the ring's cells, hor = min + W_S          every id is recent -> the ring path itself
+    //   pass 3  pass 2, newest cell's tag poisoned         that cell must fall back (the tag is the guard)
+    // Pass 1's random ids land on the recent ring only by accident, so passes 2/3 pin that path: the last W_RING
+    // appenders are the cells whose tag the ring still carries, and their horizon is chosen so all of them count as
+    // recent. Pass 3 poisons the tag of the *newest* appender - a cell pass 2 just read exact from the ring - so
+    // the guard is exercised on a cell that would otherwise be served exactly.
+    const int n_ring_ids = std::min(W_RING, max_ids);
+    int ring_min_cell = 0;
+    std::vector<int32_t> ring_ids;
+    for (int n = n_fill - n_ring_ids; n < n_fill; ++n) {
+        ring_ids.push_back(positions[n]);
+        ring_min_cell = n == n_fill - n_ring_ids ? positions[n] : std::min(ring_min_cell, positions[n]);
+    }
+    int32_t* d_ids_ring = dalloc<int32_t>(n_ring_ids);
+    ck(cudaMemcpy(d_ids_ring, ring_ids.data(), ring_ids.size() * sizeof(int32_t), cudaMemcpyHostToDevice),
+       "memcpy d_ids_ring");
+    long bad_wg_total = 0, n_exact_ring = -1;
+    for (int pass = 0; pass < 4; ++pass) {
+        std::vector<int32_t> tag_ref(W_RING);
+        ck(cudaMemcpy(tag_ref.data(), d_win_tag, (size_t) W_RING * sizeof(int32_t), cudaMemcpyDeviceToHost),
+           "memcpy d2h win_tag (gather)");
+        if (pass == 3) {
+            // The newest *ring* appender: pass 2 just read that cell exact from its ring row, so a kernel that
+            // ignored the tag (or the row's age) would keep serving it and fail the comparison below. A sink cell
+            // would not do - its row is cell-addressed and tag-free - so scan back for one with cell >= W_R.
+            int vic_cell = -1;
+            for (int n = n_fill - 1; n >= n_fill - n_ring_ids && vic_cell < 0; --n)
+                if (positions[n] >= W_R) vic_cell = positions[n];
+            if (vic_cell >= 0) {
+                const int32_t bogus = 0x7f000000;
+                ck(cudaMemcpy(d_win_tag + vic_cell % W_RING, &bogus, sizeof(bogus), cudaMemcpyHostToDevice),
+                   "poison win_tag");
+                ck(cudaMemcpy(tag_ref.data(), d_win_tag, (size_t) W_RING * sizeof(int32_t),
+                              cudaMemcpyDeviceToHost),
+                   "memcpy d2h win_tag (poisoned)");
+            }
+        }
+        const int n_pass = pass >= 2 ? n_ring_ids : max_ids;
+        const int32_t* ids_pass = pass >= 2 ? d_ids_ring : d_ids;
+        const int hor = pass == 0 ? maxpos + W_S + 1 : (pass >= 2 ? ring_min_cell + W_S : win_cells);
+        int32_t hstepw[k::kStepCount] = {0, hor, 0, n_pass};
         ck(cudaMemcpy(d_step, hstepw, sizeof(hstepw), cudaMemcpyHostToDevice), "memcpy step gather window");
-        k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch,
-                             nullptr, k::Q4Mode::kLloydWin, d_k_win, d_v_win, ws, wr);
+        k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, ids_pass, d_step, n_pass, s, d_k_scratch, d_v_scratch,
+                             nullptr, k::Q4Mode::kLloydWin, d_k_win, d_v_win, d_win_tag, W_S, W_R, W_B);
         ck(cudaDeviceSynchronize(), "kv_gather_q4_step window");
         ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t),
                       cudaMemcpyDeviceToHost),
@@ -1315,10 +1397,17 @@ int main() {
         ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t),
                       cudaMemcpyDeviceToHost),
            "memcpy d2h v_scratch window");
-        long bad_wg = 0;
-        for (int i = 0; i < max_ids; ++i) {
-            const int cell = ids[i];
-            const bool exact = cell < wr || cell >= win_cells - ws;
+        long bad_wg = 0, n_exact = 0;
+        for (int i = 0; i < n_pass; ++i) {
+            const int cell = pass >= 2 ? ring_ids[i] : ids[i];
+            // The reader's row, exactly as qsa_win_slot derives it: sink row, or a recent ring row whose tag
+            // still names this cell (nothing else is exact, however recent the cell is).
+            int wrow = -1;
+            if (cell < W_R) wrow = cell;
+            else if (W_S > 0 && cell >= hor - W_S && W_RING > 0 && tag_ref[cell % W_RING] == cell)
+                wrow = W_R + cell % W_RING;
+            const bool exact = wrow >= 0;
+            if (exact) ++n_exact;
             for (int is_v = 0; is_v < 2; ++is_v) {
                 const uint16_t* gathered = (is_v ? h_v_scratch.data() : h_k_scratch.data()) + i * H * D;
                 const float* raw_base = is_v ? host_v[cell].data() : host_k[cell].data();
@@ -1343,18 +1432,30 @@ int main() {
             }
         }
         if (bad_wg > 0) {
-            std::fprintf(stderr, "FAIL: %ld windowed-gather values wrong (S=%d R=%d)\n", bad_wg, ws, wr);
+            std::fprintf(stderr, "FAIL: %ld windowed-gather values wrong (pass %d, hor=%d, %ld exact ids)\n",
+                         bad_wg, pass, hor, n_exact);
+            ++g_fail;
+        }
+        bad_wg_total += bad_wg;
+        std::printf("  -> Windowed gather pass %d (hor %d): %ld of %d ids exact\n", pass, hor, n_exact, n_pass);
+        if (pass == 2) n_exact_ring = n_exact;
+        if (pass == 3 && n_exact_ring >= 0 && n_exact != n_exact_ring - 1) {
+            // The poison is meant to take exactly one cell away from the ring. If it does not, this pass is
+            // vacuous - the tag guard would have gone untested while looking green.
+            std::fprintf(stderr, "FAIL: poisoning one tag moved the exact count by %ld, not -1 (pass 2: %ld)\n",
+                         n_exact - n_exact_ring, n_exact_ring);
             ++g_fail;
         }
     }
-    if (g_fail == 0)
-        std::printf("  -> Windowed gather: sinks-only all exact, recent-only mixed exact/16-level (OK)\n");
+    if (g_fail == 0 && bad_wg_total == 0)
+        std::printf("  -> Windowed gather: sinks-only exact, recent ring exact by tag, poisoned tag reads q4 (OK)\n");
+    cudaFree(d_ids_ring);
 
     // -------------------------------------------------------------
-    // Test 12: the window on a 3-bit arm (`--kv q4lm8v` + STRATA_KV_WINDOW) - the same exact side pool over the
-    // 16-level K / 8-level V writer (Q4Mode::kLloyd8V). The host overlay is what WP-2b changes; the kernel
+    // Test 12: the window on a 3-bit arm (`--kv q4lm8v` + STRATA_KV_WINDOW) - the same exact side-pool ring over
+    // the 16-level K / 8-level V writer (Q4Mode::kLloyd8V). The host overlay is what WP-2b changes; the kernel
     // already reads any q4_lloyd mode windowed (q4l_map_v travels in the pools), and this pins the combination
-    // the measurement will run: writer bitwise, side pool exact, gather mixed exact / per-tensor level.
+    // the measurement runs: writer bitwise, ring rows + tags as modelled, gather exact by tag, else the level.
     // -------------------------------------------------------------
     std::printf("[12/12] Verifying the window on a 3-bit arm: q4lm8v (16-level K, 8-level V) + window...\n");
     for (int n = 0; n < n_fill; ++n) {
@@ -1368,13 +1469,25 @@ int main() {
         k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
                              k::Q4Mode::kLloyd8V);
         ck(cudaDeviceSynchronize(), "kv_append_q4_step 8v window");
-        k::kv_append_win_steps(d_k_win, d_v_win, d_step, 0, 1, d_kcur, d_vcur, H, D, nullptr, win_cells);
+        k::kv_append_win_steps(d_k_win, d_v_win, d_win_tag, d_step, 0, 1, d_kcur, d_vcur, H, D, nullptr, W_S, W_R,
+                               W_B);
         ck(cudaDeviceSynchronize(), "kv_append_win_steps 8v");
     }
     ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4 8v");
     ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4 8v");
     ck(cudaMemcpy(h_k_win.data(), d_k_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_win 8v");
     ck(cudaMemcpy(h_v_win.data(), d_v_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_win 8v");
+    ck(cudaMemcpy(h_win_tag.data(), d_win_tag, (size_t) W_RING * sizeof(int32_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h win_tag 8v");
+    // The appends rewrote every tag, so the model of test 11 holds again (including the row test 11 poisoned).
+    exp_row.assign(W_ROWS, -1);
+    exp_tag.assign(W_RING, 0);
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        const int row = win_row(pos, W_S, W_R, W_B);
+        if (row >= 0) exp_row[row] = pos;
+        if (pos >= W_R && W_RING > 0) exp_tag[pos % W_RING] = pos;
+    }
     long bad_w8 = 0;
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
@@ -1396,22 +1509,41 @@ int main() {
                         ++bad_w8;
                     }
                 }
-                const uint16_t* win_ptr = (is_v ? h_v_win.data() : h_k_win.data()) + ((size_t) pos * H + h) * D;
-                for (int d = 0; d < D; ++d)
-                    if (win_ptr[d] != k::f16_from_f32(raw_vec[d])) ++bad_w8;
             }
         }
     }
-    if (bad_w8 > 0) {
-        std::fprintf(stderr, "FAIL: %ld q4lm8v+window writer/side-pool values differ from reference\n", bad_w8);
-        ++g_fail;
+    for (int i = 0; i < W_RING; ++i)
+        if (h_win_tag[i] != exp_tag[i]) {
+            if (bad_w8 == 0)
+                std::printf("WIN8V TAG MISMATCH at ring row %d: %d != %d\n", i, h_win_tag[i], exp_tag[i]);
+            ++bad_w8;
+        }
+    for (int row = 0; row < W_ROWS; ++row) {
+        const int cell = exp_row[row];
+        if (cell < 0) continue;
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            const float* raw_base = is_v ? host_v[cell].data() : host_k[cell].data();
+            const uint16_t* win_ptr = (is_v ? h_v_win.data() : h_k_win.data()) + ((size_t) row * H) * D;
+            for (int h = 0; h < H; ++h)
+                for (int d = 0; d < D; ++d)
+                    if (win_ptr[h * D + d] != k::f16_from_f32(raw_base[h * D + d])) ++bad_w8;
+        }
     }
-    for (int wc = 0; wc < 2; ++wc) {
-        const int ws = win_cases[wc][0], wr = win_cases[wc][1];
-        int32_t hstepw[k::kStepCount] = {0, win_cells, 0, max_ids};
+    if (bad_w8 > 0) {
+        std::fprintf(stderr, "FAIL: %ld q4lm8v+window ring/tag/side-pool values differ from reference\n", bad_w8);
+        ++g_fail;
+    } else {
+        std::printf("  -> q4lm8v + window: 8-level V writer bitwise, ring rows + tags match the model (OK)\n");
+    }
+    // Two horizons, the ring's own grid: sinks only (nothing is recent) and recent (last W_S cells, exact by tag).
+    // The non-exact cells must come back at the arm's own levels - 8 for V, 16 for K.
+    long bad_wg8_total = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        const int hor = pass == 0 ? maxpos + W_S + 1 : win_cells;
+        int32_t hstepw[k::kStepCount] = {0, hor, 0, max_ids};
         ck(cudaMemcpy(d_step, hstepw, sizeof(hstepw), cudaMemcpyHostToDevice), "memcpy step gather 8vw");
         k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch, nullptr,
-                             k::Q4Mode::kLloyd8V, d_k_win, d_v_win, ws, wr);
+                             k::Q4Mode::kLloyd8V, d_k_win, d_v_win, d_win_tag, W_S, W_R, W_B);
         ck(cudaDeviceSynchronize(), "kv_gather_q4_step 8v window");
         ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t),
                       cudaMemcpyDeviceToHost),
@@ -1419,10 +1551,12 @@ int main() {
         ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t),
                       cudaMemcpyDeviceToHost),
            "memcpy d2h v_scratch 8vw");
-        long bad_wg8 = 0;
+        long bad_wg8 = 0, n_exact8 = 0;
         for (int i = 0; i < max_ids; ++i) {
             const int cell = ids[i];
-            const bool exact = cell < wr || cell >= win_cells - ws;
+            const bool exact = cell < W_R || (W_S > 0 && cell >= hor - W_S && W_RING > 0 &&
+                                              h_win_tag[cell % W_RING] == cell);
+            if (exact) ++n_exact8;
             for (int is_v = 0; is_v < 2; ++is_v) {
                 const uint16_t* gathered = (is_v ? h_v_scratch.data() : h_k_scratch.data()) + i * H * D;
                 const float* raw_base = is_v ? host_v[cell].data() : host_k[cell].data();
@@ -1446,15 +1580,20 @@ int main() {
             }
         }
         if (bad_wg8 > 0) {
-            std::fprintf(stderr, "FAIL: %ld q4lm8v+window gathered values wrong (S=%d R=%d)\n", bad_wg8, ws, wr);
+            std::fprintf(stderr, "FAIL: %ld q4lm8v+window gathered values wrong (pass %d, hor=%d)\n", bad_wg8,
+                         pass, hor);
             ++g_fail;
         }
+        bad_wg8_total += bad_wg8;
+        std::printf("  -> q4lm8v + window gather pass %d (hor %d): %ld of %d ids exact\n", pass, hor, n_exact8,
+                    max_ids);
     }
-    if (g_fail == 0)
-        std::printf("  -> q4lm8v + window: 8-level V writer bitwise equal, side pool exact, gather mixed "
+    if (g_fail == 0 && bad_wg8_total == 0)
+        std::printf("  -> q4lm8v + window: 8-level V writer bitwise, ring rows + tags match the model, gather "
                     "exact/8-level (OK)\n");
     cudaFree(d_k_win);
     cudaFree(d_v_win);
+    cudaFree(d_win_tag);
 
     cudaFree(d_src);
     cudaFree(d_dst);

@@ -113,6 +113,12 @@ enum class Q4Mode : int {
     // resumes; a silent exactness loss on resume would be worse than an error). The overlay is orthogonal to
     // the level table, so `STRATA_KV_WINDOW=1` turns the same window on for any other q4 mode (`--kv q4lm8v`
     // + the env is the WP-2b <=3-bit arm); this mode is that overlay on kLloyd.
+    // The pool is a RING (section 7.19): R cell-addressed sink rows plus S + B recent rows, B = the largest
+    // append batch (a prompt chunk: every one of its queries has its own horizon, so the batch's whole window
+    // span is live at once, STRATA_KV_WINDOW_BATCH). Recent rows carry the cell they hold, so a row a rewind or
+    // a resume left stale is read quantized, never as the wrong cell. This is what makes the pool independent
+    // of the context length (19.5 MiB at S/R/B = 256/64/512 over this model's 12 QSA layers, against 1.5 GiB
+    // for the flat full-context pool the WP-2 measurements ran with).
     kLloydWin = 9,  ///< `--kv q4lm32w`: kLloyd's blocks with an exact fp16 window (window arm)
 };
 
@@ -177,23 +183,25 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
 /// Gather step[kStepWidth] cells named by `ids` into FP16 scratch [id][kv_head][head_dim] (still rotated). Both
 /// level-table modes read alike (see q4_lloyd), so a mode here only decides table or uniform grid.
 /// The trailing window params (default off) serve WP-2a's exact fp16 side pool instead of 4-bit for sink and
-/// recent cells, with the horizon from step[kStepNKv] in-kernel; existing callers (parity) compile unchanged.
+/// recent cells, with the horizon from step[kStepNKv] in-kernel; existing callers compile unchanged. The row is
+/// `qsa_win_slot` (sinks cell-addressed, recent rows a ring guarded by `win_tag`), never the cell itself.
 void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* page_table, const int32_t* ids,
                        const int32_t* step, int64_t max_ids, const QsaShapes& s, uint16_t* k_scratch,
                        uint16_t* v_scratch, void* stream, Q4Mode mode = Q4Mode::kUniform,
-                       const uint16_t* k_win = nullptr, const uint16_t* v_win = nullptr, int win_s = 0,
-                       int win_r = 0);
+                       const uint16_t* k_win = nullptr, const uint16_t* v_win = nullptr,
+                       const int32_t* win_tag = nullptr, int win_s = 0, int win_r = 0, int win_b = 0);
 
-/// WP-2a window side pool (kLloydWin): the exact fp16 twin of every appended cell, flat [(cell, kv_head,
-/// head_dim)] per tensor. Steps variant (positions from the step array, like kv_append_q4_steps) and contiguous
-/// batch variant (pos0/T, like kv_append_q4) - called with the same rotated K/V as the q4 append, next to it.
-/// `win_cells` is the pool's capacity in cells (the state's `max_cells`): the batch variant checks pos0/T against
-/// it loudly (host-known), the steps variant drops an out-of-range store inside the kernel (the position is
-/// device-fresh, K3), and a geometry the grid cannot cover fails loudly in both.
-void kv_append_win_steps(uint16_t* k_win, uint16_t* v_win, const int32_t* step, int step_stride, int n_steps,
-                         const float* kcur, const float* vcur, int n_head_kv, int head_dim, void* stream,
-                         int64_t win_cells);
-void kv_append_win(uint16_t* k_win, uint16_t* v_win, int64_t pos0, int64_t T, const float* K, const float* V,
-                   int n_head_kv, int head_dim, void* stream, int64_t win_cells);
+/// WP-2a window side pool (kLloydWin): the exact fp16 twin of the cells a windowed reader takes exact, rows
+/// [R sinks][S + B recent ring] per tensor (see qsa_win_slot). Steps variant (positions from the step array, like
+/// kv_append_q4_steps) and contiguous batch variant (pos0/T, like kv_append_q4) - called with the same rotated
+/// K/V as the q4 append, next to it. `win_tag` gets the cell id of every recent row.
+/// The INVARIANT is that one call's cells land on distinct ring rows: a row written by two cells of the same
+/// launch would race its tag against its values, so n_steps (or T) must be <= S + B. A larger batch (a longer
+/// prefill chunk than STRATA_KV_WINDOW_BATCH) fails loudly here, as does a geometry the grid cannot cover.
+void kv_append_win_steps(uint16_t* k_win, uint16_t* v_win, int32_t* win_tag, const int32_t* step, int step_stride,
+                         int n_steps, const float* kcur, const float* vcur, int n_head_kv, int head_dim,
+                         void* stream, int win_s, int win_r, int win_b);
+void kv_append_win(uint16_t* k_win, uint16_t* v_win, int32_t* win_tag, int64_t pos0, int64_t T, const float* K,
+                   const float* V, int n_head_kv, int head_dim, void* stream, int win_s, int win_r, int win_b);
 
 }  // namespace strata::kernels

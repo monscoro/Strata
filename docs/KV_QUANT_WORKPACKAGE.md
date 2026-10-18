@@ -7,12 +7,16 @@ unter Streaming), **auf Swift cwe-2k gemessen** (§7.13: das Fenster trägt, Kni
 ≤3-Bit-Arme geöffnet** (§7.14: orthogonale Überlagerung, Parität 12/12; §7.15: das Fenster trägt auch bei ≤3 Bit —
 mit dem dortigen `R = 8`-Gitter ein Cross-Over bei ≈4,8–5,3 Bit). **§7.16 schließt die Knie-Arme ab** (`R = 64` mit
 S 256 sowie das Sink-Paar 512/128, auf beiden Basen): alle vier sind von `int8` nicht zu trennen, die 3-Bit-Basis
-erreicht das zuerst bei ≈5,9 statt 8,25 Bit — das §7.15-Cross-Over gilt nur für das zu knappe `R = 8`. **§7.17 füllt
+erreicht das zuerst bei ≈5,9 statt 8,25 Bit (2K-Modellwert; §7.19 korrigiert ihn mit der Ring-Spanne auf ≈10,5 Bit
+bei 2K und 4,2 bei 64K — die Qualitätsaussage bleibt) — das §7.15-Cross-Over gilt nur für das zu knappe `R = 8`. **§7.17 füllt
 die Serving-Lücke** (`§11.4.3`: 8 Arme × 3 Runden, Swift, 16K): das Format ist im Decode frei (±6 %), der
 Fenster-Überbau im Decode unsichtbar, und der Fenster-Pool kostet 24 KiB je Kontextzelle (64K ≈ 1,5 GiB),
 unabhängig von `--kv-resident`. Die **Review-Nachbesserungen** am Fenster-Code (K1–K4, R6) sind erledigt und als
-datenneutral gezeigt (§7.18: Parität 12/12, zwei Arme byte-gleich zu ihren 2026-10-17-TSVs). **Arbeitspunkt ab
-hier: Fenster `S/R = 256/64` auf `q4lm8v`** (§11.5.1). Der
+datenneutral gezeigt (§7.18: Parität 12/12, zwei Arme byte-gleich zu ihren 2026-10-17-TSVs). **§7.19 baut die
+Auslieferungsform**: der Seitenpool ist ein **Ring** aus `R` Sink- plus `S + B` Ringzeilen mit Zell-Tag statt eines
+flachen, kontextgroßen Pools (19,5 MiB konstant bei 256/64 gegen 1,5 GiB bei 64K), mit laut geprüfter Batch-Schranke,
+`B` aus dem Prompt-Chunk, und **R1** (K und V in einem Launch) ist nachgezogen; Parität 12/12 und der Arbeitspunkt
+byte-gleich. **Arbeitspunkt ab hier: Fenster `S/R = 256/64` auf `q4lm8v`** (§11.5.1). Der
 Plan-Teil §1–§6 stammt aus dem Survey
 [KV_QUANT_RESEARCH.md](KV_QUANT_RESEARCH.md); wo die eigenen Messungen ihn korrigieren, steht das dabei. §4/§5 sind
 **Erwartungen aus fremden Messungen** und so gekennzeichnet; alle Zahlen in §7 sind **Strata-Messungen** mit dem
@@ -271,7 +275,8 @@ erfüllt, ohne einen hier nicht baubaren SYCL-Build zu behaupten.
 | **WP-2b** (erledigt §7.15) | **Fenster auf die ≤3-Bit-Arme** (§7.14): orthogonal zur Level-Tabelle (`STRATA_KV_WINDOW=1` auf jedem q4-Arm), Parität 12/12. Ergebnis: Fenster trägt auch bei ≤3 Bit (128/8 −51 %, 8/8); mit dem `R = 8`-Gitter ein **Cross-Over ≈4,8–5,3 Bit** | Messbericht | S |
 | **WP-2b-Knie** (erledigt §7.16) | **OSCAR-Knie `R = 64` (S 256) und Sink-Paar 512/128** auf beiden Basen. Ergebnis: alle vier von `int8` nicht zu trennen (ns), die 3-Bit-Basis am billigsten (**≈5,9 vs. 8,25 Bit**); das §7.15-Cross-Over gilt nur für das zu knappe `R = 8` — pro Byte verliert die 3-Bit-Basis nirgends meßbar | Messbericht | S |
 | **WP-2-Laufzeit** (erledigt §7.17) | **Speed-A/B der KV-Arme** (§11.4.3): 8 Arme × 3 Runden, Swift, 16K-Kontext. Ergebnis: Decode ist **formatfrei** (±6 %, `int8` führt), der Fenster-Überbau unsichtbar; der Fenster-Pool kostet **24 KiB je Kontextzelle** (64K ≈ 1,5 GiB) und ignoriert `--kv-resident` | Messbericht | S |
-| **WP-2-Review** (erledigt §7.18) | **Nachbesserungen aus dem Code-Review**: K1 Fenster nur auf q4-**Lloyd** (laut statt pfadabhängig), K2/K3 laute Fehler + Pool-Schranke (`win_cells`), K4 Snapshot nur bei vorhandenem Seitenpool, R6 Drafter reserviert keine Fenster-Pools. Als **datenneutral** gezeigt (Parität 12/12, zwei Arme byte-gleich zu ihren TSVs); R1/R4/R5 bewußt offen (Perf, §7.17 zeigt keinen meßbaren Effekt), B1 Metal-Stubs sind **älter als diese Arbeit** | Code + Doku | S |
+| **WP-2-Review** (erledigt §7.18) | **Nachbesserungen aus dem Code-Review**: K1 Fenster nur auf q4-**Lloyd** (laut statt pfadabhängig), K2/K3 laute Fehler + Pool-Schranke (die `win_cells`-Schranke ist in §7.19 durch die Ring-Invariante ersetzt), K4 Snapshot nur bei vorhandenem Seitenpool, R6 Drafter reserviert keine Fenster-Pools. Als **datenneutral** gezeigt (Parität 12/12, zwei Arme byte-gleich zu ihren TSVs); R1/R4/R5 bewußt offen (Perf, §7.17 zeigt keinen meßbaren Effekt), B1 Metal-Stubs sind **älter als diese Arbeit** | Code + Doku | S |
+| **WP-2-Auslieferung** (erledigt §7.19) | **Der Ring + R1**: `R` Sink- plus `S + B` Ringzeilen mit Zell-Tag (statt flachem, kontextgroßem Pool), laut geprüfte Invariante `T ≤ S + B`, `B` folgt dem Prompt-Chunk; dazu der Fenster-Writer für K **und** V in einem Launch. Als **datenneutral** gezeigt (4 Arme byte-gleich) und die Ringgröße als Speichermessung belegt | Code + Parität + Doku | S |
 | **WP-2** | **Echtes asymmetrisches Layout** (K4/V3-Klasse, echte Bytes, ehrliche BPE-Bilanz nach OSCAR) mit vorbereitetem, unbestücktem Slot für kalibriert-nur-K. **Bau erst nach WP-1 + WP-2a** | Format + Tests + Messbericht | L |
 | **WP-3** | **Kalibriert-nur-K als Vergleichsarm** (WUSH geschlossen / OSCAR Kovarianz; V fest; kein V-Folding; Kalibrierung ~8k Tokens). **Vergleich, nicht Hauptlinie** | Vergleichsarm + Messbericht | M–L |
 | **WP-4** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
@@ -757,10 +762,13 @@ zeigt dieselben Vorzeichen (`q4lm32`−512/8 t +3,90, 8/8).
 31 % der KL, 512/8 die Hälfte. Über 512 hinaus passiert nichts mehr. PPL fällt unter fp16 (2,992 < 2,999) — wie
 beim Clip-Arm (§7.11) und `q4lm32t`: der 4-Bit-Fehler dämpft, PPL ist hier kein Qualitätsleser, KL ist es.
 
-**Bytes.** Die **Probe** hält einen fp16-Zwilling des **ganzen** Kontexts (`qsa_win_bytes` über `max_cells`,
-`kv_append_win` schreibt jede Zelle), der Leser bedient daraus nur das Fenster: alle Arme haben dieselbe Fußspur
-(~20,5 Bit/Wert), die Unterschiede sind reine Lesepolitik. Die **Auslieferung** würde nur die S+R exakten Zellen
-fp16 halten (Ring + Sinks) → **4,5 + 11,5·(S+R)/L Bit/Wert** (L ≈ 2044): 128/8 ≈ 5,3, 512/8 ≈ 7,4, 1024/8 ≈ 10,3.
+**Bytes.** Die **Probe** hält einen fp16-Zwilling des **ganzen** Kontexts (`qsa_win_bytes(s, max_cells)` bis
+`d98f6472`, `kv_append_win` schreibt jede Zelle), der Leser bedient daraus nur das Fenster: alle Arme haben dieselbe
+Fußspur (~20,5 Bit/Wert), die Unterschiede sind reine Lesepolitik. Die **Auslieferung** hält die feste Spanne
+`S + B` exakt (Ring + Sinks, §7.19); das **Modell hier ist das von vor dem Ring** (`4,5 + 11,5·(S+R)/L`, L ≈ 2044:
+128/8 ≈ 5,3, 512/8 ≈ 7,4, 1024/8 ≈ 10,3 Bit) und **optimistisch** — die korrigierte Rechnung mit doppelter Haltung
+und der Ring-Spanne steht in §7.19/§12.4 (bei 2K ≈10,5 statt 5,9 Bit für 256/64). Die *Rangfolge* der Arme ändert
+sich nicht, die Absolutwerte schon.
 
 **Folge für WP-2.** Bei 4 Bit ist `q4lm32w` **int8-nah, bei weniger Bytes**: der beste Punkt (512/8) liegt bei
 ≈7,4 Bit (10 % unter `int8`s 8,25 Bit) und KL 0,00609 gegen `int8`s 0,00503 (+21 %), der Tail praktisch gleich
@@ -855,6 +863,11 @@ dieselben 8 Segmente):
 - **Grenze.** Die Bit-Zahlen sind ein **Modell** (Pegel + Block-Skalen-Overhead + `(16 − Basis)·(S+R)/L`, L ≈ 2044 bei
   2K), nicht gemessen; bei längerem Kontext sinkt der Fenster-Anteil, das Cross-Over kann sich verschieben. Die
   Qualitätsmessung ist 2K; ob das Fenster bei 128K noch so viel zurückholt, ist **nicht** gemessen.
+  **Korrektur (§7.19):** dieses Modell war zweifach zu optimistisch — der Pool hält die exakte Zelle **zusätzlich**
+  zum quantisierten Wert (16 Bit, nicht 16 − Basis) und die feste Spanne ist seit dem Ring `S + B`. Richtig ist
+  `Basis + 16·(S+B)/L`: bei 2K ≈10,5 Bit für 256/64 (statt 5,9), ab ≈8K unter `int8`, bei 64K 4,2 Bit. Die
+  **Rangfolge** der Arme und jede **Qualitäts**aussage hier bleiben davon unberührt; die absoluten Byte-Zahlen in
+  §7.14–§7.16 sind Modellwerte vor dem Ring.
 - **„3 Bit tot" also genauer:** ohne Fenster gilt es (§7.9); mit Fenster ist die 3-Bit-Basis im hier gemessenen
   `R = 8`-Gitter (≈4,8–10 Bit) pro Byte knapp konkurrenzfähig, das Cross-Over liegt bei ≈4,8–5,3 Bit. **Beides gilt
   nur für `R = 8`:** §7.16 mißt das OSCAR-Knie (`R = 64`) nach und findet die 3-Bit-Basis pro Byte nirgends meßbar
@@ -909,7 +922,8 @@ Innerhalb der 3-Bit-Familie: 128/8 → 256/64 +0,00167 (t +2,97, **8/8**), 256/6
 
 **Folge für §11.4.4/§11.5.1.** Die Aussage „3 Bit lebt nur als schmaler Low-Byte-Punkt" ist mit dem Knie-Gitter zu
 eng: mit `R = 64` ist die 3-Bit-Basis über den ganzen gemessenen Byte-Bereich (≈4,8–10 Bit) pro Byte nicht meßbar
-schlechter als die 4-Bit-Basis, und beide erreichen `int8`-Niveau — die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit. Der
+schlechter als die 4-Bit-Basis, und beide erreichen `int8`-Niveau — die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit
+(2K-Modellwert; mit der Ring-Spanne §7.19: ≈10,5 bei 2K, 4,2 bei 64K). Der
 beste **absolute** KL-Punkt bleibt die 4-Bit-Basis (`q4lm32w` 512/128, 0,00569 bei ≈8,1 Bit); die 3-Bit-Basis ist
 der beste **Byte**-Punkt. Grenzen: Qualität nur bei 2K, Bit-Zahlen nur Modell, S/R-Raster grob (fünf Formen,
 8 Segmente).
@@ -940,8 +954,9 @@ bei einem Token pro Schritt ist der Zwillings-Append winzig gegen die Attention 
 (6.345 Token) liegen die Fenster-Arme ≤3 % unter ihren Zwillingen (435/437/429 gegen 441/436), in Richtung des
 zusätzlichen Zwillings-Schreibens, aber innerhalb der Spanne.
 
-**Was das Fenster an Speicher kostet (R3, gemessen).** Der flache Seitenpool wird von `max_cells` bemessen
-(`qsa_win_bytes`, `layer.cpp:196`): `max_cells × n_head_kv × head_dim × 4 B` = **2.048 B je Zelle** je Layer;
+**Was das Fenster an Speicher kostet (R3, gemessen).** Der flache Seitenpool der **Probe** wurde von `max_cells`
+bemessen (`qsa_win_bytes(s, max_cells)` im Stand bis `d98f6472`, `layer.cpp:196`):
+`max_cells × n_head_kv × head_dim × 4 B` = **2.048 B je Zelle** je Layer;
 bei diesem Modell sind `n_head_kv = 2`, `head_dim = 256` und **12** Layer tragen einen QSA-Zustand
 (`qsa_interval = 4` von 48) → **24 KiB je Kontextzelle** über alle Layer. Gemessen als Differenz von
 `N MiB of VRAM free with everything loaded` zwischen Fenster-Arm und Zwilling bei fester Expert-Cache-Vorgabe:
@@ -951,11 +966,18 @@ bei diesem Modell sind `n_head_kv = 2`, `head_dim = 256` und **12** Layer tragen
 aus** (16K ≈ 384 MiB, 64K ≈ 1,5 GiB, 128K ≈ 3 GiB). **Korrektur:** der Review hatte „2K ≈ 10 MB, 16K ≈ 64 MB,
 128K ≈ 512 MB" und 48 Layer genannt; richtig sind 12 QSA-Layer und 24 KiB/Zelle (2K ≈ 48 MiB).
 **Aber das ist die Form der *Probe*, nicht die der Auslieferung:** der flache Pool hält fp16 für **jede** Zelle,
-weil er direkt über die Zellnummer indiziert wird. Die Auslieferungsform ist ein **Ring von `S + R` Zeilen**
-(Sink-Bereich `cell < R`, Ringbereich `R + cell % S`) — bei 256/64 also `320 × 2 KiB × 12 Layer = **7,5 MiB**`,
-**kontextunabhängig** (512/128: 15 MiB; Rechenweg aus der exakten 2 KiB/Zelle/Layer der 64K-Messung, keine eigene
-Messung). Damit fällt auch der Grund für die laute Verweigerung „Fenster + elastic K/V" weg (der flache Pool paßt
-nicht in die per-Slot-Pools). Bis dieser Ring gebaut ist, gilt die Zahl oben **nur für die Probe**.
+weil er direkt über die Zellnummer indiziert wird. Die Auslieferungsform ist ein **Ring** (seit §7.19 so gebaut):
+`R` **zellen-adressierte Sink-Zeilen** plus `S + B` **Ringzeilen** für die jüngsten Zellen, `B` = größter
+Append-Batch (`STRATA_KV_WINDOW_BATCH`; ohne Angabe folgt der Ring dem Prompt-Chunk, mindestens 512 = `--prefill 512`
+des Harness). Das `B` ist keine Vorsicht,
+sondern nötig: **jede Query eines Prefill-Batches hat ihren eigenen Horizont** (`qsa_step_fill(..., p0 + t, ...)`,
+`prefill.cpp:2306`), ein Batch von `T` Zellen braucht also `S + T` Ringzeilen gleichzeitig. Bei 256/64 und
+`B = 512`: `(64 + 256 + 512) × 2 KiB × 12 Layer = **19,5 MiB**`, kontextunabhängig (512/128:
+`(128 + 512 + 512) × 2 KiB × 12 = 27 MiB`; Token-Pfad mit `B = 1`: 7,7 MiB). Rechenweg aus der exakten
+2 KiB/Zelle/Layer **der 64K-Messung oben**, keine eigene Messung; gemessen ist die Ringgröße in §7.19.
+Die laute Verweigerung „Fenster + elastic K/V" bleibt trotzdem bestehen: ihr Grund (der flache Pool paßte nicht in
+die per-Slot-Planung) ist mit dem Ring weg, aber die Kombination ist ungemessen und wird nur aufgehoben, wenn sie
+jemand messen will. Bis der Ring gebaut war, galt die Zahl oben **nur für die Probe**.
 
 ### 7.18 Nachbesserungen aus dem Code-Review (K1–K4, R6)
 
@@ -974,6 +996,8 @@ dieselben TSV-SHA256 wie am 2026-10-17 (`83D13E7A…` / `D07C1492…`).
   `pos0 + T ≤ win_cells` **host-seitig laut** (die Prefill-Positionen sind host-bekannt); die Steps-Variante
   schützt den Store im Kernel (die Position ist device-frisch) — dort gibt es in einem Release-Build (NDEBUG)
   keinen lauten Device-Abbruch, deshalb wird der Store verworfen statt Speicher zu überschreiben.
+  *(Seit §7.19 gibt es kein `win_cells` mehr: der Pool ist ein Ring, und die host-seitige Schranke ist `T ≤ S + B`
+  mit Klartext-Abbruch; die dortige Fassung ist die aktuelle.)*
 - **K4 (Snapshot-Verweigerung zu grob).** Die Verweigerung hängt jetzt **nur am Seitenpool**. `kLloydWin` mit
   S + R = 0 legt keinen Pool an, ist ein gewöhnlicher `kLloyd`-Cache (Writer und Tabelle identisch) und wird
   als `kKvQ4lm` beschriftet — also **snapshot-fähig**; `--kv q4lm32w` ist damit mit Konversations-Cache nutzbar.
@@ -981,10 +1005,12 @@ dieselben TSV-SHA256 wie am 2026-10-17 (`83D13E7A…` / `D07C1492…`).
   aus (`qsa_set_kv_win`), statt zwei Pools zu schnitzen und die Zeiger danach wegzuwerfen; die Arena-Größe und
   `vram_` zählen sie damit nicht mehr mit.
 
-**Bewußt nicht geändert.** R1 (Append falten), R4 (`swin[c]`-Hoist) und R5 (pre75-Schleife) sind
+**Bewußt nicht geändert (Stand hier).** R1 (Append falten), R4 (`swin[c]`-Hoist) und R5 (pre75-Schleife) sind
 Hot-Loop-/Perf-Eingriffe: §7.17 zeigt für den Fenster-Überbau **keinen meßbaren Decode-Unterschied**, also würde
-eine solche Änderung eine eigene Messung brauchen (AGENTS.md: Default nur ändern, wo schneller gemessen). R2/R3
-sind der Proben-Überbau selbst und in §7.17 als Speicherzahl dokumentiert.
+eine solche Änderung eine eigene Messung brauchen (AGENTS.md: Default nur ändern, wo schneller gemessen).
+**R1 ist inzwischen in der risikoärmsten Form gebaut** (§7.19: K und V in *einem* Launch, ohne die getemperten
+q4-Kernel anzufassen); R4 und R5 bleiben offen (R5 läuft nur im pre75-Kernel, den diese Karte nicht betritt — §7.19).
+R2/R3 sind der Proben-Überbau selbst und in §7.17 als Speicherzahl dokumentiert.
 
 **B1 (Metal) ist älter als diese Arbeit.** `metal/src/engine/stubs.cpp` kennt kein `Q4Mode`, obwohl
 `kv_append_q4_step`/`kv_gather_q4_step` es seit `8f91507f` (WP-1a) im Parameter haben — der Metal-Link ist also
@@ -998,6 +1024,128 @@ und `sycl/src/kernels/cuda/kv_q4.dp.cpp` sind eigene Kopien. Die Kopie **inkludi
 WP-2a 15 deklariert (Fenster) — die SYCL-Kopien müssen also **nachgezogen** werden, sobald ein oneAPI-Build
 verfügbar ist; hier ist keiner (gfx1200/HIP). Der HIP/CUDA-Build ist davon nicht betroffen (`add_subdirectory(sycl)`
 greift nur mit oneAPI), und die Forks rufen `kv_append_win*` nicht auf, also ändert die neue Signatur dort nichts.
+
+### 7.19 Auslieferungsform des Fensters: der Ring (und R1) — gebaut, datenneutral, gemessen (2026-10-18)
+
+§7.17 hat die Form der **Probe** gemessen (flacher fp16-Zwilling des ganzen Kontexts, 24 KiB je Kontextzelle) und
+§7.18 hat die Review-Punkte daran abgearbeitet. Was fehlte, war die **Auslieferungsform**: ein Speicher, der nicht
+mit `max_context` wächst. Die ist jetzt gebaut.
+
+**Die Geometrie.** Der Seitenpool hat pro Layer und Tensor drei Zonen:
+
+| Zeilen | Inhalt | Adressierung |
+| --- | --- | --- |
+| `[0, R)` | Sinks, geschrieben einmal, nie bewegt | `row = cell` |
+| `[R, R + S + B)` | die jüngsten Zellen als **Ring** | `row = R + cell % (S + B)` |
+
+Jede Ringzeile trägt die Zelle, die sie hält (`win_tag`, `int32` je Zeile und Layer). Der Leser fragt **eine**
+Funktion (`qsa_win_slot`, `qsa_decode_attn.hpp`) und bekommt entweder die Zeile oder `-1`; `-1` heißt „quantisiert
+lesen". Nur *beide* Bedingungen machen eine Zelle exakt: „recent unter diesem Horizont" **und** „das Tag dieser Zeile
+nennt noch genau diese Zelle". Ein Rewind, ein Resume oder ein Rewrite, der eine Zeile mit einer **späteren** Zelle
+belegt, liest damit **quantisiert statt falsch** — der stille Fehler, den ein Ring ohne Tag hätte.
+
+**Warum `S + B` und nicht `S + R`.** Der Ring muß einen **ganzen Prompt-Chunk** auf einmal bedienen: bei einem Batch
+`[p0, p0+T)` hat *jede* Query ihren eigenen Horizont `p0+t+1`, gelesen wird aber nach dem Append des ganzen Batches.
+Die Vereinigung der Fenster ist `[p0+1-S, p0+T)` — also `S + T - 1` gleichzeitig lebende Zellen. Mit `B` als größtem
+Batch (`STRATA_KV_WINDOW_BATCH`) braucht der Ring `S + B` Zeilen; ein Ring aus `S + R` (die Zahl aus §7.17, bevor der
+Batch bekannt war) hätte für jeden Chunk über `R` Zellen Zeilen überschrieben, die dessen erste Queries noch
+brauchten. Bei 256/64 und `B = 512` sind das `(64 + 256 + 512) × 2 KiB × 12 Layer = **19,5 MiB**` (alle 12
+QSA-Layer, beide Tensoren) — **kontextunabhängig**, gegen 1,5 GiB der Probe bei 64K.
+
+**Die Invariante ist laut.** Ein Append mit mehr als `S + B` Zellen würde zwei Zellen eines Aufrufs auf dieselbe Zeile
+legen und Tag gegen Werte racen. Beide Append-Funktionen prüfen `n_steps`/`T` deshalb **host-seitig** und brechen mit
+Klartext ab (welcher Knopf zu heben ist); im Release-Build (`NDEBUG`) gibt es keinen lauten Device-Abbruch, also darf
+die Prüfung nicht im Kernel stehen (K2-Lehre). `B` folgt ohne `STRATA_KV_WINDOW_BATCH` dem **Prompt-Chunk** des Laufs
+(`qsa_set_kv_win_batch`, `generate.cpp` kennt ihn, `layer.cpp` nicht; mindestens 512) — sonst würde `--prefill auto`
+mit einem Chunk > 512 an der eigenen Schranke scheitern. Eine ausdrückliche `STRATA_KV_WINDOW_BATCH` gewinnt immer,
+und dann ist die Schranke der Wächter.
+
+**Parität 12/12** (`build-hip-win\kv_q4_parity.exe`, gfx1200). Test 11 prüft jetzt die **Ring-Geometrie** statt eines
+flachen Pools: 8 Sinks, 32 recent, 16 Batch (Ring 48, 56 Zeilen) gegen 512 angelegte Zellen — der Ring wickelt also
+wirklich um; dazu ein Modell der Zeilenbelegung (der *letzte* Appender gewinnt, weil in gemischter Reihenfolge
+angelegt wird) und eines der Tags. Vier Gather-Durchläufe: Sinks-only (2 von 128 Ids exakt), gemischt unter dem
+Fenster-Horizont (2 von 128 — die zufälligen Ids treffen den Ring kaum), **der Ring selbst** (34 von 48 exakt, der
+Horizont so gewählt, daß alle Ids recent sind) und derselbe Lauf mit **vergiftetem Tag** der neuesten Zelle:
+33 statt 34 — der Guard greift genau einmal, wie er soll (ein Kernel, der das Tag ignoriert, würde hier scheitern).
+Test 12 wiederholt das auf dem 3-Bit-Arm (`q4lm8v`: 16 Pegel K, 8 Pegel V) mit **per-Tensor**-Dequant als Referenz.
+
+**Datenneutralität (byte-identisch).** Der Ring ist eine reine Kapazitätsänderung, und das ist auf der Meßachse
+gezeigt: derselbe Harness-Lauf (Swift IQ3_XXS, cwe-2k, `--prefill 512`), dieselbe TSV, dieselbe SHA256 wie mit dem
+flachen Pool:
+
+| Arm | Referenz (flacher Pool) | Ring (dieser Build) | |
+| --- | --- | --- | --- |
+| `q4lm8v`, Fenster aus | `83D13E7A21BCF239` | `83D13E7A21BCF239` | identisch |
+| `q4lm8v` + Fenster 128/8 | `D07C149224D1CC74` | `D07C149224D1CC74` | identisch |
+| `q4lm8v` + Fenster **256/64** (Arbeitspunkt) | `EA1EAA48EFFDC104` | `EA1EAA48EFFDC104` | identisch |
+| `q4lm8v` + Fenster 1024/8 | `CBC9C61A09A623D4` | `CBC9C61A09A623D4` | identisch |
+
+Daß das **sein muß** und nicht nur zufällig paßt: Zellen, die auf dieselbe Ringzeile fallen, liegen `S + B` Plätze
+auseinander; ein Append-Batch ist höchstens `B` Zellen lang, also ist die ältere der beiden beim Append der jüngeren
+längst aus jedem Horizont (`≥ S + B` zurück) — die Zeile, die ein Leser noch benennt, wird von einem linearen Prefill
+nie überschrieben. Gelesen wird nach dem Append des Chunks, dessen Fenster also vollständig und tag-korrekt im Ring
+steht. Der Ring ändert damit **nichts** an dem, was §7.13–§7.17 gemessen haben; er ändert nur, was er dafür an
+Speicher braucht. Nach dem **R1-Fold** ist der Arbeitspunkt ein zweites Mal gelaufen: wieder `EA1EAA48EFFDC104` —
+der zusammengelegte K/V-Writer schreibt dieselben Werte an dieselben Zeilen.
+
+**R1: ein Launch für K und V.** Der Fenster-Writer schrieb K und V in zwei Launches; jetzt nimmt ein Kernel beide
+Pools und beide Quellen (und überspringt eine Seite, deren Pool null ist) — pro Decode-Schritt 12 statt 24
+Zusatz-Launches, das Tag wird einmal geschrieben. Bewußt **nicht** gemacht: den Zwilling in die getemperten
+q4-Append-Kernel zu falten, wo `cur[...]` schon im Register liegt. Das spart das Wiederlesen von K/V durch den
+zweiten Kernel — 6.345 Zellen × 49 KiB (K und V fp32, 2 KV-Köpfe × 256 × 4 B, 12 Layer) ≈ **300 MiB** über einen
+ganzen 6,3K-Prefill — und würde dafür einen Fenster-Zweig in jeden Modus' Hot-Loop legen. Zwölf Launches von je
+wenigen Mikrosekunden sind bei 41 tok/s (≈24 ms je Token) unter 0,2 % — unter der Meßgrenze von §7.17 (eine Rechnung
+aus der Launch-Zahl, keine eigene Messung).
+
+**Ringgröße (gemessen).** Wie in §7.17 als Differenz von `strata serve: N MiB of VRAM free with everything loaded`
+(gleicher Build, gleiche Expert-Cache-Vorgabe `--expert-cache 1`, kein Client — also keine Prefill-Puffer im Spiel),
+je zwei Kontexte:
+
+| Arm | 4K | 64K | Differenz zum Zwilling (4K / 64K) | Rechnung |
+| --- | ---: | ---: | ---: | ---: |
+| Zwilling `q4lm8v`, Fenster aus | 10.295 MiB | 9.725 MiB | — | — |
+| 256/64, `B = 512` | 10.275 MiB | 9.705 MiB | **20 / 20 MiB** | 19,5 MiB |
+| 256/64, `B = 16384` | 9.903 MiB | 9.332 MiB | **392 / 393 MiB** | 391,5 MiB |
+
+Beide Punkte treffen die Rechnung auf ≈1 MiB, und die Differenz ist bei **4K und 64K dieselbe** — der Ring ist
+kontextunabhängig. Zum Vergleich: die flache Probe kostete bei **64K 1.536 MiB** (gemessen, §7.17) und bei 4K 96 MiB
+(Formel — die Messung lag dort im Rauschen des Expert-Cache-Restes). Mit `--prefill 2048` (dann ist `B` = Chunk =
+2048) meldet die Engine selbst
+`STRATA_KV_WINDOW_BATCH 512 -> 2048 (4,6 MiB per QSA layer)` = 55,2 MiB über 12 Layer (Rechnung 55,5 MiB); die
+VRAM-Differenz dieses Laufs (1.456 MiB) ist **nicht** als Ringgröße lesbar, weil der größere Chunk seine eigenen
+Prefill-Puffer mitbringt — deshalb stehen oben die Arme mit `--prefill 512`. (Die Größe der Prefill-Puffer mit dem
+Chunk ist ein eigener Posten: 1,4 GiB zwischen `--prefill 512` und `2048` auf dieser Karte, unabhängig vom Fenster.)
+
+**Was das für die Bytes heißt (Rechnung, keine Messung).** Mit dem Ring ist die feste Spanne `S + B` Zellen, und sie
+wird **zusätzlich** zum quantisierten Pool gehalten (eine Zelle bleibt quantisiert lesbar, das Tag ist der Rückfall).
+Die Bit-Bilanz aus §12.4 (`Basis + (16 − Basis)·(S+R)/L`) war dafür zweifach zu optimistisch: sie rechnete die exakte
+Zelle nur als **Differenz** zum quantisierten Wert (der Pool hält beides) und mit der Spanne `S + R` statt `S + B`.
+Richtig ist `Basis + 16·(S+B)/L` (plus 4 B Tag je Ringzeile, hier 19,5 MiB / 832 ≈ 0,4 % davon). Für `q4lm8v`
+(Basis ≈ 4,0 gespeicherte Bit), Fenster 256/64, `B = 512`:
+
+| `L` (Zellen) | Bit/Wert | gegen `int8` (8,25 Bit) |
+| --- | --- | --- |
+| 2.044 (cwe-2k) | 10,5 | **teurer** (31,5 MiB gegen 24,7 MiB) |
+| 8.192 | 5,6 | 32 % billiger |
+| 16.384 | 4,8 | 42 % billiger |
+| 65.536 | 4,2 | 49 % billiger |
+
+Die Bytes sind bei 64K nachgerechnet: 65.536 × 12.288 Werte × 4,20 Bit ≈ 403 MiB (384 MiB quantisierter Pool +
+19,5 MiB Ring) — gegen 792 MiB bei `int8`. Break-even gegen `int8` liegt bei ≈3.100 Zellen; **darunter ist der
+Fensterarm teurer als `int8`**, weil die Ring-Spanne eines 512er Chunks einen Viertel des 2K-Kontexts ausmacht. Das
+2K-Set prüft also die **Lesepolitik**, nicht die Auslieferungsbytes; die gelten ab ≈8K.
+
+**Was das für den Arbeitspunkt bedeutet.** Bei 64K kosten die Fensterformen fast dasselbe: 128/8 = 4,16, 256/64 = 4,20,
+512/128 = 4,28 Bit — 2–3 MiB Unterschied bei 400 MiB. Wo die Ring-Spanne noch zählt (2K), ist es umgekehrt: 128/8
+9,1 gegen 256/64 10,5 Bit, und beide über `int8`. Die Wahl `S/R = 256/64` (KL 0,00702, von `int8` nicht zu trennen)
+ist damit bei den Kontexten, für die das Fenster gedacht ist, **nicht** durch Speicher teurer als 128/8
+(KL 0,00869), und bei 2K ist ohnehin keiner der beiden die billige Wahl. Die „≈5,9 Bit" aus §7.16 sind der alte
+Modellwert für 2K; mit Ring und doppelter Haltung sind es dort ≈10,5 Bit (§7.16 bleibt als **Qualitäts**messung
+gültig — der Ring ist byte-identisch, s. o.).
+
+**Nicht geändert.** Die laute Verweigerung „Fenster + elastic K/V" bleibt (die Kombination ist ungemessen, nicht
+falsch); R4 (`swin[c]`-Hoist im Decode) und R5 (pre75-Schleife) bleiben offen — R5 läuft in einem Kernel, den diese
+Karte nie betritt (`pre75_attn()` ist auf gfx1200 falsch), ist dort also unmeßbar; B1/B2 wie in §7.18.
 
 ## 8. Messplan und Gate
 
@@ -1139,7 +1287,7 @@ Addendum ergänzt §6.12/§6.13 des Surveys um Arbeiten, die nach dem 14.10. ers
 | Frage | Ergebnis | Beleg |
 | --- | --- | --- |
 | Schließt das Codebook die `q4_0`-Lücke? | **Ja, bei gleichen Bytes**: +0,23 % → +0,02 % PPL (8K), +1,30 % → +0,01 % (1K) | §7.4 |
-| Trägt 3 Bit? | **Ohne Fenster nein** (Swift: `q4lm8v` +51 % KL, t −3,60, 0/8). **Mit Fenster ja — wenn das Fenster Sink hat**: bei `R = 8` senkt es 51–59 % (8/8, §7.15), bei `R = 64` erreicht die 3-Bit-Basis `int8`-Niveau (0,00702 gegen 0,00503, t −1,92, ns) bei **≈5,9 statt 8,25 Bit**, und pro Byte verliert sie in fünf Formen nirgends meßbar (`\|t\| ≤ 1,50`, §7.16) | §7.9, §7.15, §7.16, §11.4.4 |
+| Trägt 3 Bit? | **Ohne Fenster nein** (Swift: `q4lm8v` +51 % KL, t −3,60, 0/8). **Mit Fenster ja — wenn das Fenster Sink hat**: bei `R = 8` senkt es 51–59 % (8/8, §7.15), bei `R = 64` erreicht die 3-Bit-Basis `int8`-Niveau (0,00702 gegen 0,00503, t −1,92, ns) bei **≈5,9 statt 8,25 Bit** (2K-Modellwert; §7.19: ≈10,5 bei 2K, 4,2 bei 64K), und pro Byte verliert sie in fünf Formen nirgends meßbar (`\|t\| ≤ 1,50`, §7.16) | §7.9, §7.15, §7.16, §11.4.4 |
 | K oder V die Bits? | Q2_0: Richtung K (0:5, p 0,062); Swift: **widerlegt** (t +0,05, p 1,000) | §7.5, §9 |
 | Trägt die Skalenregel-Asymmetrie (V-RMS)? | **Toter Gleichstand** (t +0,21 auf beiden Längen) | §7.9 |
 | Trägt Hadamard bei 4-Bit-Lloyd? | **Gleichstand** (2K +0,21, 4K −1,31/−0,17) | §7.9 |
@@ -1221,19 +1369,21 @@ K-Kanäle) und QuaRot/KVQuant als Rotations-/Per-Kanal-Kontext.
 ### 11.5 Empfehlungen (ohne Planänderung)
 
 1. **≤3 Bit × Fenster — erledigt (§7.15), entschieden (§7.16).** Mit `R = 64` erreichen beide Basen `int8`-Niveau,
-   die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit; die verbleibende Format-Differenz ist ns. Damit entscheidet nicht mehr
-   das Format, sondern die **Fensterform**: `R` ist ein eigener Hebel (R 8 → 128 bei festem S = 512 bringt
+   die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit (Modellwert für 2K; mit Ring und doppelter Haltung sind es dort ≈10,5 Bit,
+   bei 64K 4,2 — §7.19; die **Qualitäts**aussage bleibt); die verbleibende Format-Differenz ist ns. Damit entscheidet
+   nicht mehr das Format, sondern die **Fensterform**: `R` ist ein eigener Hebel (R 8 → 128 bei festem S = 512 bringt
    +0,0020…0,0026 KL zurück, richtungskonstant über 7–8 von 8 Segmenten). **Arbeitspunkt ab hier:
-   Fenster `S/R = 256/64` auf der 3-Bit-Basis `q4lm8v`** (≈5,9 Bit, KL 0,00702, von `int8` nicht zu trennen) —
-   das ist der billigste Punkt, der `int8`-Niveau erreicht; 128/8 (≈4,8 Bit) bleibt meßbar darüber. Wichtiger als
-   beides wäre ein **längerer Kontext** (der Fenster-Anteil sinkt mit L, das Byte-Bild kann wandern — bei
-   2K gemessen).
+   Fenster `S/R = 256/64` auf der 3-Bit-Basis `q4lm8v`** (KL 0,00702, von `int8` nicht zu trennen; Bytes: 4,2 Bit
+   bei 64K gegen `int8`s 8,25, 10,5 bei 2K) — das ist der billigste Punkt, der `int8`-Niveau erreicht; 128/8 bleibt
+   meßbar darüber (KL 0,00869) und spart bei 64K nur 2 MiB Ring. Wichtiger als beides wäre ein **längerer Kontext**
+   (der Fenster-Anteil sinkt mit L, das Byte-Bild wandert — bei 2K gemessen).
 2. **K-vs-V-Power vor WP-2 einlösen** — cwe-4k oder McNemar-primär (§8.6) —, sonst nagelt WP-2 eine Zuteilung
    fest, die unser Setting nicht zeigt.
 3. **Speed-A/B gelaufen (§7.17), `kQ4lMap`→Shared-Memory offen.** Die KV-Arm-Liste (fp16/int8/q4lm32/q4lm32w/
    q4lm32c/q4lm8v ± Fenster) ist auf Swift bei 16K gefahren: das Format ist im Decode **frei** (±6 %, `int8`
-   führt), der Fenster-Überbau unsichtbar. Offen bleibt die **Auslieferungsform** (der Lauf war der
-   Proben-Überbau, s. §7.17) und `kQ4lMap`→Shared-Memory (§7.10) — Serving ist das Wettbewerbsfeld.
+   führt), der Fenster-Überbau unsichtbar. Die **Auslieferungsform** des Fensters ist seit §7.19 gebaut (Ring statt
+   flachem Pool, 19,5 MiB kontextunabhängig statt 1,5 GiB bei 64K) und als datenneutral gezeigt; der Lauf oben war der
+   Proben-Überbau. Offen bleibt `kQ4lMap`→Shared-Memory (§7.10) — Serving ist das Wettbewerbsfeld.
 4. **`q4lm32s` als eigenen opt-in-Default-Kandidaten prüfen** (Identitäts-Gate + Speed-A/B, §8.1/§8.3) — der
    billigste echte Nutzen, unabhängig von WP-2/3.
 5. **Decode-only-Arm erwägen** (Prefill-Pfad für das Format), weil das der auslieferbare Zustand wäre und unsere
@@ -1321,19 +1471,28 @@ Das `--kv`-Argument (auch die Formatspalte in den TSVs):
   Basen bei S ≈ 512; mit `R = 64` wird es zwischen 256/64 und 512/128 flach (§7.16).
 - **OSCAR-Knie:** der in der OSCAR-Arbeit gute Punkt R = 64 (Sink) / S = 256 (recent) — hier als Sink-Punkt
   nachgemessen (§7.16: 0,00702 auf `q4lm8v`, 0,00782 auf `q4lm32w`, beide `int8`-nah).
-- **Seitenpool / `max_cells`:** die **Probe** hält einen fp16-Zwilling des **ganzen** Kontexts (`qsa_win_bytes` über
-  `max_cells`); der Leser bedient daraus nur das Fenster. Alle Arme haben so dieselbe Fußspur — die Messung isoliert
-  die **Lesepolitik**, nicht die Auslieferungsbytes. Größe (§7.17, gemessen): `max_cells × n_head_kv × head_dim × 4 B`
-  je Layer = 2.048 B/Zelle, bei **12** QSA-Layern dieses Modells (`qsa_interval = 4`) also **24 KiB je Kontextzelle**
-  über alle Layer (16K ≈ 384 MiB, 64K ≈ 1,5 GiB). Der Pool folgt `max_context`, **nicht** dem Resident-Set —
-  `--kv-resident` verkleinert ihn nicht. **Auslieferung wäre ein Ring** von `S + R` Zeilen (7,5 MiB bei 256/64,
-  kontextunabhängig, §7.17) — die Streaming-Unverträglichkeit oben ist die der Probe.
+- **Seitenpool / `max_cells`:** die **Probe** hielt einen fp16-Zwilling des **ganzen** Kontexts (`qsa_win_bytes(s,
+  max_cells)` bis `d98f6472`); der Leser bediente daraus nur das Fenster. Alle Arme hatten so dieselbe Fußspur — die
+  Messung isoliert die **Lesepolitik**, nicht die Auslieferungsbytes. Größe (§7.17, gemessen): `max_cells × n_head_kv ×
+  head_dim × 4 B` je Layer = 2.048 B/Zelle, bei **12** QSA-Layern dieses Modells (`qsa_interval = 4`) also
+  **24 KiB je Kontextzelle** über alle Layer (16K ≈ 384 MiB, 64K ≈ 1,5 GiB). Der Pool folgt `max_context`, **nicht**
+  dem Resident-Set — `--kv-resident` verkleinert ihn nicht. **Auslieferung ist ein Ring** (§7.19 gebaut) aus `R`
+  Sink- plus `S + B` Ringzeilen (`B` = größter Append-Batch = Prompt-Chunk, mindestens 512): 19,5 MiB bei 256/64,
+  kontextunabhängig — die Streaming-Unverträglichkeit oben ist die der Probe.
+- **Ringzeile / Zell-Tag:** die jüngsten Zellen liegen nicht mehr an ihrer Zellnummer, sondern auf
+  `R + cell % (S + B)`; jede Ringzeile trägt die Zelle, die sie hält (`win_tag`). Ein Rewind oder Resume, der eine
+  Zeile mit einer **späteren** Zelle belegt, liest damit **quantisiert** statt falsch (§7.19).
 
 ### 12.4 Bytes / BPE
 
-- **Bit/Wert (Auslieferung, Modell):** `Basis + (16 − Basis)·(S+R)/L`, wobei `Basis` die **gespeicherten** Bits des
-  Formats und **L** die mittlere Zahl gescorter Zellen je Sequenz ist (cwe-2k: L ≈ 2044 = 16.351 / 8). Das ist eine
-  **Rechnung, keine Messung** — die Probe-Bytes sind für alle Arme gleich.
+- **Bit/Wert (Auslieferung, Modell):** `Basis + 16·(S+B)/L`, wobei `Basis` die **gespeicherten** Bits des Formats,
+  `B` der größte Append-Batch (Prompt-Chunk) und **L** die Zahl Zellen je Sequenz ist (cwe-2k: L ≈ 2044 =
+  16.351 / 8). Das ist eine **Rechnung, keine Messung** — die Probe-Bytes sind für alle Arme gleich. Zwei
+  Korrekturen gegenüber der früheren Form `Basis + (16 − Basis)·(S+R)/L`: der Pool hält die exakte Zelle
+  **zusätzlich** zum quantisierten Wert (also volle 16 Bit, nicht die Differenz), und die feste Spanne ist seit dem
+  Ring `S + B`, nicht `S + R` (jede Query eines Chunks hat ihren eigenen Horizont, §7.19). Bei 2K hebt das die Zahl
+  für 256/64 von ≈5,9 auf ≈10,5 Bit; ab ≈3.100 Zellen (Break-even gegen `int8`) liegt sie darunter (64K: 4,2 Bit,
+  §7.19-Tabelle).
 - **BPE (bits per element):** „ehrliche BPE-Bilanz" = Payload + Skalen-/Nullpunkt-Metadaten + Fensterbytes bei
   **genannter** Kontextlänge (§8.5).
 - **Cross-Over:** der Byte-Bereich, in dem zwei Basen (hier ≤3 Bit vs. 4 Bit) die Führung **pro Byte** tauschen.
