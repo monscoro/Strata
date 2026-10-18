@@ -224,8 +224,16 @@ struct QsaState {
     /// page, stream and snapshot rule is Q4_0's - and this carries the two things that differ: the nibble -> value
     /// map (both modes) and the writer's scale rule (kLloyd 1 = max|x|/87, kLloydLs 2 = the block's least-squares
     /// scale). kUniform is plain q4_0. WP-1 adds kLloydVrms 6 (V rms/32 scale, same table) and kLloydNoRot 7
-    /// (kLloyd's blocks with no rotation anywhere - kv_rot stays false, see qsa_state_init).
+    /// (kLloyd's blocks with no rotation anywhere - kv_rot stays false, see qsa_state_init). WP-2a adds
+    /// kLloydClip 8 (kappa-quantile scale) and kLloydWin 9 (kLloyd's blocks with an exact fp16 window, below).
     strata::kernels::Q4Mode kv_q4_mode = strata::kernels::Q4Mode::kUniform;
+    /// WP-2a window (kLloydWin `--kv q4lm32w`, or STRATA_KV_WINDOW=1 on any q4 arm): the first R (sink) and
+    /// most recent S cells read exact fp16 from here instead of q4. Flat [(max_cells, kv_head, head_dim)] fp16
+    /// per tensor - no paging, no streaming, no snapshot (refused, not silent): indexed directly by cell,
+    /// filled by every append next to the q4 blocks (rotated, like them). Null when the window is off
+    /// (S + R = 0) or the state is a ring.
+    uint16_t* k_win = nullptr;
+    uint16_t* v_win = nullptr;
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
@@ -330,9 +338,13 @@ strata::kernels::Q4Mode qsa_kv_q4_mode();
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
 /// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvQ4lm /
-/// kKvQ4lmS / kKvQ4lmT / kKvQ4lmNR / kKvHybrid).
+/// kKvQ4lmS / kKvQ4lm8 / kKvQ4lm8K / kKvQ4lm8V / kKvQ4lmT / kKvQ4lmNR / kKvQ4lmC / kKvQ4lmW / kKvHybrid).
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
+    // WP-2a window overlay: the exact fp16 cells live outside the block image, so a windowed state is its own
+    // format whatever level table its blocks carry. The movers only ever see q4 bytes (kv_fmt_q4) and the
+    // reader's table travels in the pools (q4_mode), not here - so one format covers the window on any mode.
+    if (st.k_win != nullptr || st.v_win != nullptr) return strata::kernels::kKvQ4lmW;
     // q4lm32 / q4lm32s: kKvQ4's blocks with another nibble -> value map (and, for q4lm32s, another scale rule) - a
     // block is silent about both, so the format has to carry them.
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydLs) return strata::kernels::kKvQ4lmS;
@@ -344,14 +356,27 @@ inline int qsa_kv_format(const QsaState& st) {
     // WP-1: the treatment arm (V rms scale, same table) and the no-rotation arm (unrotated blocks).
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydVrms) return strata::kernels::kKvQ4lmT;
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydNoRot) return strata::kernels::kKvQ4lmNR;
-    // WP-2a: the clipping arm (kappa-quantile scale, same table).
+    // WP-2a: the clipping arm (kappa-quantile scale, same table) and the window arm (exact fp16 side pool). The
+    // window's side pool is deliberately outside the block image: the streaming mover only moves the q4 blocks
+    // (kv_fmt_q4 -> the same bytes) and the side pool is always resident, so conversation_snapshot refuses it.
     if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydClip) return strata::kernels::kKvQ4lmC;
+    // kLloydWin with S + R = 0 allocates no side pool (qsa_win_wanted), so the pool check at the top already
+    // caught every state that has one, and such a state is a plain kLloyd cache: kLloydWin's writer IS kLloyd's
+    // (kv_q4.cu) and its table is the 16-level one, so it is labelled kKvQ4lm and can be snapshotted.
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydWin) return strata::kernels::kKvQ4lm;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st);
+/// WP-2a window grid (STRATA_KV_WINDOW_S/_R): the staged prefill path overlays these on stage pools.
+int qsa_kv_win_s();
+int qsa_kv_win_r();
+/// The overlay switch itself (qsa_set_kv_q4_mode sets it from `--kv q4lm32w` / `STRATA_KV_WINDOW`): the MTP
+/// drafter turns it off around its state init so no side pool is carved for a state whose readers never take one.
+bool qsa_kv_win();
+void qsa_set_kv_win(bool on);
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
                     int64_t cap, void* stream);
 /// Zeroes the pools AND the indexer, so a fresh sequence matches the reference's own `zeros()`.  The KV pool

@@ -20,6 +20,13 @@
 // 10. The WP-2a clipping arm (`--kv q4lm32c`, Q4Mode::kLloydClip): d from the kappa-quantile of |x| through a
 //    bitonic network, bitwise against a host replay - including kappa = 1, which must equal q4lm32's own
 //    reference bit for bit (the arm's identity check), plus the reader reading 16 levels and the MSE report.
+// 11. The WP-2a window arm (`--kv q4lm32w`, Q4Mode::kLloydWin): the writer IS kLloyd's writer (bitwise), the
+//    side pool holds the exact fp16 twin of every appended cell (bitwise), and the gather serves window cells
+//    exact (sinks-only and recent-only) and the rest as 16-level. The engine wiring (pools, horizons, snapshot
+//    refusal) is not kernel arithmetic - the smoke test covers it, not this file.
+// 12. The WP-2a window on a 3-bit arm (`--kv q4lm8v` + STRATA_KV_WINDOW, Q4Mode::kLloyd8V): the same exact side
+//    pool over the 16-level K / 8-level V writer, bitwise, and the gather mixed exact / per-tensor level. The
+//    host overlay (layer.cpp, qsa_kv_format, the snapshot refusal) is wiring; this pins the combination.
 
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -979,7 +986,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 8: the WP-1 treatment arm - K keeps max|x|/87, V takes rms/32 (`--kv q4lm32t`)
     // -------------------------------------------------------------
-    std::printf("[8/10] Verifying the treatment arm: q4lm32t (K max|x|/87, V rms/32)...\n");
+    std::printf("[8/11] Verifying the treatment arm: q4lm32t (K max|x|/87, V rms/32)...\n");
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
@@ -1070,7 +1077,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 9: the WP-1 no-rotation arm - the writer IS kLloyd's writer (`--kv q4lm32nr`)
     // -------------------------------------------------------------
-    std::printf("[9/10] Verifying the no-rotation arm: q4lm32nr writes kLloyd's blocks...\n");
+    std::printf("[9/11] Verifying the no-rotation arm: q4lm32nr writes kLloyd's blocks...\n");
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
@@ -1119,7 +1126,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 10: the WP-2a clipping arm - d from the kappa-quantile of |x| (`--kv q4lm32c`)
     // -------------------------------------------------------------
-    std::printf("[10/10] Verifying the clipping arm: q4lm32c (kappa-quantile scale)...\n");
+    std::printf("[10/11] Verifying the clipping arm: q4lm32c (kappa-quantile scale)...\n");
     // The test drives kappa directly (the engine reads it from STRATA_KV_CLIP_K/_V at startup).
     const float clip_grid[3] = {1.0f, 0.94f, 0.92f};
     double mse_c[3] = {0.0, 0.0, 0.0};
@@ -1215,6 +1222,239 @@ int main() {
         std::printf("  -> Clipping arm: blocks bitwise equal (incl. kappa=1 identity), reader 16-level (OK)\n");
     std::printf("  -> Clip MSE over %d values: kappa=1 %.3e (q4lm32 %.3e, must match), 0.94 %.3e, 0.92 %.3e\n",
                 498688, mse_c[0], mse_l, mse_c[1], mse_c[2]);
+
+    // -------------------------------------------------------------
+    // Test 11: the WP-2a window arm - kLloyd's writer, exact side pool, windowed gather (`--kv q4lm32w`)
+    // -------------------------------------------------------------
+    std::printf("[11/11] Verifying the window arm: q4lm32w (exact side pool + windowed gather)...\n");
+    int maxpos = 0;
+    for (int n = 0; n < n_fill; ++n) maxpos = std::max(maxpos, positions[n]);
+    const int win_cells = maxpos + 1;
+    const size_t win_bytes = (size_t) win_cells * H * D * sizeof(uint16_t);
+    uint16_t *d_k_win = nullptr, *d_v_win = nullptr;
+    ck(cudaMalloc(&d_k_win, win_bytes), "alloc d_k_win");
+    ck(cudaMalloc(&d_v_win, win_bytes), "alloc d_v_win");
+    ck(cudaMemset(d_k_win, 0, win_bytes), "zero d_k_win");
+    ck(cudaMemset(d_v_win, 0, win_bytes), "zero d_v_win");
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
+        ck(cudaMemcpy(d_step, hstep, sizeof(hstep), cudaMemcpyHostToDevice), "memcpy step");
+        ck(cudaMemcpy(d_kcur, host_k[pos].data(), host_k[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy k");
+        ck(cudaMemcpy(d_vcur, host_v[pos].data(), host_v[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy v");
+        k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
+                             k::Q4Mode::kLloydWin);
+        ck(cudaDeviceSynchronize(), "kv_append_q4_step window");
+        k::kv_append_win_steps(d_k_win, d_v_win, d_step, 0, 1, d_kcur, d_vcur, H, D, nullptr, win_cells);
+        ck(cudaDeviceSynchronize(), "kv_append_win_steps");
+    }
+    ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4");
+    ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4");
+    std::vector<uint16_t> h_k_win(win_cells * H * D), h_v_win(win_cells * H * D);
+    ck(cudaMemcpy(h_k_win.data(), d_k_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_win");
+    ck(cudaMemcpy(h_v_win.data(), d_v_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_win");
+
+    // Writer identity (kLloyd's blocks) + side pool exactness (fp16 twin of the raw vectors).
+    long bad_w = 0;
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            for (int h = 0; h < H; ++h) {
+                const long long page = (long long) table[pos / P];
+                const long long row = (page * H + h) * P + (pos % P);
+                const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                const float* raw_vec = (is_v ? host_v[pos].data() : host_k[pos].data()) + h * D;
+                for (int b = 0; b < blocks_per_head; ++b) {
+                    k::block_q4_0 host_blk;
+                    quantize_block_q4l_host(raw_vec + b * 32, host_blk);
+                    const k::block_q4_0* gpu_blk = reinterpret_cast<const k::block_q4_0*>(pool_ptr) + b;
+                    if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
+                        if (bad_w == 0)
+                            std::printf("WIN-WRITER MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n", n, pos,
+                                        is_v, h, b);
+                        ++bad_w;
+                    }
+                }
+                const uint16_t* win_ptr =
+                    (is_v ? h_v_win.data() : h_k_win.data()) + ((size_t) pos * H + h) * D;
+                for (int d = 0; d < D; ++d) {
+                    if (win_ptr[d] != k::f16_from_f32(raw_vec[d])) {
+                        if (bad_w == 0)
+                            std::printf("WIN-POOL MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, d=%d\n", n, pos,
+                                        is_v, h, d);
+                        ++bad_w;
+                    }
+                }
+            }
+        }
+    }
+    if (bad_w > 0) {
+        std::fprintf(stderr, "FAIL: %ld window writer/side-pool values differ from reference\n", bad_w);
+        ++g_fail;
+    } else {
+        std::printf("  -> Window arm: writer is kLloyd's writer, side pool is the exact fp16 twin (OK)\n");
+    }
+
+    // Windowed gather, two shapes: sinks-only (R covers everything -> all exact) and recent-only (S = 1 ->
+    // only the last cell exact, the rest 16-level). The horizon comes from step[kStepNKv] in-kernel (like the
+    // engine's own step arrays, filled by qsa_step_fill) - set it to win_cells here.
+    // (d_step still holds the last append's position - the gather needs the count form, like test 7.)
+    const int win_cases[2][2] = {{0, win_cells}, {1, 0}};   // {S, R}
+    for (int wc = 0; wc < 2; ++wc) {
+        const int ws = win_cases[wc][0], wr = win_cases[wc][1];
+        int32_t hstepw[k::kStepCount] = {0, win_cells, 0, max_ids};
+        ck(cudaMemcpy(d_step, hstepw, sizeof(hstepw), cudaMemcpyHostToDevice), "memcpy step gather window");
+        k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch,
+                             nullptr, k::Q4Mode::kLloydWin, d_k_win, d_v_win, ws, wr);
+        ck(cudaDeviceSynchronize(), "kv_gather_q4_step window");
+        ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t),
+                      cudaMemcpyDeviceToHost),
+           "memcpy d2h k_scratch window");
+        ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t),
+                      cudaMemcpyDeviceToHost),
+           "memcpy d2h v_scratch window");
+        long bad_wg = 0;
+        for (int i = 0; i < max_ids; ++i) {
+            const int cell = ids[i];
+            const bool exact = cell < wr || cell >= win_cells - ws;
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                const uint16_t* gathered = (is_v ? h_v_scratch.data() : h_k_scratch.data()) + i * H * D;
+                const float* raw_base = is_v ? host_v[cell].data() : host_k[cell].data();
+                const long long page = (long long) table[cell / P];
+                const long long row = (page * H) * P + (cell % P);
+                const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                for (int h = 0; h < H; ++h) {
+                    const float* raw_vec = raw_base + h * D;
+                    for (int d = 0; d < D; ++d) {
+                        float want;
+                        if (exact) {
+                            want = k::f32_from_f16(k::f16_from_f32(raw_vec[d]));
+                        } else {
+                            const k::block_q4_0* blk = reinterpret_cast<const k::block_q4_0*>(
+                                                           pool_ptr + h * P * bytes_per_head) +
+                                                       d / 32;
+                            want = dequant_q4l_host(*blk, d % 32);
+                        }
+                        if (k::f32_from_f16(gathered[h * D + d]) != want) ++bad_wg;
+                    }
+                }
+            }
+        }
+        if (bad_wg > 0) {
+            std::fprintf(stderr, "FAIL: %ld windowed-gather values wrong (S=%d R=%d)\n", bad_wg, ws, wr);
+            ++g_fail;
+        }
+    }
+    if (g_fail == 0)
+        std::printf("  -> Windowed gather: sinks-only all exact, recent-only mixed exact/16-level (OK)\n");
+
+    // -------------------------------------------------------------
+    // Test 12: the window on a 3-bit arm (`--kv q4lm8v` + STRATA_KV_WINDOW) - the same exact side pool over the
+    // 16-level K / 8-level V writer (Q4Mode::kLloyd8V). The host overlay is what WP-2b changes; the kernel
+    // already reads any q4_lloyd mode windowed (q4l_map_v travels in the pools), and this pins the combination
+    // the measurement will run: writer bitwise, side pool exact, gather mixed exact / per-tensor level.
+    // -------------------------------------------------------------
+    std::printf("[12/12] Verifying the window on a 3-bit arm: q4lm8v (16-level K, 8-level V) + window...\n");
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
+        ck(cudaMemcpy(d_step, hstep, sizeof(hstep), cudaMemcpyHostToDevice), "memcpy step 8vw");
+        ck(cudaMemcpy(d_kcur, host_k[pos].data(), host_k[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy k 8vw");
+        ck(cudaMemcpy(d_vcur, host_v[pos].data(), host_v[pos].size() * sizeof(float), cudaMemcpyHostToDevice),
+           "memcpy v 8vw");
+        k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr,
+                             k::Q4Mode::kLloyd8V);
+        ck(cudaDeviceSynchronize(), "kv_append_q4_step 8v window");
+        k::kv_append_win_steps(d_k_win, d_v_win, d_step, 0, 1, d_kcur, d_vcur, H, D, nullptr, win_cells);
+        ck(cudaDeviceSynchronize(), "kv_append_win_steps 8v");
+    }
+    ck(cudaMemcpy(h_k_q4.data(), d_k_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_q4 8v");
+    ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4 8v");
+    ck(cudaMemcpy(h_k_win.data(), d_k_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h k_win 8v");
+    ck(cudaMemcpy(h_v_win.data(), d_v_win, win_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_win 8v");
+    long bad_w8 = 0;
+    for (int n = 0; n < n_fill; ++n) {
+        const int pos = positions[n];
+        for (int is_v = 0; is_v < 2; ++is_v) {
+            for (int h = 0; h < H; ++h) {
+                const long long page = (long long) table[pos / P];
+                const long long row = (page * H + h) * P + (pos % P);
+                const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                const float* raw_vec = (is_v ? host_v[pos].data() : host_k[pos].data()) + h * D;
+                for (int b = 0; b < blocks_per_head; ++b) {
+                    k::block_q4_0 host_blk;
+                    if (is_v) quantize_block_q4l8_host(raw_vec + b * 32, host_blk);
+                    else quantize_block_q4l_host(raw_vec + b * 32, host_blk);
+                    const k::block_q4_0* gpu_blk = reinterpret_cast<const k::block_q4_0*>(pool_ptr) + b;
+                    if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
+                        if (bad_w8 == 0)
+                            std::printf("WIN8V WRITER MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n", n, pos,
+                                        is_v, h, b);
+                        ++bad_w8;
+                    }
+                }
+                const uint16_t* win_ptr = (is_v ? h_v_win.data() : h_k_win.data()) + ((size_t) pos * H + h) * D;
+                for (int d = 0; d < D; ++d)
+                    if (win_ptr[d] != k::f16_from_f32(raw_vec[d])) ++bad_w8;
+            }
+        }
+    }
+    if (bad_w8 > 0) {
+        std::fprintf(stderr, "FAIL: %ld q4lm8v+window writer/side-pool values differ from reference\n", bad_w8);
+        ++g_fail;
+    }
+    for (int wc = 0; wc < 2; ++wc) {
+        const int ws = win_cases[wc][0], wr = win_cases[wc][1];
+        int32_t hstepw[k::kStepCount] = {0, win_cells, 0, max_ids};
+        ck(cudaMemcpy(d_step, hstepw, sizeof(hstepw), cudaMemcpyHostToDevice), "memcpy step gather 8vw");
+        k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch, nullptr,
+                             k::Q4Mode::kLloyd8V, d_k_win, d_v_win, ws, wr);
+        ck(cudaDeviceSynchronize(), "kv_gather_q4_step 8v window");
+        ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t),
+                      cudaMemcpyDeviceToHost),
+           "memcpy d2h k_scratch 8vw");
+        ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t),
+                      cudaMemcpyDeviceToHost),
+           "memcpy d2h v_scratch 8vw");
+        long bad_wg8 = 0;
+        for (int i = 0; i < max_ids; ++i) {
+            const int cell = ids[i];
+            const bool exact = cell < wr || cell >= win_cells - ws;
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                const uint16_t* gathered = (is_v ? h_v_scratch.data() : h_k_scratch.data()) + i * H * D;
+                const float* raw_base = is_v ? host_v[cell].data() : host_k[cell].data();
+                const long long page = (long long) table[cell / P];
+                const long long row = (page * H) * P + (cell % P);
+                const uint8_t* pool_ptr = (is_v ? h_v_q4.data() : h_k_q4.data()) + row * bytes_per_head;
+                for (int h = 0; h < H; ++h) {
+                    const float* raw_vec = raw_base + h * D;
+                    for (int d = 0; d < D; ++d) {
+                        float want;
+                        if (exact) {
+                            want = k::f32_from_f16(k::f16_from_f32(raw_vec[d]));
+                        } else {
+                            const k::block_q4_0* blk =
+                                reinterpret_cast<const k::block_q4_0*>(pool_ptr + h * P * bytes_per_head) + d / 32;
+                            want = is_v ? dequant_q4l8_host(*blk, d % 32) : dequant_q4l_host(*blk, d % 32);
+                        }
+                        if (k::f32_from_f16(gathered[h * D + d]) != want) ++bad_wg8;
+                    }
+                }
+            }
+        }
+        if (bad_wg8 > 0) {
+            std::fprintf(stderr, "FAIL: %ld q4lm8v+window gathered values wrong (S=%d R=%d)\n", bad_wg8, ws, wr);
+            ++g_fail;
+        }
+    }
+    if (g_fail == 0)
+        std::printf("  -> q4lm8v + window: 8-level V writer bitwise equal, side pool exact, gather mixed "
+                    "exact/8-level (OK)\n");
+    cudaFree(d_k_win);
+    cudaFree(d_v_win);
 
     cudaFree(d_src);
     cudaFree(d_dst);

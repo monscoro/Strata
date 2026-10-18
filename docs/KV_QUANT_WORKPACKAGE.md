@@ -1,10 +1,25 @@
-# Arbeitspaket: die KV-Cache-Quantisierung verbessern (Stand 2026-10-14)
+# Arbeitspaket: die KV-Cache-Quantisierung verbessern (Stand 2026-10-18)
 
-Status: **WP-0 steht, WP-1a ist gebaut und gemessen** (`--kv q4lm32` / `--kv q4lm32s`: §5.1-Nachtrag für das
-Design, §7.3 für die Parity-Zahlen, §7.4 für den 1K-A/B). Der Plan-Teil §1–§6 stammt aus dem Survey
+Status: **WP-0 steht; WP-1a, WP-1 und WP-2a-Clip sind gebaut und gemessen** (`q4lm32`/`q4lm32s`: §5.1-Nachtrag,
+§7.3, §7.4; WP-1-Arme `q4lm32t`/`q4lm32nr`/`q4lm8v`: §7.8, §7.9; Clip `q4lm32c`: §7.10, §7.11). Der
+**WP-2a-Fensterarm ist gebaut und paritäts-/engine-validiert** (§7.12: Parität 11/11 auf gfx1200, Engine-Smoke
+unter Streaming), **auf Swift cwe-2k gemessen** (§7.13: das Fenster trägt, Knie S ≈ 512) **und für WP-2b auf die
+≤3-Bit-Arme geöffnet** (§7.14: orthogonale Überlagerung, Parität 12/12; §7.15: das Fenster trägt auch bei ≤3 Bit —
+mit dem dortigen `R = 8`-Gitter ein Cross-Over bei ≈4,8–5,3 Bit). **§7.16 schließt die Knie-Arme ab** (`R = 64` mit
+S 256 sowie das Sink-Paar 512/128, auf beiden Basen): alle vier sind von `int8` nicht zu trennen, die 3-Bit-Basis
+erreicht das zuerst bei ≈5,9 statt 8,25 Bit — das §7.15-Cross-Over gilt nur für das zu knappe `R = 8`. **§7.17 füllt
+die Serving-Lücke** (`§11.4.3`: 8 Arme × 3 Runden, Swift, 16K): das Format ist im Decode frei (±6 %), der
+Fenster-Überbau im Decode unsichtbar, und der Fenster-Pool kostet 24 KiB je Kontextzelle (64K ≈ 1,5 GiB),
+unabhängig von `--kv-resident`. Die **Review-Nachbesserungen** am Fenster-Code (K1–K4, R6) sind erledigt und als
+datenneutral gezeigt (§7.18: Parität 12/12, zwei Arme byte-gleich zu ihren 2026-10-17-TSVs). **Arbeitspunkt ab
+hier: Fenster `S/R = 256/64` auf `q4lm8v`** (§11.5.1). Der
+Plan-Teil §1–§6 stammt aus dem Survey
 [KV_QUANT_RESEARCH.md](KV_QUANT_RESEARCH.md); wo die eigenen Messungen ihn korrigieren, steht das dabei. §4/§5 sind
 **Erwartungen aus fremden Messungen** und so gekennzeichnet; alle Zahlen in §7 sind **Strata-Messungen** mit dem
-Hinweis, worauf sie gemessen wurden. Branch `KV_QUANT_research`, noch kein PR.
+Hinweis, worauf sie gemessen wurden. Branch `KV_QUANT_research`, noch kein PR. §11 (2026-10-16) ist die Einordnung
+gegen das Feld und eine Bewertung des Plans (Analyse, kein Meßpunkt); §11.5 nennt die offenen nächsten Schritte,
+§12 ist das **Glossar** der Begriffe (KL/ΔKL/t/Segment, Fenster- und Quantisierungsnotation, Bytes).
+**Offen für einen PR:** Identitäts-Gate + Speed-A/B auch für WP-1a/§7.4 (§8.1/§8.3, §9).
 
 ## 1. Ziel
 
@@ -251,8 +266,12 @@ erfüllt, ohne einen hier nicht baubaren SYCL-Build zu behaupten.
 | **WP-0** | KV-Qualitäts-Harness: **steht** — `tools/quant_quality.py --kv FMT` (§7.1). Baselines fp16/int8/q4_0/k8v4 auf **Swift** fixieren (Top-1, KL, PPL + Power nach §8 + Speed-A/B) | `bench/results/<datum>-kv-baseline/` | S |
 | **WP-1a** (erledigt) | `--kv q4lm32` / `--kv q4lm32s` — Format steht, Messberichte §7.3/§7.4 + bench | — | — |
 | **WP-2a-Sonde** (erledigt) | 3-Bit-Sonde Q2_0 — Richtung K-will-Bits, §7.5 + bench | — | — |
-| **WP-1** (neu) | **Asymmetrisch-4-Bit im Direktvergleich** (§5.5, §7.6): Behandlung K/V + Bit K16/V8 + No-Rotation-Ablation, Swift, Power nach §8 | Messbericht + Gewinner-Arm | M |
-| **WP-2a** (neu) | **Null-Byte-Arme vor dem Layout** (§5.6, §7.6): Clipped-Scale + Fenster auf Sonden-Armen | Messbericht (was das Layout tragen muss) | S–M |
+| **WP-1** (erledigt, §7.9) | **Asymmetrisch-4-Bit im Direktvergleich** (§5.5, §7.6): Behandlung K/V + Bit K16/V8 + No-Rotation-Ablation, Swift, Power nach §8. Ergebnis: Bit tot, Behandlung/No-Rotation Gleichstand | Messbericht + Gewinner-Arm | M |
+| **WP-2a** (Clipped erledigt §7.11, Fenster erledigt §7.13) | **Null-Byte-Arme vor dem Layout** (§5.6, §7.6): Clipped-Scale + Fenster auf Sonden-Armen. Clip-Verdikt: Tails sind Signal, kein Post-Rotations-Clipping. Fenster: Parität 11/11, Engine-Smoke unter Streaming grün; cwe-2k fertig — das Fenster trägt, Knie S ≈ 512 | Messbericht (was das Layout tragen muss) | S–M |
+| **WP-2b** (erledigt §7.15) | **Fenster auf die ≤3-Bit-Arme** (§7.14): orthogonal zur Level-Tabelle (`STRATA_KV_WINDOW=1` auf jedem q4-Arm), Parität 12/12. Ergebnis: Fenster trägt auch bei ≤3 Bit (128/8 −51 %, 8/8); mit dem `R = 8`-Gitter ein **Cross-Over ≈4,8–5,3 Bit** | Messbericht | S |
+| **WP-2b-Knie** (erledigt §7.16) | **OSCAR-Knie `R = 64` (S 256) und Sink-Paar 512/128** auf beiden Basen. Ergebnis: alle vier von `int8` nicht zu trennen (ns), die 3-Bit-Basis am billigsten (**≈5,9 vs. 8,25 Bit**); das §7.15-Cross-Over gilt nur für das zu knappe `R = 8` — pro Byte verliert die 3-Bit-Basis nirgends meßbar | Messbericht | S |
+| **WP-2-Laufzeit** (erledigt §7.17) | **Speed-A/B der KV-Arme** (§11.4.3): 8 Arme × 3 Runden, Swift, 16K-Kontext. Ergebnis: Decode ist **formatfrei** (±6 %, `int8` führt), der Fenster-Überbau unsichtbar; der Fenster-Pool kostet **24 KiB je Kontextzelle** (64K ≈ 1,5 GiB) und ignoriert `--kv-resident` | Messbericht | S |
+| **WP-2-Review** (erledigt §7.18) | **Nachbesserungen aus dem Code-Review**: K1 Fenster nur auf q4-**Lloyd** (laut statt pfadabhängig), K2/K3 laute Fehler + Pool-Schranke (`win_cells`), K4 Snapshot nur bei vorhandenem Seitenpool, R6 Drafter reserviert keine Fenster-Pools. Als **datenneutral** gezeigt (Parität 12/12, zwei Arme byte-gleich zu ihren TSVs); R1/R4/R5 bewußt offen (Perf, §7.17 zeigt keinen meßbaren Effekt), B1 Metal-Stubs sind **älter als diese Arbeit** | Code + Doku | S |
 | **WP-2** | **Echtes asymmetrisches Layout** (K4/V3-Klasse, echte Bytes, ehrliche BPE-Bilanz nach OSCAR) mit vorbereitetem, unbestücktem Slot für kalibriert-nur-K. **Bau erst nach WP-1 + WP-2a** | Format + Tests + Messbericht | L |
 | **WP-3** | **Kalibriert-nur-K als Vergleichsarm** (WUSH geschlossen / OSCAR Kovarianz; V fest; kein V-Folding; Kalibrierung ~8k Tokens). **Vergleich, nicht Hauptlinie** | Vergleichsarm + Messbericht | M–L |
 | **WP-4** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
@@ -629,7 +648,11 @@ dann cwe-4k für die Gewinner; Nadel-Gate 32K für die neuen Arme vor ihrem KL-U
 reproduzieren exakt. McNemar überall p ≥ 0,25 (16 Segmente ändern daran prinzipiell nichts: 98–99 %
 Antwort-Übereinstimmung).
 
-- **Bit (`q4lm8v`, K16/V8): tot.** 2K +51 % KL gegen `q4lm32` (t −3,60, 0/8). Die 3-Bit-Hoffnung endet hier.
+- **Bit (`q4lm8v`, K16/V8): tot.** 2K +51 % KL gegen `q4lm32` (t −3,60, 0/8). Die 3-Bit-Hoffnung endet hier; die
+  Fenster-Variante (§7.15) hilft deutlich (128/8 −51 %, 8/8) und macht die 3-Bit-Basis im Low-Byte-Bereich
+  konkurrenzfähig — oberhalb ≈5 Bit dominiert die 4-Bit-Basis pro Byte. **Nachtrag §7.16:** mit dem OSCAR-Knie
+  (`R = 64`) ist die 3-Bit-Basis über den ganzen gemessenen Byte-Bereich nicht meßbar schlechter und erreicht
+  `int8`-Niveau bei ≈5,9 Bit — das „oberhalb" gilt nur für das `R = 8`-Gitter.
 - **Behandlung (`q4lm32t`): toter Gleichstand auf beiden Längen** (beide Male t +0,21 ganz). Kein Mandat,
   kein Veto für WP-2.
 - **No-Rotation (`q4lm32nr`): Gleichstand** (2K t +0,21, 4K t −1,31/−0,17, nirgends signifikant). Hadamard
@@ -664,6 +687,311 @@ Modell-KL exakt 0,01183, sd 0). (0,94/0,94) +34 % KL (t −2,29), OSCAR-Paar (0,
 meisten (V ist die fragile Seite, konsistent mit §7.5). **Folge für WP-2:** kein Clipping post-rotation
 im Layout. **Folge für den Fenster-Arm:** wird gebaut (§5.6.2) — Tails sind Signal, exakte Tails könnten
 Qualität zurückkaufen.
+
+### 7.12 WP-2a-Fenster gebaut, Parität 11/11, gestagter Prefill-Fund behoben (2026-10-17)
+
+Ein Modus (`kLloydWin` 9 = `--kv q4lm32w`), kein neues Schreibformat: der **Schreiber ist kLloyds Schreiber**
+(bitweise), der **Leser** zieht die ersten R (Sink) und die jüngsten S Zellen exakt fp16 aus einem flachen
+Seitenpool `[(cell, kv_head, head_dim)]`, alle anderen als 16 Pegel. S/R per `STRATA_KV_WINDOW_S/_R` (Default
+128/8; 0/0 ist `q4lm32` — der Identitäts-Nullpunkt). Der Horizont ist `step[kStepNKv]` (pos + 1, device-frisch und
+graph-sicher). Eigener Format-Int `kKvQ4lmW`; **Snapshots werden verweigert** (der exakte Pool liegt außerhalb des
+Bildes — Refusal, kein stilles Ignorieren). Der Pool ist immer resident, per Zelle indiziert, außerhalb von
+Paging und Streaming. Engine-Verdrahtung in `layer.cpp` (Pools, Nullen, Horizonte, Elastik-Abweisung), `mtp.cpp`
+(Drafter ohne Fenster), `verify.cpp`, `prefill.cpp` (Decode- **und** Draft-Pfad), CLI/Harness.
+
+**Parität** (`kv_q4_parity`, gfx1200, `build-hip-win\kv_q4_parity.exe`): **11/11 grün.** Test 11 schreibt
+bit-identisch zur `kLloyd`-Host-Referenz, prüft den Seitenpool als exakten fp16-Zwilling jedes angehängten
+Tupels, und läßt den Gather sink-only (R deckt alles → alles exakt) und recent-only (S = 1 → nur die letzte Zelle
+exakt, der Rest 16 Pegel) gegen die Host-Referenz laufen. Die Tests 1–10 reproduzieren unverändert.
+
+**Fund (behoben): gestagte Prefill-Pools trugen `q4_mode` nicht.** `pools_of()` (der gestreamte Prefill-Pfad,
+`src/prefill/prefill.cpp`) setzt die Byte-Pools und die Page-Tabelle, aber — anders als `qsa_attn_pools(st)` im
+nicht-gestagten/Decode-Pfad — **nicht** `pools.q4_mode`. Unter KV-Streaming (`st.kv_mode == 1`) wählte der
+Decode-Kernel deshalb `kv_mode = q4_lloyd(kUniform) ? 4 : 2` = **2**, also das uniforme `q4_0`-Gitter statt der
+Level-Tabelle; und weil `WinRows` nur bei `KV_MODE == 4` lebt, war der Fenster-Seitenpool dort **komplett
+inaktiv** (die exakten Zellen wurden quantisiert gelesen). Auf CUDA hätte zusätzlich der Tensor-Core-Prompt-Kernel
+das Level-Table-Format angenommen, statt es abzulehnen — der Hilfetext „the tensor-core prompt kernel refuses this
+mode" gilt erst mit dem Fix. Betroffen war **auch das reine `q4lm32`** (§7.3/WP-1a), nicht nur das Fenster. Die
+bisherigen Harness-Zahlen bleiben gültig, weil `tools/quant_quality.py` `--kv-resident` verwirft: die Läufe haben
+`kv_resident == 0` → `kv_plan` gibt Modus 0 (voll resident) → `staged == false`, der gestagte Pfad lief nie.
+**Fix:** für gestagte Pools `pools.q4_mode = st.kv_q4_mode` überlagern (die Fensterüberlagerung k_win/v_win/win_s/r
+war schon da, aber ohne den Modus wirkungslos). Default-neutral: für fp16/int8/q4_0 ist `st.kv_q4_mode == kUniform`.
+
+**Beleg (gfx1200, Q2_0, `--max-context 32768 --kv-resident 20480` = Streaming, `--spec 4`, greedy, 20
+Prompt-Tokens, 8 neue).** Denselben Quellbau zweimal gebaut, nur die eine Zeile an/aus:
+
+| Arm (gestreamt) | Fix **aus** | Fix **an** |
+| --- | --- | --- |
+| `q4lm32` | `27 91 316 6018 91 29 248046 198` | `27 91 316 4747 91 29 8678 248046` |
+| `q4lm32w` S=0 R=0 | = `q4lm32` | = `q4lm32` |
+| `q4lm32w` S=128 R=8 | `… 91 29 361 13` | `… 91 29 717 25` |
+
+Nur die eine Zeile ändert das gestreamte `q4lm32`-Ergebnis ⇒ der gestagte Prompt las ohne Fix wirklich uniform.
+Der Identitäts-Nullpunkt (S=R=0 == `q4lm32`) hält in beiden Builds, das Fenster (128/8) weicht in beiden ab ⇒ Arm
+und Nullpunkt stimmen. **Der vollständige cwe-2k-Beitrag des Fensters ist damit noch nicht gemessen** (§11.5).
+
+**SYCL-Zwilling.** `sycl/src/prefill/prefill.cpp` hat dieselbe Lücke in `pools_of`; dort sind `q4lm32`/`q4lm32s`
+gespiegelt, der Bug greift also auch dort unter Streaming. Absichtlich unangefaßt (Präzedenz §7.5: kein oneAPI
+hier, ungetestet) — offener Punkt.
+
+### 7.13 WP-2a-Fenster auf Swift (cwe-2k): das Fenster trägt (2026-10-17)
+
+Nur das Gitter wechselt (`STRATA_KV_WINDOW_S`/`_R`), sonst alles fix: Swift IQ3_XXS, der §7.12-Build, der
+Harness (2K, 8 Segmente, 16.351 Positionen). Referenz fp16 (PPL 2.999). Bericht:
+`bench/results/2026-10-17-kv-wp2a-window/`.
+
+| Arm | S / R | top-1 | mean KL | KL / `q4lm32` | KL p99 | PPL | vs fp16 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `q4lm32` | – | 99,19 % | 0,01183 | 1,00x | 0,1464 | 3,012 | +0,43 % |
+| `q4lm32w` | 0 / 0 | 99,19 % | 0,01183 | 1,00x | 0,1464 | 3,012 | +0,43 % |
+| `q4lm32w` | 128 / 8 | 99,41 % | 0,00815 | 0,69x | 0,0856 | 2,994 | −0,17 % |
+| `q4lm32w` | 512 / 8 | 99,37 % | **0,00609** | **0,51x** | 0,0743 | 2,992 | −0,23 % |
+| `q4lm32w` | 1024 / 8 | 99,36 % | 0,00672 | 0,57x | 0,0766 | 2,994 | −0,17 % |
+
+Der Nullpunkt ist **byte-gleich**, nicht nur gleich: die TSV von (0/0) und `q4lm32` haben dieselbe SHA256. Gepaart
+über die 8 Segmente: `q4lm32`→128/8 **+0,00368** (t +7,16, 8/8), →512/8 **+0,00574** (t +5,62, 8/8), →1024/8
+**+0,00511** (t +6,31, 8/8); 512/8 vs 1024/8 −0,00063 (t −0,79, 5/8) = **Knie bei S ≈ 512**. Der Antwortbereich
+zeigt dieselben Vorzeichen (`q4lm32`−512/8 t +3,90, 8/8).
+
+**Lesart.** Das Fenster trägt eindeutig, alle 8 Segmente in dieselbe Richtung; schon der Default (128/8) nimmt
+31 % der KL, 512/8 die Hälfte. Über 512 hinaus passiert nichts mehr. PPL fällt unter fp16 (2,992 < 2,999) — wie
+beim Clip-Arm (§7.11) und `q4lm32t`: der 4-Bit-Fehler dämpft, PPL ist hier kein Qualitätsleser, KL ist es.
+
+**Bytes.** Die **Probe** hält einen fp16-Zwilling des **ganzen** Kontexts (`qsa_win_bytes` über `max_cells`,
+`kv_append_win` schreibt jede Zelle), der Leser bedient daraus nur das Fenster: alle Arme haben dieselbe Fußspur
+(~20,5 Bit/Wert), die Unterschiede sind reine Lesepolitik. Die **Auslieferung** würde nur die S+R exakten Zellen
+fp16 halten (Ring + Sinks) → **4,5 + 11,5·(S+R)/L Bit/Wert** (L ≈ 2044): 128/8 ≈ 5,3, 512/8 ≈ 7,4, 1024/8 ≈ 10,3.
+
+**Folge für WP-2.** Bei 4 Bit ist `q4lm32w` **int8-nah, bei weniger Bytes**: der beste Punkt (512/8) liegt bei
+≈7,4 Bit (10 % unter `int8`s 8,25 Bit) und KL 0,00609 gegen `int8`s 0,00503 (+21 %), der Tail praktisch gleich
+(KL p99 0,0743 vs 0,0733, PPL 2,992 vs 3,004). `int8` bleibt pro Byte ein wenig effizienter (bei gleichen Bytes
+läge das Fenster höher — der Beitrag ist ab S ≈ 512 flach; 1024/8 ist bei 10,3 Bit sogar schlechter als 512/8,
+also dominiert), aber `q4lm32w` ist ein echter **Rate-Knopf** (4,5 → 5,3 → 7,4 Bit) mit int8-naher Qualität, kein
+bloßer ≤3-Bit-Hebel. Sein größtes Potenzial liegt trotzdem bei ≤3 Bit, wo die Mitte billig genug ist, daß 16 Bit
+auf einem kleinen Fenster relativ wenig kosten — genau die Bedingung, unter die §8.5/§11.4 das Urteil „3 Bit tot"
+gestellt haben. **Diese Erwartung hat §7.15 geprüft:** das Fenster trägt dort tatsächlich (128/8 −51 %, 8/8) und
+macht die 3-Bit-Basis im Low-Byte-Bereich konkurrenzfähig (Cross-Over ≈4,8–5,3 Bit); oberhalb dominiert die
+4-Bit-Basis pro Byte. **§7.16 prüft es mit Sink-Tiefe (`R = 64`) nach** und findet die 3-Bit-Basis über den ganzen
+Byte-Bereich nicht meßbar schlechter, beide Basen auf `int8`-Niveau — das `R = 8`-Cross-Over war ein Artefakt der
+zu knappen Sink-Zahl.
+
+### 7.14 WP-2b: das Fenster auf die ≤3-Bit-Arme geöffnet (2026-10-17)
+
+Die §7.13-Frage — trägt das Fenster auch bei ≤3 Bit, dem eigentlichen Zuhause des Urteils „3 Bit tot"
+(§8.5/§11.4) — braucht dieselbe Überlagerung auf `q4lm8`/`q4lm8k`/`q4lm8v`. Der Kernel konnte das längst: der
+Decode-Leser liest jede `q4_lloyd`-Mode gefenstert (`q4l_map_v(p.q4_mode)`, `qsa_decode_attn.cu`), der Gather
+ebenso (`kv_gather_q4_kernel<NK,NV>`, Sink/jüngste Zellen modusunabhängig). Nur die Host-Verdrahtung war auf
+`kLloydWin` festgenagelt. **Kein neuer Modus nötig** — das Fenster ist jetzt **orthogonal zur Level-Tabelle**:
+
+- `qsa_win_wanted()` (`src/core/layer.cpp`) verlangt `g_kv_win && g_kv_q4 && S+R > 0` statt `mode == kLloydWin`.
+- `g_kv_win` ist an, wenn der Modus `kLloydWin` ist (Back-compat `q4lm32w`) **oder** `STRATA_KV_WINDOW=1` gesetzt
+  ist; dann gilt das S/R-Gitter für **jeden** q4-Arm (`--kv q4lm8v --env STRATA_KV_WINDOW=1 …`). S+R=0 ist wieder
+  der Identitäts-Nullpunkt.
+- `qsa_kv_format` gibt `kKvQ4lmW` zurück, sobald ein Seitenpool existiert (`st.k_win != nullptr`), unabhängig von
+  der Tabelle — der Byte-Mover sieht ohnehin nur q4-Bytes, der Leser trägt seine Tabelle in den Pools
+  (`q4_mode`), nicht im Format.
+- Die Snapshot-Verweigerung (`conversation_snapshot.cpp`) prüft jetzt den Pool-Zeiger statt nur den Modus (die
+  Identity `kLloydWin` mit S+R=0 ohne Pool bleibt wie zuvor verweigert).
+
+**Parität** (`kv_q4_parity`, gfx1200, `build-hip-win\kv_q4_parity.exe`): **12/12 grün.** Neuer Test 12
+wiederholt Test 11 mit `kLloyd8V` (16-Pegel-K, 8-Pegel-V): der V-Schreiber ist bitweise die `q4l8`-Host-Referenz,
+K die `kLloyd`-Referenz, der Seitenpool ist der exakte fp16-Zwilling, und der Gather liefert sink-only alles
+exakt / recent-only gemischt exakt/8-Pegel (K 16, V 8). Tests 1–11 reproduzieren unverändert.
+
+**Default-Neutralität.** Ohne `STRATA_KV_WINDOW=1` und ohne `kLloydWin` ist `g_kv_win == false`: `qsa_win_wanted()`
+falsch, kein Pool, `qsa_kv_format` unverändert, Snapshot-Pfad unverändert. `q4lm32w` verhält sich bitidentisch zu
+vorher (S+R=0 weiterhin `q4lm32`). Die cwe-2k-Messung des 3-Bit-Fensters folgt in §7.15
+(`bench/results/2026-10-17-kv-wp2b-window3bit/`).
+
+### 7.15 WP-2b-Fenster auf Swift bei ≤3 Bit (cwe-2k): das Fenster trägt, 3 Bit nur als Low-Byte-Punkt (2026-10-17)
+
+Nur `STRATA_KV_WINDOW=1` plus das S/R-Gitter wechseln, sonst alles fix: Swift IQ3_XXS, der §7.14-Build, der Harness
+(2K, 8 Segmente, 16.351 Positionen). Referenz fp16 (PPL 2,999). Bericht:
+`bench/results/2026-10-17-kv-wp2b-window3bit/`.
+
+| Arm | S / R | top-1 | mean KL | KL / `q4lm8v` | KL p99 | PPL |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `q4lm8v` | – | 98,92 % | 0,01791 | 1,00x | 0,2793 | 3,024 |
+| `q4lm8v`+w | 0 / 0 | 98,92 % | 0,01791 | 1,00x | 0,2793 | 3,024 |
+| `q4lm8v`+w | 128 / 8 | 99,39 % | 0,00869 | **0,49x** | 0,0929 | 3,001 |
+| `q4lm8v`+w | 512 / 8 | 99,36 % | 0,00828 | **0,46x** | 0,0926 | 2,996 |
+| `q4lm8v`+w | 1024 / 8 | 99,35 % | **0,00741** | **0,41x** | 0,0924 | 2,999 |
+| `int8` | – | 99,35 % | 0,00503 | 0,28x | 0,0733 | 3,004 |
+
+Der Nullpunkt ist byte-gleich (TSV-SHA256 von 0/0 und `q4lm8v` identisch); ebenso reproduzieren `fp16`, `int8` und
+`q4lm8v` die WP-1-Anker bitgenau. Gepaart über die 8 Segmente: `q4lm8v`→128/8 **+0,00922** (t +5,05, 8/8), →512/8
+**+0,00963** (t +7,67, 8/8), →1024/8 **+0,01050** (t +4,07, 8/8); 128/8 vs 512/8 +0,00041 (t +0,38, 7/8) =
+Gleichstand, 512/8 vs 1024/8 +0,00167 (t +2,80, 8/8) = noch ein Beitrag. Der Antwortbereich zeigt dieselben
+Vorzeichen (`q4lm8v`−512/8 t +1,61, 7/8).
+
+**Lesart.** Das Fenster trägt auch bei ≤3 Bit, alle 8 Segmente in dieselbe Richtung; 128/8 nimmt die Hälfte der KL,
+1024/8 59 %. Die §7.13-Frage, ob das Fenster bei ≤3 Bit überhaupt trägt, ist damit beantwortet: **ja** — es ist keine
+4-Bit-Eigenheit, sondern eine allgemeine Lesepolitik. Aber die schlechtere Mitte will ein größeres exaktes Fenster:
+das Knie liegt höher als bei 4 Bit (dort war 512/8 das Knie, §7.13; hier ist 512/8 vs 1024/8 noch signifikant), und
+genau diese Bytes fehlen.
+
+**Bytes.** Basis `q4lm8v` ist **3,5 Pegel-Bits** (K 16-Pegel = 4, V 8-Pegel = 3) bzw. **≈4,0 Bit/Wert gespeichert**
+(Pegel + 0,5 Bit/Wert Skalen-Overhead, wie der 18-B-Block von `q4_0`/`q4lm32`); die Auslieferung hält nur die (S+R)
+exakten Zellen fp16 → **4,0 + 12,0·(S+R)/L Bit/Wert** (L ≈ 2044): 128/8 ≈ 4,8, 512/8 ≈ 7,1, 1024/8 ≈ 10,1. Zum
+Vergleich die 4-Bit-Basis (`q4lm32w`): 4,5 + 11,5·(S+R)/L → 128/8 ≈ 5,3, 512/8 ≈ 7,4, 1024/8 ≈ 10,3.
+
+**Folge: im Low-Byte-Bereich ist die 3-Bit-Basis mit Fenster knapp konkurrenzfähig — „3 Bit tot" gilt dort nicht.**
+Gepoolt mit dem 4-Bit-Lauf (die `fp16`-Anker beider Läufe sind byte-gleich, also direkt zusammenlegbar; gepaart über
+dieselben 8 Segmente):
+
+| Paar (Auslieferungs-Bits) | ΔKL | t | Segmente | Lesart |
+| --- | ---: | ---: | ---: | --- |
+| `q4lm32` (4,5) − `q4lm8v`+w 128/8 (≈4,8) | +0,00314 | +3,06 | 6/8 | 3-Bit hat **0,3 Bit mehr**, klar bessere KL |
+| `q4lm32w` 128/8 (≈5,3) − `q4lm8v`+w 128/8 (≈4,8) | −0,00054 | −0,80 | 4/8 | Gleichstand, 4-Bit hat **~0,5 Bit mehr** |
+| `q4lm32w` 128/8 (≈5,3) − `q4lm8v`+w 512/8 (≈7,1) | −0,00012 | −0,13 | 4/8 | Gleichstand, 4-Bit hat **1,8 Bit weniger** |
+| `int8` (8,25) − `q4lm32w` 512/8 (≈7,4) | −0,00106 | −1,40 | 1/8 | Gleichstand, 4-Bit hat **~0,85 Bit weniger** |
+
+- **Low-Byte-Bereich (≈4,8–5,3 Bit): schmaler Vorteil für die 3-Bit-Basis.** `q4lm8v`+w(128/8, ≈4,8 Bit) ist gegen
+  `q4lm32w`(128/8, ≈5,3 Bit) bei statistisch gleicher KL ~0,5 Bit/Wert (~9 %) billiger. Gegen den fensterlosen
+  4-Bit-Arm ist es **kein** Byte-Sieg (4,8 vs 4,5 Bit), nur bessere Qualität.
+- **Ab ≈5 Bit dreht es: die 4-Bit-Basis dominiert pro Byte.** Größere Fenster helfen der 3-Bit-Basis, kosten aber mehr
+  als sie bringen (512/8 gegen 4-Bit 128/8: 1,8 Bit mehr, kein KL-Unterschied). `q4lm32w`(512/8) erreicht mit ≈7,4 Bit
+  `int8`-Niveau (8,25 Bit) — der beste Byte-Punkt des Ganzen; `int8` bleibt die absolute Decke.
+- **Grenze.** Die Bit-Zahlen sind ein **Modell** (Pegel + Block-Skalen-Overhead + `(16 − Basis)·(S+R)/L`, L ≈ 2044 bei
+  2K), nicht gemessen; bei längerem Kontext sinkt der Fenster-Anteil, das Cross-Over kann sich verschieben. Die
+  Qualitätsmessung ist 2K; ob das Fenster bei 128K noch so viel zurückholt, ist **nicht** gemessen.
+- **„3 Bit tot" also genauer:** ohne Fenster gilt es (§7.9); mit Fenster ist die 3-Bit-Basis im hier gemessenen
+  `R = 8`-Gitter (≈4,8–10 Bit) pro Byte knapp konkurrenzfähig, das Cross-Over liegt bei ≈4,8–5,3 Bit. **Beides gilt
+  nur für `R = 8`:** §7.16 mißt das OSCAR-Knie (`R = 64`) nach und findet die 3-Bit-Basis pro Byte nirgends meßbar
+  schlechter — beide Basen erreichen dort `int8`-Niveau.
+
+### 7.16 WP-2b-Knie auf Swift (cwe-2k): beide Basen erreichen int8-Niveau, die 3-Bit-Basis am billigsten (2026-10-18)
+
+Der §7.15-Abschluß ließ zwei Arme aus dem Beschluß offen: das **OSCAR-Knie** (`R = 64` Sink bei `S = 256`) und ein
+reines Sink-Paar. Beide sind auf **beiden** Basen nachgemessen — vier Arme, ~9,5 min/Arm, derselbe Build und Harness
+wie §7.13/§7.15. Die Anker `fp16` `36C9CE2D…`, `int8` `3CB6A156…`, `q4lm8v` `83D13E7A…`, `q4lm32` `A3F4CE4A…`
+sind byte-gleich, die gepoolte Auswertung umfaßt also 13 Arme. Bericht:
+`bench/results/2026-10-18-kv-wp2b-oscar-knee/`.
+
+| Arm | S / R | Bit (Modell) | top-1 | mean KL | KL p99 | PPL |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `q4lm8v` | – | ≈4,0 | 98,92 % | 0,01791 | 0,2793 | 3,024 |
+| `q4lm32` | – | 4,5 | 99,19 % | 0,01183 | 0,1464 | 3,012 |
+| `int8` | – | 8,25 | 99,35 % | 0,00503 | 0,0733 | 3,004 |
+| `q4lm8v`+w | 256 / 64 | ≈5,9 | 99,33 % | **0,00702** | 0,0835 | 3,003 |
+| `q4lm32w` | 256 / 64 | ≈6,3 | 99,37 % | 0,00782 | 0,0752 | 3,002 |
+| `q4lm8v`+w | 512 / 128 | ≈7,8 | 99,39 % | **0,00623** | 0,0743 | 2,995 |
+| `q4lm32w` | 512 / 128 | ≈8,1 | 99,43 % | **0,00569** | 0,0729 | 2,994 |
+
+**Kernaussage: alle vier Knie-Arme sind von `int8` (8,25 Bit) statistisch nicht zu trennen.** Gepaart über die 8
+Segmente: `int8`−`8vw-s256-r64` −0,00199 (t −1,92, 2/8), `int8`−`32w-s256-r64` −0,00279 (t −1,84, 3/8),
+`int8`−`8vw-s512-r128` −0,00120 (t −1,22, 3/8), `int8`−`32w-s512-r128` −0,00066 (t −0,88, 4/8). Die 3-Bit-Basis
+erreicht das zuerst: `q4lm8v`+w(256/64) liegt bei ≈5,9 Bit gegen `int8`s 8,25 (≈29 % weniger), ohne meßbaren
+Verlust. „Nicht unterscheidbar" heißt nicht „gleich": das 95 %-Intervall von `int8`−`8vw-s256-r64` reicht bis
+≈ +0,0044.
+
+**Das Cross-Over aus §7.15 (≈4,8–5,3 Bit) reproduziert sich nicht.** Bei gleicher Form ist die 3-Bit-Basis in
+**allen fünf** Formen nicht schlechter (`|t| ≤ 1,50`) und kostet **0,24–0,47 Bit weniger**; nominell liegt die
+4-Bit-Basis in 4 von 5 Formen vorn, in einer (`256/64`) die 3-Bit-Basis:
+
+| Form (S/R) | 3-Bit KL (Bit) | 4-Bit KL (Bit) | ΔKL (3 − 4) | t | Segmente up |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 128 / 8 | 0,00869 (≈4,8) | 0,00815 (≈5,3) | +0,00054 | +0,80 | 4/8 |
+| 256 / 64 | 0,00702 (≈5,9) | 0,00782 (≈6,3) | −0,00080 | −1,26 | 3/8 |
+| 512 / 8 | 0,00828 (≈7,1) | 0,00609 (≈7,4) | +0,00218 | +1,50 | 7/8 |
+| 512 / 128 | 0,00623 (≈7,8) | 0,00569 (≈8,1) | +0,00054 | +0,75 | 6/8 |
+| 1024 / 8 | 0,00741 (≈10,1) | 0,00672 (≈10,3) | +0,00069 | +0,54 | 6/8 |
+
+Pro Byte verliert die 3-Bit-Basis damit in dieser Messung **nirgends meßbar** — der §7.15-Vorsprung war kein
+Low-Byte-Phänomen, er reicht bis ≈10 Bit. Ein scharfes Cross-Over läßt sich aus 8 Segmenten nicht mehr angeben: die
+Format-Differenz (≤0,0022, immer ns) ist von derselben Größe wie der S/R-Formeffekt.
+
+**Der Sink (`R`) ist eine eigene Achse.** Bei festem `S = 512` und fester Basis verbessert mehr Sink die KL, und die
+Richtung ist über die Segmente konstant: `8vw-s512-r8` − `8vw-s512-r128` +0,00204 (t +1,88, **8/8**),
+`win-s512-r8` − `32w-s512-r128` +0,00258 (t +1,50, **7/8**). `R = 8` (das §7.13/§7.15-Gitter) war also zu knapp:
+`8vw-s256-r64` (320 Zellen, `R = 64`) liegt unter `8vw-s512-r8` (520 Zellen, `R = 8`; +0,00126, t +1,61, 6/8).
+Innerhalb der 3-Bit-Familie: 128/8 → 256/64 +0,00167 (t +2,97, **8/8**), 256/64 → 512/128 +0,00078 (t +1,98, 7/8).
+
+**Folge für §11.4.4/§11.5.1.** Die Aussage „3 Bit lebt nur als schmaler Low-Byte-Punkt" ist mit dem Knie-Gitter zu
+eng: mit `R = 64` ist die 3-Bit-Basis über den ganzen gemessenen Byte-Bereich (≈4,8–10 Bit) pro Byte nicht meßbar
+schlechter als die 4-Bit-Basis, und beide erreichen `int8`-Niveau — die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit. Der
+beste **absolute** KL-Punkt bleibt die 4-Bit-Basis (`q4lm32w` 512/128, 0,00569 bei ≈8,1 Bit); die 3-Bit-Basis ist
+der beste **Byte**-Punkt. Grenzen: Qualität nur bei 2K, Bit-Zahlen nur Modell, S/R-Raster grob (fünf Formen,
+8 Segmente).
+
+### 7.17 Laufzeit-A/B der KV-Formate (Swift, 16K-Kontext, 2026-10-18)
+
+§11.4.3 nannte als offene Serving-Lücke „kein Speed-A/B". Der ist jetzt gefahren: 8 Arme × 3 Runden, pro Arm ein
+frischer Server, Rundenordnung alternierend (`tools/ab_engine.py`), nur `--kv` (+ `STRATA_KV_WINDOW*`) geändert,
+derselbe Build wie §7.12–§7.16. Abgelesen wird die Engine-eigene Zahl `predicted_per_second`; der lange Prompt hat
+6.345 Token (die drei kurzen sind Overhead-dominiert). Bericht: `bench/results/2026-10-18-kv-runtime-ab/`.
+
+| Arm | decode tok/s (Median) | Spanne | vs. fp16 | prompt tok/s (6.345) |
+| --- | ---: | ---: | ---: | ---: |
+| `int8` | 44,9 | 42,9–46,2 | +5,6 % | 444 |
+| `fp16` | 42,5 | 42,2–43,4 | ±0 | 450 |
+| `q4lm32c` | 42,0 | 38,7–43,1 | −1,2 % | 448 |
+| `q4lm32` | 41,7 | 40,2–43,0 | −1,9 % | 441 |
+| `q4lm8v`+w 512/8 | 41,6 | 39,2–45,0 | −2,1 % | 437 |
+| `q4lm32w` 512/8 | 41,4 | 38,2–43,7 | −2,6 % | 435 |
+| `q4lm8v`+w 256/64 | 40,3 | 37,1–40,4 | −5,2 % | 429 |
+| `q4lm8v` | 39,7 | 38,1–44,7 | −6,6 % | 436 |
+
+**Zwei Lesarten.** (1) **Das Format ist im Decode praktisch frei**: die ganze Spanne ist ±6 %, `int8` führt,
+`q4lm8v` schließt; die Formatwahl fällt über Qualität und Speicher, nicht über Decode-Durchsatz auf dieser Karte.
+(2) **Der Fenster-Überbau ist im Decode nicht sichtbar**: `q4lm32w`(512/8) 41,4 liegt innerhalb der Spanne von
+`q4lm32` 41,7, und `q4lm8v`+w(512/8) 41,6 liegt über `q4lm8v` 39,7. Damit sind **R1/R2 im Decode widerlegt** —
+bei einem Token pro Schritt ist der Zwillings-Append winzig gegen die Attention über 6,3K Token. Im Prefill
+(6.345 Token) liegen die Fenster-Arme ≤3 % unter ihren Zwillingen (435/437/429 gegen 441/436), in Richtung des
+zusätzlichen Zwillings-Schreibens, aber innerhalb der Spanne.
+
+**Was das Fenster an Speicher kostet (R3, gemessen).** Der flache Seitenpool wird von `max_cells` bemessen
+(`qsa_win_bytes`, `layer.cpp:196`): `max_cells × n_head_kv × head_dim × 4 B` = **2.048 B je Zelle** je Layer;
+bei diesem Modell sind `n_head_kv = 2`, `head_dim = 256` und **12** Layer tragen einen QSA-Zustand
+(`qsa_interval = 4` von 48) → **24 KiB je Kontextzelle** über alle Layer. Gemessen als Differenz von
+`N MiB of VRAM free with everything loaded` zwischen Fenster-Arm und Zwilling bei fester Expert-Cache-Vorgabe:
+16K → 416 MiB (Formel 384 MiB), **64K → 1.536 MiB (Formel exakt)**. Und mit `--kv-resident 20480` bei
+`--max-context 65536` schrumpft das quantisierte K/V auf 0,42 GiB pinned RAM, der Pool bleibt aber bei
+**1.536 MiB** — der Pool skaliert mit `max_context`, nicht mit dem Resident-Set, **hebelt also das Streaming
+aus** (16K ≈ 384 MiB, 64K ≈ 1,5 GiB, 128K ≈ 3 GiB). **Korrektur:** der Review hatte „2K ≈ 10 MB, 16K ≈ 64 MB,
+128K ≈ 512 MB" und 48 Layer genannt; richtig sind 12 QSA-Layer und 24 KiB/Zelle (2K ≈ 48 MiB).
+
+### 7.18 Nachbesserungen aus dem Code-Review (K1–K4, R6)
+
+Die Review-Befunde am Fenster-Code (nach den Prüfläufen, wie vereinbart) sind behoben; Parität bleibt 12/12, und
+die Nachbesserung ist **datenneutral gezeigt**: `q4lm8v` und `8vw-s128-r8` auf cwe-2k ergeben mit dem neuen Build
+dieselben TSV-SHA256 wie am 2026-10-17 (`83D13E7A…` / `D07C1492…`).
+
+- **K1 (Fenster war pfadabhängig).** `qsa_win_wanted()` verlangt jetzt einen **q4-Lloyd**-Zustand
+  (`q4_lloyd(g_kv_q4_mode)`), und `qsa_set_kv_q4_mode` **verweigert `STRATA_KV_WINDOW=1` auf `--kv q4_0` laut**
+  (stderr + Fenster aus): dort hätte der q4-Gather das Fenster gelesen, der fusionierte Decode
+  (`KV_MODE 2`) es still ignoriert. Die gemessenen Arme sind alle Lloyd und damit unberührt.
+- **K2 (stiller Abbruch).** `kv_append_win`/`kv_append_win_steps` kehren bei `head_dim % 32 != 0` nicht mehr
+  still zurück, sondern scheitern laut wie `need_256` — ein stiller Return hätte den Seitenpool **veraltet**
+  stehen lassen, während der Aufrufer ihn für geschrieben hielt.
+- **K3 (keine Schranke).** Beide Funktionen bekommen die Pool-Kapazität (`win_cells`). Die Batch-Variante prüft
+  `pos0 + T ≤ win_cells` **host-seitig laut** (die Prefill-Positionen sind host-bekannt); die Steps-Variante
+  schützt den Store im Kernel (die Position ist device-frisch) — dort gibt es in einem Release-Build (NDEBUG)
+  keinen lauten Device-Abbruch, deshalb wird der Store verworfen statt Speicher zu überschreiben.
+- **K4 (Snapshot-Verweigerung zu grob).** Die Verweigerung hängt jetzt **nur am Seitenpool**. `kLloydWin` mit
+  S + R = 0 legt keinen Pool an, ist ein gewöhnlicher `kLloyd`-Cache (Writer und Tabelle identisch) und wird
+  als `kKvQ4lm` beschriftet — also **snapshot-fähig**; `--kv q4lm32w` ist damit mit Konversations-Cache nutzbar.
+- **R6 (Drafter-Reservierung).** Der MTP-Drafter führt seine State-Init jetzt mit **abgeschalteter Überlagerung**
+  aus (`qsa_set_kv_win`), statt zwei Pools zu schnitzen und die Zeiger danach wegzuwerfen; die Arena-Größe und
+  `vram_` zählen sie damit nicht mehr mit.
+
+**Bewußt nicht geändert.** R1 (Append falten), R4 (`swin[c]`-Hoist) und R5 (pre75-Schleife) sind
+Hot-Loop-/Perf-Eingriffe: §7.17 zeigt für den Fenster-Überbau **keinen meßbaren Decode-Unterschied**, also würde
+eine solche Änderung eine eigene Messung brauchen (AGENTS.md: Default nur ändern, wo schneller gemessen). R2/R3
+sind der Proben-Überbau selbst und in §7.17 als Speicherzahl dokumentiert.
+
+**B1 (Metal) ist älter als diese Arbeit.** `metal/src/engine/stubs.cpp` kennt kein `Q4Mode`, obwohl
+`kv_append_q4_step`/`kv_gather_q4_step` es seit `8f91507f` (WP-1a) im Parameter haben — der Metal-Link ist also
+**schon am HEAD der Basis** offen, nicht erst durch das Fenster (das drei Symbole ergänzt:
+`kv_append_win`, `kv_append_win_steps`, die neue `kv_gather_q4_step`-Signatur). Die Datei ist generiert
+(`metal/tools/gen_stubs.py` aus einem macOS-Link-Log); ohne macOS/ld64 hier nicht regenerierbar, und
+Hand-Einträge wären geraten.
+**B2 (SYCL) ist ein voller Fork**, der nicht mitwächst: `sycl/src/core/{layer,mtp,verify,prefill,conversation_snapshot}.cpp`
+und `sycl/src/kernels/cuda/kv_q4.dp.cpp` sind eigene Kopien. Die Kopie **inkludiert den gemeinsamen Kopf**
+`include/strata/kernels/kv_q4.hpp`, definiert `kv_gather_q4_step` aber noch mit 11 Parametern, während der Kopf seit
+WP-2a 15 deklariert (Fenster) — die SYCL-Kopien müssen also **nachgezogen** werden, sobald ein oneAPI-Build
+verfügbar ist; hier ist keiner (gfx1200/HIP). Der HIP/CUDA-Build ist davon nicht betroffen (`add_subdirectory(sycl)`
+greift nur mit oneAPI), und die Forks rufen `kv_append_win*` nicht auf, also ändert die neue Signatur dort nichts.
 
 ## 8. Messplan und Gate
 
@@ -734,13 +1062,15 @@ Für jedes WP:
   Formatlisten von Suffix-Reuse; ein Block-Mover, der nur Bytes kopiert, behandelt sie wie `kKvQ4`
   (`docs/DETAILS.md:1008`, PR #2351).
 - **Gate-Modelle.** Die genaue Vierer-Liste des Identitäts-Gates ist hier noch offen — vor WP-0 festzurren.
-- **3-Bit-Sonde (WP-2a) — Q2_0-Richtung liegt vor, Swift-Entscheidung offen.** Der Q2_0-Lauf (§7.5) zeigt die
-  Richtung **K will die Bits** (Antwortregion kategorial entlang K, McNemar 0:5 gegen den V-schweren Arm) und daß
-  symmetrisch 3 Bit zu teuer ist (`q4lm8` 1,65× KL, t −5,04). Kein Einzelkriterium reißt bei 8 Segmenten die
-  Schwelle, und Q2_0 ist das gedämpfteste Gewichts-Regime — deshalb wird der Lauf auf **Swift IQ3_XXS**
-  wiederholt, wo der KV-Fehler sichtbar wird. Die Sonde verbraucht **keine** Bytes (576 B/Zelle wie `q4_0`), also
-  ist selbst ein gutes Ergebnis **kein** Halbierungs-Beleg, sondern nur die Lizenz, das echte Layout in WP-2 zu
-  bauen. Offen bleibt, ob 8 Pegel genug sind oder ob der Transform-Slot die 3-Bit-Stufe erst trägt.
+- **3-Bit-Sonde (WP-2a) — Swift erledigt.** Der Q2_0-Lauf (§7.5) zeigte die Richtung **K will die Bits** (Antwortregion
+  kategorial entlang K, McNemar 0:5 gegen den V-schweren Arm) und daß symmetrisch 3 Bit zu teuer ist (`q4lm8` 1,65×
+  KL, t −5,04). Der Swift-Lauf (§7.9) hat den Bit-Arm entschieden (`q4lm8v` +51 % KL, t −3,60, 0/8), §7.15 die
+  Fenster-Variante (das Fenster trägt, rettet 3 Bit aber nicht). Die Sonde verbraucht **keine** Bytes (576 B/Zelle
+  wie `q4_0`), also war selbst ein gutes Ergebnis **kein** Halbierungs-Beleg, sondern nur die Lizenz, das echte
+  Layout in WP-2 zu bauen. Die Frage, ob 8 Pegel genug sind, ist damit beantwortet: nur mit Fenster, und nur im
+  Low-Byte-Bereich (≈4,8–5,3 Bit); oberhalb dominiert die 4-Bit-Basis pro Byte. **§7.16 relativiert das:** mit dem
+  OSCAR-Knie (`R = 64`) erreicht die 3-Bit-Basis `int8`-Niveau bei ≈5,9 Bit und verliert pro Byte in keiner der fünf
+  gemessenen Formen meßbar; die „oberhalb"-Aussage gilt nur für das `R = 8`-Gitter.
 - **Linien mit Falsifikationspflicht (Plan v2).** Hauptlinie: asymmetrisch-4-Bit (WP-1) → Null-Byte-Arme
   (WP-2a) → asymmetrisches Layout (WP-2). WUSH kalibriert-nur-K bleibt **Vergleichsarm** (WP-3) mit denselben
   Kriterien: gleiche Bits, Swift, gepaart + McNemar, Kostenbudget (Kalibrierzeit, Download ~9 MB, Online-K) —
@@ -775,3 +1105,257 @@ Für jedes WP:
 - Kein V-Folding in quantisierte Gewichte (T_V bleibt fest oder online; kalibriert wird nur K, WP-3).
 - Kein Kalibrierungs-/Eigenbasis-Default (SpinQuant/OSCAR/OptR) — wenn überhaupt, nur opt-in in einem späteren WP.
 - Kein 2-bit; 3-bit für jetzt **ohne** Delta (WP-1 misst zuerst die K/V-Zuteilung; ein Delta-Modus bleibt WP-5).
+
+## 11. Addendum (2026-10-16): Einordnung gegen das Feld und Bewertung des Plans
+
+Status: **Analyse, kein Meßpunkt.** Was hier unter „eigene Messungen" steht, ist aus §7 dieses Dokuments und dort
+belegt. Was unter „das Feld" steht, ist eine Primärrecherche vom 2026-10-16 (arXiv/ACL, 2024–2026); diese Zahlen sind
+auf anderen Modellen, Kopfgeometrien und Metriken gemessen und **nicht** direkt mit unseren vergleichbar. Das
+Addendum ergänzt §6.12/§6.13 des Surveys um Arbeiten, die nach dem 14.10. erschienen sind, und bewertet den Plan v2
+(§7.6) gegen den Stand vom 2026-10-16. Es ändert **keinen** Beschluß.
+
+### 11.1 Die Achsen, die der Plan mißt
+
+| Achse | Flag | Idee | Wo gemessen |
+| --- | --- | --- | --- |
+| Codebook | `--kv q4lm32` | uniformes ggml-Gitter → Max-Lloyd-16-Pegel für N(0,1), 18-B-Blöcke unverändert | §7.3, §7.4 |
+| Skalenregel | `--kv q4lm32s` | ein Least-Squares-Schritt je Block statt max-Betrag/87 | §7.3, §7.4 |
+| K/V-Asymmetrie | `q4lm8k` / `q4lm8v` | Bits entlang K gegen V | §7.5, §7.9 |
+| Behandlung | `q4lm32t` | V mit RMS-Skala statt max, sonst gleiche Bytes | §7.9 |
+| Clipping | `q4lm32c` | κ-Quantil-Skala **nach** der Rotation | §7.11 |
+| Fenster/Sink | `--kv q4lm32w` / `STRATA_KV_WINDOW=1` (`STRATA_KV_WINDOW_S/_R`) | jüngste/erste Zellen exakt, Rest quantisiert | §7.12 (Parität 12/12); §7.13 (4 Bit), §7.15 (≤3 Bit), §7.16 (Knie) |
+| Rotation | `q4lm32nr` | No-Rotation-Ablation | §7.9 |
+| Laufzeit | `tools/ab_engine.py` | Decode/Prompt tok/s je Arm, Runden alternierend | §7.17 |
+| Vergleich | WP-3 | kalibriert-nur-K, kein V-Folding | vorgemerkt |
+
+### 11.2 Was gemessen ist (Kurzfassung)
+
+| Frage | Ergebnis | Beleg |
+| --- | --- | --- |
+| Schließt das Codebook die `q4_0`-Lücke? | **Ja, bei gleichen Bytes**: +0,23 % → +0,02 % PPL (8K), +1,30 % → +0,01 % (1K) | §7.4 |
+| Trägt 3 Bit? | **Ohne Fenster nein** (Swift: `q4lm8v` +51 % KL, t −3,60, 0/8). **Mit Fenster ja — wenn das Fenster Sink hat**: bei `R = 8` senkt es 51–59 % (8/8, §7.15), bei `R = 64` erreicht die 3-Bit-Basis `int8`-Niveau (0,00702 gegen 0,00503, t −1,92, ns) bei **≈5,9 statt 8,25 Bit**, und pro Byte verliert sie in fünf Formen nirgends meßbar (`\|t\| ≤ 1,50`, §7.16) | §7.9, §7.15, §7.16, §11.4.4 |
+| K oder V die Bits? | Q2_0: Richtung K (0:5, p 0,062); Swift: **widerlegt** (t +0,05, p 1,000) | §7.5, §9 |
+| Trägt die Skalenregel-Asymmetrie (V-RMS)? | **Toter Gleichstand** (t +0,21 auf beiden Längen) | §7.9 |
+| Trägt Hadamard bei 4-Bit-Lloyd? | **Gleichstand** (2K +0,21, 4K −1,31/−0,17) | §7.9 |
+| Trägt Clipping nach der Rotation? | **Nein**: (0,94;0,94) +34 %, OSCAR-Paar +111 % | §7.11 |
+| Trägt Fenster/Sink (exakte jüngste/erste Zellen)? | **Ja, eindeutig**: 4-Bit 128/8 −31 % KL (`q4lm32` 0,01183→0,00815), 512/8 −49 %, je 8/8 Segmente; ≤3-Bit 128/8 −51 % (8/8). Mit **`R = 64` (OSCAR-Knie 256/64) erreichen beide Basen `int8`-Niveau** (ns), die 3-Bit-Basis als billigster Punkt: 0,00702 bei ≈5,9 gegen 8,25 Bit (−29 %). **Sink (`R`) ist ein eigener Hebel**: R 8→128 bei festem S = 512 bringt +0,0020…0,0026 KL zurück (8/8 bzw. 7/8) | §7.13, §7.15, §7.16 |
+
+Die positiv entschiedenen Achsen sind das **Codebook** (schließt die `q4_0`-Lücke **bei unveränderten Bytes**;
+`q4_0` bleibt 4,5 bit/Wert) und — seit §7.13/§7.15/§7.16 — das **Fenster** (eindeutig bei 4 Bit und bei ≤3 Bit;
+mit Knie-Fenster erreichen **beide** Basen `int8`-Niveau, die 3-Bit-Basis am billigsten). Alle weiterführenden
+Achsen stehen bislang bei Negativbefund oder Gleichstand; das Layout-Produkt (WP-2) ist damit noch nicht begründet.
+
+### 11.3 Das Feld, seit dem Survey (2026-10-14) — neu gelesen
+
+Vier Arbeiten, die im Survey noch nicht stehen:
+
+- **SAW-INT4** (arXiv:2604.19157, 2026-04). Untersucht genau, was unter Serving-Randbedingungen (paged layout,
+  fused attention) noch trägt: **token-weises INT4 + blockdiagonale Hadamard-Rotation** ist der beste
+  Genauigkeit/Effizienz-Punkt; Vektor- und Hessian-Quantisierung bringen „nur marginale Zusatzgewinne, sobald
+  Serving-Kompatibilität zählt". Fused rotation+quant ohne meßbaren End-zu-End-Overhead. **Deckt sich mit unserem
+  4-Bit-Befund** (Codebook/Hadamard schlägt Kalibrierung) und **stützt WP-3 als Vergleichsarm**, nicht als
+  Hauptlinie.
+- **UltraQuant** (arXiv:2606.20474, 2026-06). 4-Bit-KV für agentische Kontexte; Entwurfsentscheidungen:
+  **asymmetrische K/V-Behandlung, Walsh-Hadamard, QJL-Entfernung, Block-Skalen-Varianten**; FP8-KV als starker
+  Deployment-Maßstab (~2×, nahezu verlustfrei); warnt, daß ein **Codebook Lookup-/Irregular-Access-Kosten**
+  einführt. **Fast deckungsgleich mit unserem §9/§10** — bestätigt den `kQ4lMap`-Vorbehalt und reiht int8/FP8 als
+  Default-Maßstab ein.
+- **KVarN** (arXiv:2606.03458, 2026-06). **Kalibrierungsfreie** KV-Quantisierung: Hadamard plus duale
+  Varianz-Normalisierung über **beide** Achsen (Token und Kanal), **2 Bit**, vLLM-Implementierung. Berührt §10
+  („kein 2-Bit") und §5.5 (V-Behandlung) — auf unserer 256er-Kopfgeometrie mit QK-Norm **ungeprüft**.
+- **Kitty** (arXiv:2511.18643, 2025-11). 2-Bit mit **per-Kanal-Precision-Boost** (Top-~12 % der K-Kanäle auf 4 Bit)
+  und festem Dreiregionen-Layout (S Sink FP16, 2-Bit-Body, R Recent FP16). Kanal-Mischprecision ist ein WP-5-naher
+  Hebel, den wir nicht messen; das Fenster ist dort wieder unverzichtbar.
+
+Unverändert als Kontext: **KIVI** (2402.02750, K per-Kanal / V per-Token / fp16-Fenster R≤128 — Grund der
+Fenster-Priorisierung), **FlatQuant** (2410.09426, Tab. 11: K4V3 near-lossless, QA −0,08 — die **einzige** Evidenz,
+auf der die WP-2-Form jetzt noch ruht, §9), **OSCAR** (2605.17757, Clip-Schwellen 0,96/0,92 für unrotierte
+K-Kanäle) und QuaRot/KVQuant als Rotations-/Per-Kanal-Kontext.
+
+### 11.4 Bewertung
+
+**Stärken.**
+
+1. **Die Methodik ist überdurchschnittlich.** Gepaarte KL statt PPL als Entscheidungsmaß, exakter McNemar,
+   Power-Regel (§8.6), selbst-diagnostizierende Anker (KL reproduziert auf 4–5 Stellen), ehrliche BPE-Bilanz,
+   opt-in/default-neutral per Konstruktion. Der Beleg ist §9: die eigene Q2_0-Richtung wurde auf Swift
+   **falsifiziert** und der Plan angepaßt, nicht die Messung.
+2. **Die Achsen-Priorisierung deckt sich mit dem Feld.** Tail (Fenster) und Clipping vor dem Layout, Kalibrierung
+   nur als Vergleich — SAW-INT4 stützt genau diese Reihenfolge.
+3. **Ein auslieferbares Ergebnis.** `q4lm32s` schließt die `q4_0`-Lücke bei gleichen Bytes (§7.4); datenblind,
+   default-neutral, ohne Kalibrierung.
+
+**Schwächen und Risiken.**
+
+1. **Kein Byte gespart.** `q4_0` bleibt 4,5 bit/Wert; die Gewinne sind verlustfrei, aber nicht komprimierend. Das
+   Produkt entsteht erst in WP-2 (echtes K4/V3-Layout). Bis dahin ist die Kette eine Qualitäts-Übung.
+2. **Der Layout-Träger ist nicht eingelöst.** WP-2 soll auf der K-vs-V-Zuteilung ruhen, die unser eigenes Swift-Set
+   gerade verworfen hat (§9); sie ruht jetzt auf fremder Evidenz (FlatQuant Tab. 11). Ohne cwe-4k-Power oder
+   McNemar-primär baut WP-2 auf einem nicht gezeigten Effekt.
+3. **Serving-Reife ist halb gemessen.** §7.17 füllt die Speed-Lücke: 8 Arme × 3 Runden auf Swift, 16K-Kontext —
+   das Format ist im Decode **frei** (Spanne ±6 %, `int8` führt), und der Fenster-Überbau ist im Decode nicht
+   sichtbar. Ungemessen bleibt die Auslieferungsform: der A/B lief im **Proben-Überbau** (fp16-Zwilling jeder
+   Zelle, R1/R2), und `kQ4lMap` liegt noch in `__constant__` (Worst Case, §7.10). Kein Tensor-Core-Prefill
+   (Prefill läuft über den Decode-Kernel), Prefill-KV wird mitquantisiert (Feldstandard ist decode-only), und
+   der Fenster-Pool ist teuer und streamt nicht (§7.17: 24 KiB je Kontextzelle, 64K ≈ 1,5 GiB, unabhängig von
+   `--kv-resident`). SAW-INT4/UltraQuant gewinnen genau hier.
+4. **„3 Bit tot" ist eine Frage des Byte-Budgets — und der Sink-Tiefe.** Die Sonde hatte kein Fenster/Sink (§5.4);
+   §7.13 zeigt bei 4 Bit, daß das Fenster 31 % (128/8) bzw. die Hälfte (512/8) der KL zurückholt (je 8/8, Knie
+   S ≈ 512). §7.15 mißt denselben Arm bei ≤3 Bit: das Fenster trägt genauso (128/8 −51 %, 8/8). §7.16 löst die
+   beiden dort offenen Arme ein (OSCAR-Knie `R = 64`, Sink-Paar 512/128, auf beiden Basen): **mit Fenster sind beide
+   Basen von `int8` nicht zu trennen**, und die 3-Bit-Basis ist der billigste `int8`-nahe Punkt — `q4lm8v`+w
+   (256/64) liegt bei 0,00702 und ≈5,9 Bit gegen `int8`s 8,25 (t −1,92, ns). Pro Byte verliert die 3-Bit-Basis in
+   keiner der fünf gemessenen Formen meßbar (`|t| ≤ 1,50`); nominell führt die 4-Bit-Basis in 4 von 5 Formen, aber
+   die Differenz (≤0,0022) ist ns und von derselben Größe wie der S/R-Formeffekt. Das §7.15-Cross-Over (≈4,8–5,3 Bit)
+   ist damit ein Artefakt des zu knappen `R = 8`. „Tot" gilt also ohne Fenster, nicht als Byte-Aussage. `int8`
+   bleibt die absolute Qualitätsdecke.
+5. **Der Clipping-Negativbefund gilt nur post-Rotation.** Das Feld clippt pre-Rotation/per-Kanal (OSCAR,
+   FlatQuant); dieser Arm ist bewußt nicht gebaut (§5.5) — „Clipping ist tot" ist entsprechend eng zu lesen.
+
+### 11.5 Empfehlungen (ohne Planänderung)
+
+1. **≤3 Bit × Fenster — erledigt (§7.15), entschieden (§7.16).** Mit `R = 64` erreichen beide Basen `int8`-Niveau,
+   die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit; die verbleibende Format-Differenz ist ns. Damit entscheidet nicht mehr
+   das Format, sondern die **Fensterform**: `R` ist ein eigener Hebel (R 8 → 128 bei festem S = 512 bringt
+   +0,0020…0,0026 KL zurück, richtungskonstant über 7–8 von 8 Segmenten). **Arbeitspunkt ab hier:
+   Fenster `S/R = 256/64` auf der 3-Bit-Basis `q4lm8v`** (≈5,9 Bit, KL 0,00702, von `int8` nicht zu trennen) —
+   das ist der billigste Punkt, der `int8`-Niveau erreicht; 128/8 (≈4,8 Bit) bleibt meßbar darüber. Wichtiger als
+   beides wäre ein **längerer Kontext** (der Fenster-Anteil sinkt mit L, das Byte-Bild kann wandern — bei
+   2K gemessen).
+2. **K-vs-V-Power vor WP-2 einlösen** — cwe-4k oder McNemar-primär (§8.6) —, sonst nagelt WP-2 eine Zuteilung
+   fest, die unser Setting nicht zeigt.
+3. **Speed-A/B gelaufen (§7.17), `kQ4lMap`→Shared-Memory offen.** Die KV-Arm-Liste (fp16/int8/q4lm32/q4lm32w/
+   q4lm32c/q4lm8v ± Fenster) ist auf Swift bei 16K gefahren: das Format ist im Decode **frei** (±6 %, `int8`
+   führt), der Fenster-Überbau unsichtbar. Offen bleibt die **Auslieferungsform** (der Lauf war der
+   Proben-Überbau, s. §7.17) und `kQ4lMap`→Shared-Memory (§7.10) — Serving ist das Wettbewerbsfeld.
+4. **`q4lm32s` als eigenen opt-in-Default-Kandidaten prüfen** (Identitäts-Gate + Speed-A/B, §8.1/§8.3) — der
+   billigste echte Nutzen, unabhängig von WP-2/3.
+5. **Decode-only-Arm erwägen** (Prefill-Pfad für das Format), weil das der auslieferbare Zustand wäre und unsere
+   absoluten Lücken sonst nicht mit Feldzahlen vergleichbar sind (§8.7).
+6. **KVarN/Kitty als Vergleich lesen** (kalibrierungsfreies 2-Bit, Kanal-Mischprecision), bevor „kein 2-Bit" in §10
+   endgültig verriegelt ist.
+
+Das Addendum ändert keinen Beschluß in §7.6/§8/§10; es hält fest, wo der Plan gegen den Stand vom 2026-10-16 steht.
+
+## 12. Glossar
+
+Die Begriffe so, wie dieses Dokument sie gebraucht — mit Zahlenbeispielen aus den Läufen oben. **Fremdnamen
+(Papiere) sind als solche gekennzeichnet**; alle Zahlen ohne Fremdnamen sind Strata-Messungen mit dem genannten
+Modell/Set.
+
+### 12.1 Messgrößen und Statistik
+
+- **Position:** eine vorhergesagte Token-Stelle im Testset, an der beide Arme verglichen werden. cwe-2k hat 16.351.
+- **KL (mean KL):** mittlere Kullback-Leibler-Divergenz zwischen der fp16-Referenzverteilung und der Verteilung des
+  quantisierten Armes, über alle Positionen (in nat; 0 = identisch). **Kleiner ist besser.** Der
+  **Entscheidungsleser** für Format-Rangfolgen (§8.7).
+- **KL p99:** das 99-%-Perzentil der Positions-KL — der **Tail**. Ein guter Mittelwert kann einen fetten Fehler-Tail
+  verbergen; p99 sagt, wie schlimm die schlimmsten Positionen sind.
+- **ΔKL (delta-KL):** die KL-**Differenz** zweier Arme, gepaart berechnet. Vorzeichen: **linker Arm minus rechter**
+  — positiv = linker Arm hat höhere KL (schlechter).
+- **gepaart (paired):** beide Arme durchlaufen dieselben Segmente/Positionen; verglichen wird die Differenz **je
+  Segment**, dann über die Segmente gemittelt. Der Text kürzt sich heraus → viel kleinere Streuung als beim Vergleich
+  zweier unabhängiger Mittelwerte.
+- **sd / sem:** sd = Standardabweichung der 8 Segment-Differenzen; sem = sd/√n = ihr Standardfehler (n = Segmente).
+- **t:** die t-Statistik = ΔKL / sem. Grob: |t| ≳ 2,4 ≈ p < 0,05 zweiseitig bei 8 Segmenten (df = 7), |t| ≳ 3,5 ≈
+  p < 0,01. t **allein** genügt nicht — gelesen wird t **und** „x/8 Segmente".
+- **Segment(e) (n):** das Testset zerfällt in **8 zusammenhängende Textblöcke** (~2.048 Tokens). „gepaart über die 8
+  Segmente" = diese 8 sind das n der Statistik.
+- **„x/8 Segmente up":** in wie vielen der 8 Segmente die Differenz das erwartete Vorzeichen hat. 8/8 = alle gleich
+  gerichtet (robust); 4/8 = Münzwurf (nicht belastbar, egal wie groß t).
+- **top-1:** Anteil der Positionen, an denen der quantisierte Arm dieselbe Top-1-Token wählt wie fp16 — grobes
+  Zustimmungs-Maß.
+- **PPL (Perplexität):** exp(mittlere negative Log-Likelihood). **Vorsicht:** der KV-Fehler **dämpft**; PPL fällt oft
+  *unter* fp16 (2,992 < 2,999), ohne besser zu sein. Deshalb ist **KL** der Entscheidungsleser, PPL nur Kontext.
+- **McNemar:** gepaarter Test auf binäre Antwortrichtigkeit (wie oft A richtig / B falsch, und umgekehrt) — primär
+  für die K-gegen-V-Frage (§8.7).
+- **Power:** die Fähigkeit, einen Effekt gegebener Größe zu zeigen. Ein Effekt der Sondengröße (t ≈ 0,6 bei n = 8)
+  braucht ~87 Segmente für t = 2,0; sonst ist „Richtung ohne Power" kein Urteil (§8.6).
+
+### 12.2 Formate und Quantisierungsnotation
+
+Das `--kv`-Argument (auch die Formatspalte in den TSVs):
+
+| Name | Was | Pegel K/V | Pegel-Bits Ø | gespeichert |
+| --- | --- | ---: | ---: | ---: |
+| `fp16` | Referenz, kein Verlust | – | 16 | 16 |
+| `int8` | 8-Bit-Ganzzahl + Skala (Default-Maßstab) | – | 8 | ≈8,25 |
+| `q4_0` | ggml-Block, 32 Werte je 18-B-Block | – | 4 | 4,5 |
+| `q4lm32` | 4-Bit-**Max-Lloyd**-16-Pegel-Codebook, gleiche 18-B-Blöcke | 16/16 | 4,0 | 4,5 |
+| `q4lm32s` | wie `q4lm32`, Skala per **einem Least-Squares-Schritt** statt `max\|x\|/87` | 16/16 | 4,0 | 4,5 |
+| `q4lm8` | 8-Pegel-Codebook, beide Seiten | 8/8 | 3,0 | 3,5 |
+| `q4lm8k` | 8-Pegel K / 16-Pegel V | 8/16 | 3,5 | 4,0 |
+| `q4lm8v` | 16-Pegel K / 8-Pegel V („V-seitig gespart") | 16/8 | 3,5 | 4,0 |
+| `q4lm32t` | 4-Bit, V mit **RMS-Skala** statt max (Behandlung) | 16/16 | 4,0 | 4,5 |
+| `q4lm32nr` | 4-Bit, **No-Rotation** (Hadamard aus) | 16/16 | 4,0 | 4,5 |
+| `q4lm32c` | 4-Bit, **Clipping**-Skala aus κ-Quantil | 16/16 | 4,0 | 4,5 |
+| `q4lm32w` / `STRATA_KV_WINDOW=1` | 4-Bit **+ Fenster** (§12.3) | 16/16 | 4,0 | 4,5 |
+| `k8v4` | Altformat K 8-Bit / V 4-Bit | – | – | – |
+
+- **Pegel-Bits vs. gespeicherte Bits:** Pegel-Bits = log2(Pegelzahl) je Wert; gespeichert kommt der **Metadaten-Overhead**
+  dazu (beim 18-B-Block 0,5 Bit/Wert: 16 B Payload + 2 B Skala für 32 Werte). Für die Byte-Bilanz zählt nur die
+  **gespeicherte** Zahl — so ist §7.13 gebaut, und so ist die Bit/Wert-Spalte hier gebildet.
+- **Rotation / Block:** der KV-Vektor wird vor dem Quantisieren mit einer **FWHT** (schnelle Walsh-Hadamard-Transformation)
+  rotiert; quantisiert wird blockweise (18 B). `q4lm32nr` schaltet die Rotation ab.
+- **Codebook:** die festen Stützwerte, auf die gerundet wird; `q4lm32` nutzt Max-Lloyds 16-Pegel-Tabelle für N(0,1),
+  `q4lm8*` die 8-Pegel-Tabelle (`{±69, ±43, ±24, ±8}`). Kein Training, datenblind.
+
+### 12.3 Fenster (window / sink)
+
+- **Fenster / Sink:** die **jüngsten** Zellen (recent) und die **ersten** Zellen (sink) werden **exakt (fp16)**
+  gehalten, der Rest bleibt quantisiert. Motiv: Attention konzentriert sich stark auf die ersten Token und die
+  jüngsten.
+- **Notation `S / R`** (z. B. `128 / 8`): **S = Zahl der exakten jüngsten Zellen**, **R = Zahl der exakten ersten
+  (Sink-)Zellen**. **`0 / 0` = Fenster aus** (Identitäts-Nullpunkt). Herkunft der Buchstaben: `win_s` = recent,
+  `win_r` = sink (`qsa_decode_attn.hpp`). **Achtung Notation:** §5.6 schrieb noch `N` (jüngste) und `S` (Sink) —
+  dasselbe, andere Buchstaben.
+- **Arm-Namen in den TSVs** (z. B. `8vw-s128-r8`): `8v` = `q4lm8v`, `w` = mit Fenster, `s128` = S, `r8` = R.
+  `win-s512-r8` = Fenster auf dem 4-Bit-Arm, S = 512 / R = 8; `32w-s256-r64` = `q4lm32w`, S = 256 / R = 64.
+- **Knie (knee):** das S, ab dem ein größeres Fenster nichts mehr bringt. Im `R = 8`-Gitter liegt es bei beiden
+  Basen bei S ≈ 512; mit `R = 64` wird es zwischen 256/64 und 512/128 flach (§7.16).
+- **OSCAR-Knie:** der in der OSCAR-Arbeit gute Punkt R = 64 (Sink) / S = 256 (recent) — hier als Sink-Punkt
+  nachgemessen (§7.16: 0,00702 auf `q4lm8v`, 0,00782 auf `q4lm32w`, beide `int8`-nah).
+- **Seitenpool / `max_cells`:** die **Probe** hält einen fp16-Zwilling des **ganzen** Kontexts (`qsa_win_bytes` über
+  `max_cells`); der Leser bedient daraus nur das Fenster. Alle Arme haben so dieselbe Fußspur — die Messung isoliert
+  die **Lesepolitik**, nicht die Auslieferungsbytes. Größe (§7.17, gemessen): `max_cells × n_head_kv × head_dim × 4 B`
+  je Layer = 2.048 B/Zelle, bei **12** QSA-Layern dieses Modells (`qsa_interval = 4`) also **24 KiB je Kontextzelle**
+  über alle Layer (16K ≈ 384 MiB, 64K ≈ 1,5 GiB). Der Pool folgt `max_context`, **nicht** dem Resident-Set —
+  `--kv-resident` verkleinert ihn nicht.
+
+### 12.4 Bytes / BPE
+
+- **Bit/Wert (Auslieferung, Modell):** `Basis + (16 − Basis)·(S+R)/L`, wobei `Basis` die **gespeicherten** Bits des
+  Formats und **L** die mittlere Zahl gescorter Zellen je Sequenz ist (cwe-2k: L ≈ 2044 = 16.351 / 8). Das ist eine
+  **Rechnung, keine Messung** — die Probe-Bytes sind für alle Arme gleich.
+- **BPE (bits per element):** „ehrliche BPE-Bilanz" = Payload + Skalen-/Nullpunkt-Metadaten + Fensterbytes bei
+  **genannter** Kontextlänge (§8.5).
+- **Cross-Over:** der Byte-Bereich, in dem zwei Basen (hier ≤3 Bit vs. 4 Bit) die Führung **pro Byte** tauschen.
+  §7.15 fand ≈4,8–5,3 Bit **im `R = 8`-Gitter**; §7.16 findet mit `R = 64` **keine** meßbare Führung mehr — die
+  Format-Differenz (≤0,0022, immer ns) ist kleiner als der S/R-Formeffekt, ein scharfes Cross-Over läßt sich mit
+  8 Segmenten nicht mehr angeben.
+
+### 12.5 Läufe, Harness, Namen
+
+- **cwe-2k / cwe-4k:** das feste Testset (RULER „complex word extraction"), 8 Segmente à ~2K (bzw. 4K) Tokens;
+  cwe-2k = 16.351 Positionen.
+- **Harness (`tools/quant_quality.py`):** `run` fährt **einen** Arm (Engine headless, `--kv FMT`, `--env K=V`);
+  `compare` bildet die KL-/Paired-Tabellen. Die Läufe **ersetzen** `--kv`/`--kv-resident` der Config durch das Flag.
+- **Identitäts-Nullpunkt / Default-Neutralität:** der Arm mit „aus" (z. B. Fenster S = R = 0) muss **byte-gleich**
+  zum Basisarm sein (SHA256 der TSV), und die Anker (`fp16`/`int8`/…) müssen frühere Läufe reproduzieren. Ein neues
+  opt-in-Verhalten ist per Konstruktion default-neutral — das **zeigen**, nicht behaupten.
+- **Scoring (fester Text) / Prefill:** der Harness gibt dem Modell den Referenztext vor und liest die Logprobs
+  (keine freie Generierung); **Prefill-KV wird mitquantisiert** (Feldstandard ist decode-only) — interne Vergleiche
+  bleiben gültig, absolute Lücken sind **nicht** mit Feldzahlen vergleichbar (§8.7).
+- **Parität (`kv_q4_parity`):** bit-genaue Kernel-Tests gegen Host-Referenzen (12/12 grün).
+- **Speed-A/B (`tools/ab_engine.py`):** ein frischer Server je Arm, Runden alternierend; jede Runde wärmt mit einer
+  kurzen Antwort, dann dieselben Anfragen. Gelesen wird die Engine-eigene Zahl `predicted_per_second` (Decode) und
+  `prompt_per_second` (Prefill) — **nicht** PPL. Das Überbaute (fp16-Zwilling, Extra-Launch) macht die Zahl der
+  Fenster-Arme zu einer **Obergrenze**, nicht zur Auslieferungszahl (§7.17).
+
+### 12.6 Fremdnamen (Papiere — nicht unsere Messungen)
+
+- **KIVI** (2402.02750): K pro Kanal, V pro Token, fp16-Fenster (recent R ≤ 128) — Grund der Fenster-Priorisierung.
+- **OSCAR** (2605.17757): Clip-Schwellen 0,96/0,92 für **unrotierte** K-Kanäle; Tab. 5 Knie (64, 256).
+- **FlatQuant** (2410.09426): Tab. 11 K4V3 „near-lossless" — die einzige fremde Evidenz unter WP-2.
+- **SAW-INT4** (2604.19157), **UltraQuant** (2606.20474): 4-Bit-KV unter Serving-Bedingungen (paged/fused).
+- **KVarN** (2606.03458), **Kitty** (2511.18643): kalibrierungsfreies 2-Bit bzw. Kanal-Mischprecision.

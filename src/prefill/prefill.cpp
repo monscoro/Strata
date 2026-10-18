@@ -1538,6 +1538,10 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
         if (st.kv_q4) {
             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host, nullptr,
                                           st.kv_q4_mode);
+            // WP-2a window twin (the drafter's own state never carries win pools - guard skips; kept uniform).
+            if (st.k_win != nullptr)
+                strata::kernels::kv_append_win(st.k_win, st.v_win, c0, nb, Kc, Vc, (int) s.n_head_kv,
+                                               (int) s.head_dim, m.cs, st.max_cells);
         } else {
             kv_append(Kc, Vc, nb, c0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs, &st.host);
@@ -2770,10 +2774,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
                             strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
                         }
-                        if (st.kv_q4)
+                        if (st.kv_q4) {
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
                                                           host_w, staged ? &m.stage : nullptr, st.kv_q4_mode);
-                        else
+                            // WP-2a window: the exact fp16 twin (rotated, like the q4 blocks above).
+                            if (st.k_win != nullptr)
+                                strata::kernels::kv_append_win(st.k_win, st.v_win, p0, T, m.Kc, m.Vc,
+                                                               (int) s.n_head_kv, (int) s.head_dim, m.cs,
+                                                               st.max_cells);
+                        } else
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
                                       host_w, staged ? &m.stage : nullptr);
@@ -2912,8 +2921,23 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                         }
                     }
-                    const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table)
-                                                                       : core::qsa_attn_pools(st);
+                    strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table)
+                                                                      : core::qsa_attn_pools(st);
+                    if (staged) {
+                        // Staged pools_of() carries only the byte pools; everything the non-staged qsa_attn_pools()
+                        // would add must be overlaid here, or a streamed chunk silently reads the q4 blocks as a
+                        // uniform grid: the writer's level table (WP-1a) and the WP-2a window side pool. Without
+                        // q4_mode the decode kernel also picks kv_mode 2, whose WinRows is empty - the window's
+                        // exact cells would then be read quantized. (The side pool is never staged - always
+                        // resident, flat by cell. The horizon comes from step[kStepNKv] in-kernel, as everywhere.)
+                        pools.q4_mode = st.kv_q4_mode;
+                        if (st.k_win != nullptr && st.v_win != nullptr) {
+                            pools.k_win = st.k_win;
+                            pools.v_win = st.v_win;
+                            pools.win_s = core::qsa_kv_win_s();
+                            pools.win_r = core::qsa_kv_win_r();
+                        }
+                    }
                     pt.mark(kPfQsaAttn, cs);
                     // perf-review D-1: the whole chunk on tensor cores, one block per (query, KV head), FP32-level
                     // accuracy but not bitwise (qsa_prompt_attn.hpp). Q4_0 KV, or STRATA_PROMPT_ATTN_OLD=1: the

@@ -106,6 +106,14 @@ enum class Q4Mode : int {
     // set by qsa_set_kv_clip, default 0.94, grid via STRATA_KV_CLIP_K/_V): OSCAR clips K less than V. kappa = 1
     // is exactly kLloyd (quantile index 31 is the maximum), which is the arm's built-in identity check.
     kLloydClip = 8,  ///< `--kv q4lm32c`: 16 levels, d = quantile(|x|, kappa)/87 per tensor (clipping arm)
+    // WP-2a window (workpackage section 5.6): kLloyd's writer, but the first R (sink) and the most recent S
+    // cells read exact fp16 from a side pool instead of 4-bit. S/R come from STRATA_KV_WINDOW_S/_R (defaults
+    // 128/8); S + R = 0 is exactly kLloyd (the arm's identity check). The side pool is always resident -
+    // streaming moves only the quantized blocks - and snapshots refuse windowed states (measurement never
+    // resumes; a silent exactness loss on resume would be worse than an error). The overlay is orthogonal to
+    // the level table, so `STRATA_KV_WINDOW=1` turns the same window on for any other q4 mode (`--kv q4lm8v`
+    // + the env is the WP-2b <=3-bit arm); this mode is that overlay on kLloyd.
+    kLloydWin = 9,  ///< `--kv q4lm32w`: kLloyd's blocks with an exact fp16 window (window arm)
 };
 
 /// True for every level-table mode. A *reader* (gather, fused attention, a block move) only has to know the table,
@@ -168,8 +176,24 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
 
 /// Gather step[kStepWidth] cells named by `ids` into FP16 scratch [id][kv_head][head_dim] (still rotated). Both
 /// level-table modes read alike (see q4_lloyd), so a mode here only decides table or uniform grid.
+/// The trailing window params (default off) serve WP-2a's exact fp16 side pool instead of 4-bit for sink and
+/// recent cells, with the horizon from step[kStepNKv] in-kernel; existing callers (parity) compile unchanged.
 void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* page_table, const int32_t* ids,
                        const int32_t* step, int64_t max_ids, const QsaShapes& s, uint16_t* k_scratch,
-                       uint16_t* v_scratch, void* stream, Q4Mode mode = Q4Mode::kUniform);
+                       uint16_t* v_scratch, void* stream, Q4Mode mode = Q4Mode::kUniform,
+                       const uint16_t* k_win = nullptr, const uint16_t* v_win = nullptr, int win_s = 0,
+                       int win_r = 0);
+
+/// WP-2a window side pool (kLloydWin): the exact fp16 twin of every appended cell, flat [(cell, kv_head,
+/// head_dim)] per tensor. Steps variant (positions from the step array, like kv_append_q4_steps) and contiguous
+/// batch variant (pos0/T, like kv_append_q4) - called with the same rotated K/V as the q4 append, next to it.
+/// `win_cells` is the pool's capacity in cells (the state's `max_cells`): the batch variant checks pos0/T against
+/// it loudly (host-known), the steps variant drops an out-of-range store inside the kernel (the position is
+/// device-fresh, K3), and a geometry the grid cannot cover fails loudly in both.
+void kv_append_win_steps(uint16_t* k_win, uint16_t* v_win, const int32_t* step, int step_stride, int n_steps,
+                         const float* kcur, const float* vcur, int n_head_kv, int head_dim, void* stream,
+                         int64_t win_cells);
+void kv_append_win(uint16_t* k_win, uint16_t* v_win, int64_t pos0, int64_t T, const float* K, const float* V,
+                   int n_head_kv, int head_dim, void* stream, int64_t win_cells);
 
 }  // namespace strata::kernels

@@ -49,6 +49,22 @@ __device__ __forceinline__ void load8_f16(const QsaAttnPools& p, bool value, lon
         out[2 * j + 1] = f.y;
     }
 }
+// WP-2a window: 8 dims straight from the exact fp16 side pool (flat row wrow, same half2 unpack as above).
+// Called instead of load8_q4 when swin[c] >= 0; never for any other mode (swin is -1 there).
+// The uint4 load assumes the side pool's base (device allocation, >=256 B) and wrow * HD + d0 stay 16-byte
+// aligned: HD (=256) and every caller's d0 (l * 8 / lane * 8) are multiples of 8 uint16. Same assumption as
+// load8_f16; the side pool must be allocated like a KV pool, not at an odd offset.
+__device__ __forceinline__ void load8_win(const QsaAttnPools& p, bool value, long long wrow, int d0, float* out) {
+    const uint16_t* base = (value ? p.v_win : p.k_win) + wrow * HD + d0;
+    const uint4 raw = *reinterpret_cast<const uint4*>(base);
+    const __half2* h2 = reinterpret_cast<const __half2*>(&raw);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const float2 f = __half22float2(h2[j]);
+        out[2 * j] = f.x;
+        out[2 * j + 1] = f.y;
+    }
+}
 __device__ __forceinline__ void load8_q8(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
     const int8_t* codes = (value ? p.v_q : p.k_q) + row * HD + d0;
     const uint16_t sbits = (value ? p.v_scale : p.k_scale)[row * (HD / KV_Q8_GROUP) + d0 / KV_Q8_GROUP];
@@ -129,6 +145,25 @@ __device__ __forceinline__ int reduce12_head_of_lane(int lane) {
     return ((lane >> 4) & 1) * 8 + ((lane >> 3) & 1) * 4 + ((lane >> 2) & 1) * 2 + ((lane >> 1) & 1);
 }
 
+// WP-2a window: the flat side-pool row of each cell, or -1. Only the q4-Lloyd instantiation (KV_MODE 4) reads a
+// window; every other instantiation is empty, so its shared-memory footprint is exactly the pre-window kernel's
+// and its reads fold to the constant -1.
+// That is this *kernel's* rule, and since K1 the host matches it: `qsa_win_wanted()` (layer.cpp) attaches a pool
+// only for a q4-**Lloyd** state, and `qsa_set_kv_q4_mode` refuses `STRATA_KV_WINDOW=1` on a plain q4_0 arm (which
+// maps to kv_mode 2 and would have been read by the q4 gather but silently ignored here). No arm gets a pool that
+// this kernel does not read.
+template <int KV_MODE, bool WIN = (KV_MODE == 4)>
+struct WinRows {
+    long long row[CHUNK];
+    __device__ __forceinline__ long long operator[](int c) const { return row[c]; }
+    __device__ __forceinline__ void set(int c, long long v) { row[c] = v; }
+};
+template <int KV_MODE>
+struct WinRows<KV_MODE, false> {
+    __device__ __forceinline__ long long operator[](int) const { return -1LL; }
+    __device__ __forceinline__ void set(int, long long) {}
+};
+
 template <int KV_MODE, bool LANE_CELL = false, bool QUERY_SWIZZLE = false, bool REDUCE12 = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
@@ -146,6 +181,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads
     __shared__ float sp[G][CHUNK];                // scores, then probabilities
     __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
+    __shared__ WinRows<KV_MODE> swin;             // WP-2a window: flat side-pool row, or -1 (see qsa_win_cell)
     const int n_ids = __ldg(step + kStepWidth);
     const int chunk = blockIdx.x, kvh = blockIdx.y;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
@@ -166,15 +202,22 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         sq[i / HD][sd] = q[(size_t) (kvh * G) * HD + i];
     }
     if (t < CHUNK) {
-        long long r = -1;
+        long long r = -1, w = -1;
         if (t < n_here) {
             const int cell = ids[c0 + t];
             const long long page = (long long) p.page_table[cell / page_size];
             // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
             // (score -FLT_MAX, weight 0) instead of being read from before the pool.
             if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            // WP-2a window: the horizon is step[kStepNKv] (pos + 1, device-fresh and graph-safe - qsa_step_fill
+            // derives all four step entries from one position). The side pool is always resident, so a windowed
+            // cell reads exact even when its quantized block is not. w is -1 whenever the window is off.
+            if (qsa_win_on(p) &&
+                qsa_win_cell(p, (long long) cell, (long long) __ldg(step + kStepNKv)))
+                w = (long long) cell * n_kv_heads + kvh;
         }
         srow[t] = r;
+        swin.set(t, w);
     }
     __syncthreads();
     if constexpr (LANE_CELL) {
@@ -184,7 +227,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         // reductions per cell
         constexpr int HPT = G * CHUNK / THREADS;   // heads per thread (3)
         const int c = t % CHUNK, h0 = (t / CHUNK) * HPT;
-        if (c >= n_here || srow[c] < 0) {
+        if (c >= n_here || (srow[c] < 0 && swin[c] < 0)) {
 #pragma unroll
             for (int j = 0; j < HPT; ++j) sp[h0 + j][c] = -FLT_MAX;
         } else {
@@ -192,7 +235,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
 #pragma unroll
             for (int l = 0; l < 32; ++l) {
                 float k8[8];
-                load8<KV_MODE>(p, false, srow[c], l * 8, k8);
+                if (swin[c] >= 0) load8_win(p, false, swin[c], l * 8, k8);   // WP-2a window: exact fp16
+                else load8<KV_MODE>(p, false, srow[c], l * 8, k8);
 #pragma unroll
                 for (int j = 0; j < HPT; ++j) {
                     const float4 qa = *reinterpret_cast<const float4*>(&sq[h0 + j][l * 8]);
@@ -214,13 +258,14 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     } else
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
     for (int c = warp; c < CHUNK; c += WARPS) {
-        if (c >= n_here || srow[c] < 0) {
+        if (c >= n_here || (srow[c] < 0 && swin[c] < 0)) {
             if (lane < G) sp[lane][c] = -FLT_MAX;
             continue;
         }
         if constexpr (REDUCE12) {
         float k8[8];
-        load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        if (swin[c] >= 0) load8_win(p, false, swin[c], lane * 8, k8);   // WP-2a window: exact fp16
+        else load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
         float part[16];
 #pragma unroll
         for (int h = 0; h < G; ++h) {
@@ -238,7 +283,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         if ((lane & 1) == 0 && head < G) sp[head][c] = score * scale;
         } else {
         float k8[8];
-        load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        if (swin[c] >= 0) load8_win(p, false, swin[c], lane * 8, k8);   // WP-2a window: exact fp16
+        else load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
 #pragma unroll
         for (int h = 0; h < G; ++h) {
             const int qflip = QUERY_SWIZZLE ? (lane & 4) : 0;
@@ -256,8 +302,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
         const float m = warp_max(fmaxf(a, b));
-        const float ea = (lane < n_here && srow[lane] >= 0) ? __expf(a - m) : 0.0f;
-        const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0) ? __expf(b - m) : 0.0f;
+        const float ea = (lane < n_here && (srow[lane] >= 0 || swin[lane] >= 0)) ? __expf(a - m) : 0.0f;
+        const float eb = (lane + 32 < n_here && (srow[lane + 32] >= 0 || swin[lane + 32] >= 0)) ? __expf(b - m) : 0.0f;
         sp[h][lane] = ea;
         sp[h][lane + 32] = eb;
         const float l = warp_sum(ea + eb);
@@ -269,7 +315,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
 #pragma unroll
     for (int h = 0; h < G; ++h) acc[h] = 0.0f;
     for (int c = 0; c < n_here; ++c) {
-        if (srow[c] < 0) continue;   // masked above, weight 0
+        if (srow[c] < 0 && swin[c] < 0) continue;   // masked above, weight 0
         float v;
         if constexpr (KV_MODE == 0) {
             v = __half2float(__ushort_as_half(p.v_pool[srow[c] * HD + t]));
@@ -277,6 +323,9 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
             const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
             v = (float) p.v_q[srow[c] * HD + t] * sc;
         } else {   // modes 2, 3, 4: V is rotated Q4_0 (or q4lm32, mode 4, kv_q4.hpp); the caller rotates it back
+            if (swin[c] >= 0) {   // WP-2a window: exact fp16 (also when the quantized block is not resident)
+                v = __half2float(__ushort_as_half(p.v_win[swin[c] * HD + t]));
+            } else {
             constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
             const int b = t / QK4_0;
             const int rem = t % QK4_0;
@@ -286,6 +335,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
             const uint8_t byte = blk->qs[j];
             const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
             v = (KV_MODE == 4 ? (float) q4l_map_v(p.q4_mode)[n] : (float) (n - 8)) * d;
+            }
         }
 #pragma unroll
         for (int h = 0; h < G; ++h) acc[h] = fmaf(sp[h][c], v, acc[h]);
@@ -379,6 +429,11 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     }
 }
 
+// WP-2a window: one V dim straight from the exact fp16 side pool. Twin of the KV_MODE-0 arm of load_v1.
+__device__ __forceinline__ float load_v1_win(const QsaAttnPools& p, long long wrow, int d) {
+    return __half2float(__ushort_as_half(p.v_win[wrow * HD + d]));
+}
+
 template <int KV_MODE, int NC_ = 2, bool DPP_ = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
@@ -396,6 +451,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads (dead once the scores are done)
     __shared__ float sp[G][CHUNK];                // scores
     __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
+    __shared__ WinRows<KV_MODE> swin;             // WP-2a window: flat side-pool row, or -1
     // probabilities, cell-major: the value loop reads one cell's 12 as three float4.  They are first written after the
     // __syncthreads that ends the score phase, the last reader of sq, so they share its storage (64 x 12 of its 256 x 12
     // floats) and the block's shared memory stays what it was before the cell-major layout.
@@ -413,15 +469,22 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     }
     for (int i = t; i < G * HD; i += THREADS) sq[i / HD][i % HD] = q[(size_t) (kvh * G) * HD + i];
     if (t < CHUNK) {
-        long long r = -1;
+        long long r = -1, w = -1;
         if (t < n_here) {
             const int cell = ids[c0 + t];
             const long long page = (long long) p.page_table[cell / page_size];
             // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
             // (score -FLT_MAX, weight 0) instead of being read from before the pool.
             if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            // WP-2a window: the horizon is step[kStepNKv] (pos + 1, device-fresh and graph-safe - qsa_step_fill
+            // derives all four step entries from one position). The side pool is always resident, so a windowed
+            // cell reads exact even when its quantized block is not. w is -1 whenever the window is off.
+            if (qsa_win_on(p) &&
+                qsa_win_cell(p, (long long) cell, (long long) __ldg(step + kStepNKv)))
+                w = (long long) cell * n_kv_heads + kvh;
         }
         srow[t] = r;
+        swin.set(t, w);
     }
     __syncthreads();
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.  NC cells per step
@@ -436,12 +499,15 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
 #pragma unroll
         for (int j = 0; j < NC; ++j) {
             cc[j] = warp + WARPS * (i + j);
-            all_ok = all_ok && cc[j] < n_here && srow[cc[j]] >= 0;
+            all_ok = all_ok && cc[j] < n_here && (srow[cc[j]] >= 0 || swin[cc[j]] >= 0);
         }
         if (all_ok) {
             float kk[NC][8];
 #pragma unroll
-            for (int j = 0; j < NC; ++j) load8<KV_MODE>(p, false, srow[cc[j]], lane * 8, kk[j]);
+            for (int j = 0; j < NC; ++j) {
+                if (swin[cc[j]] >= 0) load8_win(p, false, swin[cc[j]], lane * 8, kk[j]);   // WP-2a exact fp16
+                else load8<KV_MODE>(p, false, srow[cc[j]], lane * 8, kk[j]);
+            }
             float pp[NC][16];
 #pragma unroll
             for (int h = 0; h < G; ++h) {
@@ -462,12 +528,13 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
         } else {
             for (int k = 0; k < NC; ++k) {   // a masked or out-of-range cell in the group: one cell at a time
                 const int c = cc[k];
-                if (c >= n_here || srow[c] < 0) {
+                if (c >= n_here || (srow[c] < 0 && swin[c] < 0)) {
                     if (lane < G) sp[lane][c] = -FLT_MAX;
                     continue;
                 }
                 float k8[8];
-                load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+                if (swin[c] >= 0) load8_win(p, false, swin[c], lane * 8, k8);   // WP-2a window: exact fp16
+                else load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
                 float part[16];
 #pragma unroll
                 for (int h = 0; h < G; ++h) {
@@ -488,8 +555,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
         const float m = warp_max_x<DPP_>(fmaxf(a, b));
-        const float ea = (lane < n_here && srow[lane] >= 0) ? __expf(a - m) : 0.0f;
-        const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0) ? __expf(b - m) : 0.0f;
+        const float ea = (lane < n_here && (srow[lane] >= 0 || swin[lane] >= 0)) ? __expf(a - m) : 0.0f;
+        const float eb = (lane + 32 < n_here && (srow[lane + 32] >= 0 || swin[lane + 32] >= 0)) ? __expf(b - m) : 0.0f;
         spt[lane][h] = ea;
         spt[lane + 32][h] = eb;
         const float l = warp_sum_x<DPP_>(ea + eb);
@@ -518,16 +585,18 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     for (; c + 4 <= n_here; c += 4) {
         const long long r0 = srow[c], r1 = srow[c + 1], r2 = srow[c + 2], r3 = srow[c + 3];
         if ((r0 | r1 | r2 | r3) < 0) break;
-        const float v0 = load_v1<KV_MODE>(p, r0, t), v1 = load_v1<KV_MODE>(p, r1, t);
-        const float v2 = load_v1<KV_MODE>(p, r2, t), v3 = load_v1<KV_MODE>(p, r3, t);
+        const float v0 = swin[c] >= 0 ? load_v1_win(p, swin[c], t) : load_v1<KV_MODE>(p, r0, t);
+        const float v1 = swin[c + 1] >= 0 ? load_v1_win(p, swin[c + 1], t) : load_v1<KV_MODE>(p, r1, t);
+        const float v2 = swin[c + 2] >= 0 ? load_v1_win(p, swin[c + 2], t) : load_v1<KV_MODE>(p, r2, t);
+        const float v3 = swin[c + 3] >= 0 ? load_v1_win(p, swin[c + 3], t) : load_v1<KV_MODE>(p, r3, t);
         fold(c, v0);
         fold(c + 1, v1);
         fold(c + 2, v2);
         fold(c + 3, v3);
     }
     for (; c < n_here; ++c) {
-        if (srow[c] < 0) continue;   // masked above, weight 0
-        fold(c, load_v1<KV_MODE>(p, srow[c], t));
+        if (srow[c] < 0 && swin[c] < 0) continue;   // masked above, weight 0
+        fold(c, swin[c] >= 0 ? load_v1_win(p, swin[c], t) : load_v1<KV_MODE>(p, srow[c], t));
     }
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];

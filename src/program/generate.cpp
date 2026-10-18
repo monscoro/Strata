@@ -737,6 +737,11 @@ void usage() {
                  "                       scale from the kappa-quantile of |x| instead of max|x| (outliers saturate).\n"
                  "                       Kappa per tensor via STRATA_KV_CLIP_K/_V (default 0.94, 1 is q4lm32).\n"
                  "                       Same 576 B/cell; measures what the block tails cost\n"
+                 "  --kv q4lm32w         WP-2a WINDOW (measurement only): q4lm32's blocks, but the first R (sink)\n"
+                 "                       and most recent S cells read exact fp16 from a side pool. S/R via\n"
+                 "                       STRATA_KV_WINDOW_S/_R (default 128/8, 0/0 is q4lm32). Prompt scoring uses\n"
+                 "                       the decode kernel - the tensor-core prompt kernel refuses this mode, so\n"
+                 "                       STRATA_PROMPT_ATTN_OLD=1 is not needed; no snapshots in this mode\n"
                  "  --kv q4lm8[q4lm8k|q4lm8v]  WP-2 PROBE (measurement only, not a byte layout): the same blocks\n"
                  "                       and the same 576 B/cell, with Max-Lloyd's 8-level (3-bit) table for N(0,1)\n"
                  "                       on both tensors, on K only, or on V only. Answers whether the fixed\n"
@@ -2565,15 +2570,15 @@ int main(int argc, char** argv) {
     if (o.kv == "q4") o.kv = "q4_0";
     if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "q4lm32" && o.kv != "q4lm32s" &&
         o.kv != "q4lm8" && o.kv != "q4lm8k" && o.kv != "q4lm8v" && o.kv != "q4lm32t" && o.kv != "q4lm32nr" &&
-        o.kv != "q4lm32c" && o.kv != "k8v4") {
+        o.kv != "q4lm32c" && o.kv != "q4lm32w" && o.kv != "k8v4") {
         std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, q4lm32, q4lm32s, q4lm8, q4lm8k, "
-                             "q4lm8v, q4lm32t, q4lm32nr, q4lm32c or k8v4\n");
+                             "q4lm8v, q4lm32t, q4lm32nr, q4lm32c, q4lm32w or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0" || o.kv == "q4lm32" || o.kv == "q4lm32s" ||   // PR #21: 4-bit after a Hadamard rotation
                                 o.kv == "q4lm8" || o.kv == "q4lm8k" || o.kv == "q4lm8v" || o.kv == "q4lm32t" ||
-                                o.kv == "q4lm32nr" || o.kv == "q4lm32c");
+                                o.kv == "q4lm32nr" || o.kv == "q4lm32c" || o.kv == "q4lm32w");
     // `--kv q4lm32` / `q4lm32s`: the same 4-bit blocks with Max-Lloyd's levels instead of ggml's uniform grid,
     // and either max|x|/87 or the block's own least-squares scale (kv_q4.hpp, Q4Mode).  `--kv q4lm8*` is the WP-2
     // probe: the same blocks and bytes with the 8-level (3-bit) table on K and V / K only / V only - a quality
@@ -2586,6 +2591,7 @@ int main(int argc, char** argv) {
                                      : o.kv == "q4lm32t" ? strata::kernels::Q4Mode::kLloydVrms
                                      : o.kv == "q4lm32nr" ? strata::kernels::Q4Mode::kLloydNoRot
                                      : o.kv == "q4lm32c" ? strata::kernels::Q4Mode::kLloydClip
+                                     : o.kv == "q4lm32w" ? strata::kernels::Q4Mode::kLloydWin
                                      : o.kv == "q4lm8"  ? strata::kernels::Q4Mode::kLloyd8
                                      : o.kv == "q4lm8k" ? strata::kernels::Q4Mode::kLloyd8K
                                      : o.kv == "q4lm8v" ? strata::kernels::Q4Mode::kLloyd8V

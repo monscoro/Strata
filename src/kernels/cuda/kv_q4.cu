@@ -305,7 +305,9 @@ template <int NK, int NV>
 __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint8_t* __restrict__ v_q4,
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ ids,
                                     const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
-                                    uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch) {
+                                    uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch,
+                                    const uint16_t* __restrict__ k_win, const uint16_t* __restrict__ v_win,
+                                    int win_s, int win_r) {
     const long long n_ids = (long long) __ldg(step + kStepWidth);
     const int blocks_per_head = head_dim / QK4_0;                        // 8
     const int bytes_per_head = blocks_per_head * sizeof(block_q4_0);    // 144
@@ -324,6 +326,20 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
     const long long page = (long long) table[cell / page_size];
     const long long row = (page * kv_heads + h) * page_size + (cell % page_size);
 
+    const long long dst_offset = ((id * kv_heads + h) * head_dim) + (b * QK4_0 + t);
+    // WP-2a window: exact fp16 from the always-resident side pool (flat row, no paging) - also when the
+    // quantized block is not resident. The horizon is step[kStepNKv] (device-fresh, graph-safe). Null pools
+    // (every other mode) skip this uniformly.
+    if (k_win != nullptr && v_win != nullptr && (win_s > 0 || win_r > 0)) {
+        const long long nkv = (long long) __ldg(step + kStepNKv);
+        if (cell < win_r || cell >= nkv - win_s) {
+            const long long wrow = ((long long) cell * kv_heads + h) * head_dim + (b * QK4_0 + t);
+            k_scratch[dst_offset] = k_win[wrow];
+            v_scratch[dst_offset] = v_win[wrow];
+            return;
+        }
+    }
+
     const block_q4_0* k_blk = reinterpret_cast<const block_q4_0*>(k_q4 + row * bytes_per_head) + b;
     const block_q4_0* v_blk = reinterpret_cast<const block_q4_0*>(v_q4 + row * bytes_per_head) + b;
     const float kd = f32_from_f16(k_blk->d);
@@ -335,7 +351,6 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
     const int vn = (t < 16) ? (v_byte & 0x0F) : (v_byte >> 4);
     const int kq = (NK == 0) ? (kn - 8) : (int) ((NK == 8) ? kQ4l8Map[kn] : kQ4lMap[kn]);
     const int vq = (NV == 0) ? (vn - 8) : (int) ((NV == 8) ? kQ4l8Map[vn] : kQ4lMap[vn]);
-    const long long dst_offset = ((id * kv_heads + h) * head_dim) + (b * QK4_0 + t);
     k_scratch[dst_offset] = f16_from_f32((float) kq * kd);
     v_scratch[dst_offset] = f16_from_f32((float) vq * vd);
 }
@@ -474,6 +489,7 @@ void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table,
     else if (mode == Q4Mode::kLloydVrms) STRATA_KV_Q4_APPEND(Q4Mode::kLloydVrms);
     else if (mode == Q4Mode::kLloydNoRot) STRATA_KV_Q4_APPEND(Q4Mode::kLloydNoRot);
     else if (mode == Q4Mode::kLloydClip) STRATA_KV_Q4_APPEND(Q4Mode::kLloydClip);
+    else if (mode == Q4Mode::kLloydWin) STRATA_KV_Q4_APPEND(Q4Mode::kLloydWin);   // kLloyd's writer (else branch)
     else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8);
     else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8K);
     else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8V);
@@ -507,6 +523,7 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
         else if (mode == Q4Mode::kLloydVrms) STRATA_KV_Q4_BATCH(Q4Mode::kLloydVrms);
         else if (mode == Q4Mode::kLloydNoRot) STRATA_KV_Q4_BATCH(Q4Mode::kLloydNoRot);
         else if (mode == Q4Mode::kLloydClip) STRATA_KV_Q4_BATCH(Q4Mode::kLloydClip);
+        else if (mode == Q4Mode::kLloydWin) STRATA_KV_Q4_BATCH(Q4Mode::kLloydWin);   // kLloyd's writer (else branch)
         else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8);
         else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8K);
         else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8V);
@@ -516,14 +533,95 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
 }
 #undef STRATA_KV_Q4_BATCH
 
+// WP-2a window side pool (kv_q4.hpp, kLloydWin): the exact fp16 twin of every appended cell, flat
+// [(cell, kv_head, head_dim)] per tensor - indexed directly by position, no paging, always resident.
+// One kernel for every append shape: positions come from the same step array the q4 steps-kernel reads
+// (step[step_idx * step_stride + kStepPos]), or from a contiguous (pos0, T) batch. Called with the same
+// (already rotated) K/V the q4 append sees, right next to it, on every append path.
+__global__ void kv_win_append_kernel(uint16_t* __restrict__ win, const float* __restrict__ cur,
+                                     const int32_t* __restrict__ step, int step_stride, int n_head_kv,
+                                     int head_dim, int64_t win_cells) {
+    const int64_t step_idx = (int64_t) blockIdx.z;
+    const int64_t pos = (int64_t) step[step_idx * step_stride + kStepPos];
+    const int h = blockIdx.x, d0 = (blockIdx.y * (int) blockDim.x + (int) threadIdx.x);
+    if (d0 >= head_dim) return;
+    // K3: the pool is indexed by absolute cell, so a position outside [0, win_cells) would reach into the
+    // neighbouring tensor's memory. The position is device-fresh (graph-safe) and a Release build has no
+    // device-side loud fail (NDEBUG drops assert, this codebase has no device printf), so the store is dropped.
+    // The host-side contract is that the pool is sized with the session's `max_cells` - the same bound the
+    // horizon (step[kStepNKv]) runs to; a hit here means that bookkeeping drifted, not a normal state.
+    if (pos < 0 || pos >= win_cells) return;
+    const int64_t n = (int64_t) n_head_kv * head_dim;
+    win[pos * n + h * head_dim + d0] = f16_from_f32(cur[step_idx * n + h * head_dim + d0]);
+}
+
+void kv_append_win_steps(uint16_t* k_win, uint16_t* v_win, const int32_t* step, int step_stride, int n_steps,
+                         const float* kcur, const float* vcur, int n_head_kv, int head_dim, void* stream,
+                         int64_t win_cells) {
+    if (n_steps <= 0) return;
+    // K2: this used to return silently, leaving the side pool stale while the caller believed it was written.
+    // A geometry the grid cannot cover is a programming error, so it fails like need_256 does.
+    if (head_dim <= 0 || head_dim % 32 != 0 || win_cells <= 0) {
+        std::fprintf(stderr,
+                     "strata: kv_append_win_steps: head_dim %d must be a positive multiple of 32 (the window "
+                     "writer's grid) and win_cells %lld must be positive - the exact side pool would not be "
+                     "written\n", head_dim, (long long) win_cells);
+        std::exit(1);
+    }
+    if (k_win != nullptr)
+        kv_win_append_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) n_steps), 32, 0,
+                                    (cudaStream_t) stream>>>(k_win, kcur, step, step_stride, n_head_kv, head_dim,
+                                                             win_cells);
+    if (v_win != nullptr && (v_win != k_win || vcur != kcur))
+        kv_win_append_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) n_steps), 32, 0,
+                                    (cudaStream_t) stream>>>(v_win, vcur, step, step_stride, n_head_kv, head_dim,
+                                                             win_cells);
+    check("kv_append_win launch");
+}
+
+// The contiguous batch twin (the prefill path's kv_append_q4 with pos0/T): same flat pool, positions pos0 + t.
+__global__ void kv_win_append_batch_kernel(uint16_t* __restrict__ win, const float* __restrict__ cur, int64_t pos0,
+                                           int n_head_kv, int head_dim) {
+    const int64_t t = (int64_t) blockIdx.z;
+    const int h = blockIdx.x, d0 = (blockIdx.y * (int) blockDim.x + (int) threadIdx.x);
+    if (d0 >= head_dim) return;
+    const int64_t n = (int64_t) n_head_kv * head_dim;
+    win[(pos0 + t) * n + h * head_dim + d0] = f16_from_f32(cur[t * n + h * head_dim + d0]);
+}
+
+void kv_append_win(uint16_t* k_win, uint16_t* v_win, int64_t pos0, int64_t T, const float* K, const float* V,
+                   int n_head_kv, int head_dim, void* stream, int64_t win_cells) {
+    if (T <= 0) return;
+    // K2: loud instead of the old silent return (a stale side pool the caller believes was written).
+    if (head_dim <= 0 || head_dim % 32 != 0) {
+        std::fprintf(stderr, "strata: kv_append_win: head_dim %d must be a positive multiple of 32 (the window "
+                             "writer's grid) - the exact side pool would not be written\n", head_dim);
+        std::exit(1);
+    }
+    // K3: unlike the steps variant, these positions are host-known, so the pool bound IS checked here.
+    if (pos0 < 0 || pos0 + T > win_cells) {
+        std::fprintf(stderr, "strata: kv_append_win: cells [%lld, %lld) do not fit the exact side pool of %lld "
+                             "cells\n", (long long) pos0, (long long) (pos0 + T), (long long) win_cells);
+        std::exit(1);
+    }
+    if (k_win != nullptr)
+        kv_win_append_batch_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) T), 32, 0,
+                                     (cudaStream_t) stream>>>(k_win, K, pos0, n_head_kv, head_dim);
+    if (v_win != nullptr && (v_win != k_win || V != K))
+        kv_win_append_batch_kernel<<<dim3((unsigned) n_head_kv, (unsigned) (head_dim / 32), (unsigned) T), 32, 0,
+                                     (cudaStream_t) stream>>>(v_win, V, pos0, n_head_kv, head_dim);
+    check("kv_append_win batch launch");
+}
+
 #define STRATA_KV_Q4_GATHER(NK, NV)                                                                              \
     kv_gather_q4_kernel<NK, NV><<<dim3(num_blocks), dim3(32, rows_per_block), 0, (cudaStream_t) stream>>>(        \
         k_q4, v_q4, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size, k_scratch,     \
-        v_scratch)
+        v_scratch, k_win, v_win, win_s, win_r)
 
 void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* page_table, const int32_t* ids,
                        const int32_t* step, int64_t max_ids, const QsaShapes& s, uint16_t* k_scratch,
-                       uint16_t* v_scratch, void* stream, Q4Mode mode) {
+                       uint16_t* v_scratch, void* stream, Q4Mode mode, const uint16_t* k_win,
+                       const uint16_t* v_win, int win_s, int win_r) {
     if (max_ids <= 0) return;
     const int blocks_per_head = (int) (s.head_dim / QK4_0);
     const int64_t total_blocks = max_ids * s.n_head_kv * blocks_per_head;

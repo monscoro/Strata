@@ -180,6 +180,24 @@ void layer_set_native_flash_attn_short(bool enabled) { native_flash_attn_short =
 namespace {
 bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false;
 strata::kernels::Q4Mode g_kv_q4_mode = strata::kernels::Q4Mode::kUniform;
+// WP-2a window: exact cells, recent S + R sinks (STRATA_KV_WINDOW_S/_R, defaults 128/8). S + R = 0 is exactly
+// the base mode (the arm's identity check). The overlay is orthogonal to the level table: `--kv q4lm32w`
+// (kLloydWin) turns it on for kLloyd and `STRATA_KV_WINDOW=1` for any other q4 mode (e.g. `--kv q4lm8v` +
+// STRATA_KV_WINDOW=1). Read once at mode set; every engine run is a fresh process, so one grid point per run
+// is all the harness needs.
+bool g_kv_win = false;
+int64_t g_kv_win_s = 128, g_kv_win_r = 8;
+/// The window wants side pools: the overlay is on, on a q4-**Lloyd** state (its reader mixes exact fp16 with
+/// quantized cells, and only the Lloyd q4 paths carry that reader: `--kv q4_0` maps to kv_mode 2, whose fused
+/// decode ignores the window while the gather would honour it - so a pool is never attached there, see the
+/// loud refusal in `qsa_set_kv_q4_mode`), with at least one exact cell.
+bool qsa_win_wanted() {
+    return g_kv_win && g_kv_q4 && strata::kernels::q4_lloyd(g_kv_q4_mode) && g_kv_win_s + g_kv_win_r > 0;
+}
+/// Flat fp16 side-pool bytes for max_cells (both tensors): indexed directly by cell, always resident.
+uint64_t qsa_win_bytes(const strata::kernels::QsaShapes& s, int64_t max_cells) {
+    return (uint64_t) max_cells * s.n_head_kv * s.head_dim * 2 * 2;
+}
 }
 void qsa_set_kv_int8(bool enabled) { g_kv_int8 = enabled; }
 void qsa_set_kv_int8_rotate(bool enabled) { g_kv_int8_rot = enabled; }
@@ -196,6 +214,31 @@ void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
         const char* ev = std::getenv("STRATA_KV_CLIP_V");
         strata::kernels::qsa_set_kv_clip(ek != nullptr ? (float) std::atof(ek) : 0.94f,
                                          ev != nullptr ? (float) std::atof(ev) : 0.94f);
+    }
+    // WP-2a window overlay (kv_q4.hpp), orthogonal to the level table: `--kv q4lm32w` (kLloydWin) is the
+    // overlay on kLloyd, `STRATA_KV_WINDOW=1` turns it on for any other q4 mode (`--kv q4lm8v` + the env,
+    // the WP-2b ≤3-bit arm). Grid via STRATA_KV_WINDOW_S/_R (defaults 128/8); S + R = 0 is exactly the base
+    // mode. When the overlay is off the grid is zeroed so a reader that only checks the counts sees none.
+    const char* ew = std::getenv("STRATA_KV_WINDOW");
+    g_kv_win = mode == strata::kernels::Q4Mode::kLloydWin || (ew != nullptr && ew[0] == '1');
+    if (g_kv_win && !strata::kernels::q4_lloyd(mode)) {
+        // K1: the fused decode reads a window only in its Lloyd instantiations (kv_mode 4); a plain q4_0 state
+        // maps to kv_mode 2 and would get a pool the fused path ignores and the q4 gather honours. That is an
+        // inconsistent state, so it is refused loudly instead of silently half-applied.
+        std::fprintf(stderr, "strata: STRATA_KV_WINDOW=1 needs a q4-Lloyd arm (--kv q4lm32/q4lm32s/q4lm32t/"
+                            "q4lm32nr/q4lm32c/q4lm8/q4lm8k/q4lm8v, or --kv q4lm32w); --kv q4_0 has no window "
+                            "reader - window off\n");
+        g_kv_win = false;
+    }
+    if (g_kv_win) {
+        const char* es = std::getenv("STRATA_KV_WINDOW_S");
+        const char* er = std::getenv("STRATA_KV_WINDOW_R");
+        g_kv_win_s = es != nullptr ? std::atoll(es) : 128;
+        g_kv_win_r = er != nullptr ? std::atoll(er) : 8;
+        if (g_kv_win_s < 0) g_kv_win_s = 0;
+        if (g_kv_win_r < 0) g_kv_win_r = 0;
+    } else {
+        g_kv_win_s = g_kv_win_r = 0;
     }
 }
 strata::kernels::Q4Mode qsa_kv_q4_mode() { return g_kv_q4_mode; }
@@ -682,6 +725,15 @@ void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0;
 int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
+// WP-2a window grid (STRATA_KV_WINDOW_S/_R, read at mode set): the staged prefill path overlays them too.
+int qsa_kv_win_s() { return (int) g_kv_win_s; }
+int qsa_kv_win_r() { return (int) g_kv_win_r; }
+// The overlay switch itself: a caller that must build a state the window never reads (the MTP drafter, mtp.cpp)
+// turns it off around the init, so `qsa_win_wanted()` is false and no side pool is carved at all - instead of
+// carving one and dropping the pointers afterwards (R6). S/R keep their values, so switching back restores the
+// grid; only `qsa_win_wanted()` needs the flag.
+bool qsa_kv_win() { return g_kv_win; }
+void qsa_set_kv_win(bool on) { g_kv_win = on; }
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
@@ -699,6 +751,8 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
     if (with_rope) n += (uint64_t) max_cells * (s.n_rot / 2) * 4 * 2;          // cos + sin tables
     n += strata::kernels::qsa_step_bytes() + 16;                               // counts and aligned attention status
     n += (uint64_t) s.n_head * 4;                                              // pos_dev
+    if (qsa_win_wanted() && !(g_kv_elastic && p.mode == 0) && ring_cells <= 0)
+        n += qsa_win_bytes(s, max_cells);                                     // WP-2a window side pools (fp16)
     return align_up16(n) + 256;
 }
 
@@ -776,6 +830,21 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     } else {
         st.k_pool = c.take<uint16_t>(rows * s.head_dim);
         st.v_pool = c.take<uint16_t>(rows * s.head_dim);
+    }
+    if (qsa_win_wanted() && ring_cells <= 0) {
+        // WP-2a window side pools: flat [(cell, kv_head, head_dim)] fp16, always resident (outside paging and
+        // streaming, indexed directly by cell). Rings never carry a window (the drafter is not windowed);
+        // the elastic per-slot pools cannot host a flat full-context pool either - that combination fails
+        // loudly below instead of measuring silently wrong.
+        if (g_kv_elastic && p.mode == 0) {
+            std::fprintf(stderr, "strata: a KV window with elastic K/V is not supported (flat side pool)\n");
+            return 0;
+        }
+        // qsa_win_bytes counts BOTH tensors (K and V), so it is two flat pools; take() counts elements of
+        // uint16_t, hence the divide (one_tensor_bytes / sizeof(uint16_t) elements per pool).
+        const uint64_t one_tensor_bytes = qsa_win_bytes(s, max_cells) / 2;
+        st.k_win = c.take<uint16_t>(one_tensor_bytes / sizeof(uint16_t));
+        st.v_win = c.take<uint16_t>(one_tensor_bytes / sizeof(uint16_t));
     }
     st.page_table = c.take<int32_t>((uint64_t) pages);
     st.n_pages = pages;
@@ -901,6 +970,13 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
         cudaMemsetAsync(st.k_pool, 0, rows * s.head_dim * 2, cs);
         cudaMemsetAsync(st.v_pool, 0, rows * s.head_dim * 2, cs);
     }
+    // WP-2a window side pools (flat fp16, indexed by cell): zeroed like the rest, so a fresh sequence matches
+    // the reference's own zeros() for the cells a windowed reader names too.
+    if (st.k_win != nullptr && st.v_win != nullptr) {
+        const size_t wb = (size_t) st.max_cells * s.n_head_kv * s.head_dim * sizeof(uint16_t);
+        cudaMemsetAsync(st.k_win, 0, wb, cs);
+        cudaMemsetAsync(st.v_win, 0, wb, cs);
+    }
     // A streamed state starts over with nothing resident. Its host copy is not cleared (GBs over PCIe per new
     // conversation): no reader names a cell before this sequence has written it, and a block copied in whole
     // carries the unwritten cells past the end, which nothing reads.
@@ -917,6 +993,14 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
     else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; pools.q4_mode = st.kv_q4_mode; }
     else if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
+    // WP-2a window: side pools + grid travel in the pools; the horizon comes from step[kStepNKv] in-kernel
+    // (device-fresh, graph-safe - a host horizon would bake stale on graph reuse).
+    if (st.k_win != nullptr && st.v_win != nullptr) {
+        pools.k_win = st.k_win;
+        pools.v_win = st.v_win;
+        pools.win_s = (int) g_kv_win_s;
+        pools.win_r = (int) g_kv_win_r;
+    }
     return pools;
 }
 
@@ -1123,6 +1207,10 @@ if (st.kv_rot)
 if (st.kv_q4) {
     strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host,
                                        st.kv_q4_mode);
+    // WP-2a window: the exact fp16 twin next to the q4 blocks (rotated, like them - the FWHT above already ran).
+    if (st.k_win != nullptr)
+        strata::kernels::kv_append_win_steps(st.k_win, st.v_win, st.step, 0, 1, b.kcur, b.vcur,
+                                             (int) g.n_head_kv, (int) g.head_dim, stream, st.max_cells);
 } else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
     try {
         native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
@@ -1168,7 +1256,7 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
         strata::kernels::kv_gather_q4_step(st.v_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s,
                                            b.v_scratch, b.v_scratch, stream);
     }
-    else if (st.kv_q4) strata::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream, st.kv_q4_mode);
+    else if (st.kv_q4) strata::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream, st.kv_q4_mode, st.k_win, st.v_win, (int) g_kv_win_s, (int) g_kv_win_r);
     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);
     else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);
     if (native_flash_attn_short) {

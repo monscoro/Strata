@@ -32,7 +32,39 @@ struct QsaAttnPools {
     const uint8_t* v_q4 = nullptr;
     Q4Mode q4_mode = Q4Mode::kUniform;  ///< `--kv q4lm32`/`q4lm32s`: k_q4/v_q4 hold Max-Lloyd levels
     const int32_t* page_table = nullptr;
+    /// WP-2a window (`--kv q4lm32w`): exact fp16 side pools, flat [(cell, kv_head, head_dim)] - indexed
+    /// directly by cell, no paging. A reader serves cell `c` from here when `win_on && win_cell(c, n)` with
+    /// `n` = step[kStepNKv], else from the quantized pools. Null (and win_s/r <= 0) when the window is off.
+    const uint16_t* k_win = nullptr;
+    const uint16_t* v_win = nullptr;
+    int win_s = 0;    ///< recent exact cells (STRATA_KV_WINDOW_S, default 128)
+    int win_r = 0;    ///< exact sink cells at the start (STRATA_KV_WINDOW_R, default 8)
+    // NOTE: no horizon field - readers take it from step[kStepNKv] (pos + 1, device-fresh and graph-safe;
+    // qsa_step_fill derives all four step entries from one position). A host horizon would bake stale on
+    // graph reuse.
 };
+
+#if defined(__CUDACC__) || defined(__HIPCC__)
+/// True when the pools carry a live window: both side pools present and at least one exact cell.
+inline __host__ __device__ bool qsa_win_on(const QsaAttnPools& p) {
+    return p.k_win != nullptr && p.v_win != nullptr && (p.win_s > 0 || p.win_r > 0);
+}
+
+/// Cell `c` reads exact (sink, or recent under horizon `n` = step[kStepNKv]) under a live window.
+inline __host__ __device__ bool qsa_win_cell(const QsaAttnPools& p, long long c, long long n) {
+    return c < (long long) p.win_r || c >= n - (long long) p.win_s;
+}
+#else
+/// True when the pools carry a live window: both side pools present and at least one exact cell.
+inline bool qsa_win_on(const QsaAttnPools& p) {
+    return p.k_win != nullptr && p.v_win != nullptr && (p.win_s > 0 || p.win_r > 0);
+}
+
+/// Cell `c` reads exact (sink, or recent under horizon `n` = step[kStepNKv]) under a live window.
+inline bool qsa_win_cell(const QsaAttnPools& p, long long c, long long n) {
+    return c < (long long) p.win_r || c >= n - (long long) p.win_s;
+}
+#endif
 
 /// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s);

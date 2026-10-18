@@ -61,8 +61,22 @@ struct KvHostPools {
 /// workpackage section 5.5): the same blocks and bytes once more. The treatment arm differs only in the writer's
 /// V scale (like kKvQ4lmS it gets its own value because a scale rule is write-side state); the no-rotation arm
 /// gets one because its blocks hold unrotated values, which no rotated reader may touch.
+///
+/// kKvQ4lmC (11) is the WP-2a clipped-scale arm (`--kv q4lm32c`, sections 5.6 / 7.11): the same blocks and bytes
+/// again, and like kKvQ4lmS / kKvQ4lmT it earns its own value because the clipping quantile is write-side state
+/// (`STRATA_KV_CLIP_K` / `_V`).
+///
+/// kKvQ4lmW (12) is the WP-2a / WP-2b window arm (`--kv q4lm32w`, or `STRATA_KV_WINDOW=1` on a q4-Lloyd arm -
+/// the window is an overlay, not a level table). Its blocks are written by whichever kLloyd* writer the arm uses,
+/// so the bytes match that format; what the value adds is a *separate* flat fp16 side pool of exact cells indexed
+/// by position (`k_win` / `v_win`, qsa_decode_attn.hpp), which the block pools do not contain. The value therefore
+/// means "that pool exists": `kLloydWin` with S + R = 0 allocates none and reports its base format (kKvQ4lm), and
+/// a q4_0 state never gets one at all (only the Lloyd reader paths carry the window). Anything that moves or
+/// re-pages bytes alone, or snapshots a conversation, has to know about the pool - the conversation snapshot
+/// refuses a state that has one rather than silently drop the exact cells (conversation_snapshot.cpp).
 enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ4lm = 4, kKvQ4lmS = 5,
-                      kKvQ4lm8 = 6, kKvQ4lm8K = 7, kKvQ4lm8V = 8, kKvQ4lmT = 9, kKvQ4lmNR = 10, kKvQ4lmC = 11 };
+                      kKvQ4lm8 = 6, kKvQ4lm8K = 7, kKvQ4lm8V = 8, kKvQ4lmT = 9, kKvQ4lmNR = 10, kKvQ4lmC = 11,
+                      kKvQ4lmW = 12 };
 
 /// True for every 4-bit block format: same blocks, same bytes - only the nibble -> value rule (and, for
 /// kKvQ4lmS and kKvQ4lmT, the writer's scale) differs. A block-mover that only copies bytes can test this.
@@ -70,7 +84,7 @@ enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ4lm
 /// rotation is the attention path's business, never a byte count.)
 inline constexpr bool kv_fmt_q4(int fmt) {
     return fmt == kKvQ4 || fmt == kKvQ4lm || fmt == kKvQ4lmS || fmt == kKvQ4lm8 || fmt == kKvQ4lm8K ||
-           fmt == kKvQ4lm8V || fmt == kKvQ4lmT || fmt == kKvQ4lmNR || fmt == kKvQ4lmC;
+           fmt == kKvQ4lm8V || fmt == kKvQ4lmT || fmt == kKvQ4lmNR || fmt == kKvQ4lmC || fmt == kKvQ4lmW;
 }
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's
