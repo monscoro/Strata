@@ -16,7 +16,10 @@ datenneutral gezeigt (§7.18: Parität 12/12, zwei Arme byte-gleich zu ihren 202
 Auslieferungsform**: der Seitenpool ist ein **Ring** aus `R` Sink- plus `S + B` Ringzeilen mit Zell-Tag statt eines
 flachen, kontextgroßen Pools (19,5 MiB konstant bei 256/64 gegen 1,5 GiB bei 64K), mit laut geprüfter Batch-Schranke,
 `B` aus dem Prompt-Chunk, und **R1** (K und V in einem Launch) ist nachgezogen; Parität 12/12 und der Arbeitspunkt
-byte-gleich. **Arbeitspunkt ab hier: Fenster `S/R = 256/64` auf `q4lm8v`** (§11.5.1). Der
+byte-gleich. **Arbeitspunkt ab hier: Fenster `S/R = 256/64` auf `q4lm8v`** (§11.5.1). Auf **128K** gerechnet sind das
+**4,10 Bit = 788 MiB** bei `B = 512` (4,79 Bit / 920 MiB, wenn `--prefill auto` den Ring auf 6.144 Zellen bemisst) gegen
+`int8`s 8,25 Bit / 1.584 MiB; die Fensterform kostet dort nur 12 MiB, die Formwahl fällt über Qualität. **Offen ist das
+128K-Gate** (§11.5.1): Laufzeit und Qualität bei 128K sind nicht gemessen. Der
 Plan-Teil §1–§6 stammt aus dem Survey
 [KV_QUANT_RESEARCH.md](KV_QUANT_RESEARCH.md); wo die eigenen Messungen ihn korrigieren, steht das dabei. §4/§5 sind
 **Erwartungen aus fremden Messungen** und so gekennzeichnet; alle Zahlen in §7 sind **Strata-Messungen** mit dem
@@ -277,6 +280,7 @@ erfüllt, ohne einen hier nicht baubaren SYCL-Build zu behaupten.
 | **WP-2-Laufzeit** (erledigt §7.17) | **Speed-A/B der KV-Arme** (§11.4.3): 8 Arme × 3 Runden, Swift, 16K-Kontext. Ergebnis: Decode ist **formatfrei** (±6 %, `int8` führt), der Fenster-Überbau unsichtbar; der Fenster-Pool kostet **24 KiB je Kontextzelle** (64K ≈ 1,5 GiB) und ignoriert `--kv-resident` | Messbericht | S |
 | **WP-2-Review** (erledigt §7.18) | **Nachbesserungen aus dem Code-Review**: K1 Fenster nur auf q4-**Lloyd** (laut statt pfadabhängig), K2/K3 laute Fehler + Pool-Schranke (die `win_cells`-Schranke ist in §7.19 durch die Ring-Invariante ersetzt), K4 Snapshot nur bei vorhandenem Seitenpool, R6 Drafter reserviert keine Fenster-Pools. Als **datenneutral** gezeigt (Parität 12/12, zwei Arme byte-gleich zu ihren TSVs); R1/R4/R5 bewußt offen (Perf, §7.17 zeigt keinen meßbaren Effekt), B1 Metal-Stubs sind **älter als diese Arbeit** | Code + Doku | S |
 | **WP-2-Auslieferung** (erledigt §7.19) | **Der Ring + R1**: `R` Sink- plus `S + B` Ringzeilen mit Zell-Tag (statt flachem, kontextgroßem Pool), laut geprüfte Invariante `T ≤ S + B`, `B` folgt dem Prompt-Chunk; dazu der Fenster-Writer für K **und** V in einem Launch. Als **datenneutral** gezeigt (4 Arme byte-gleich) und die Ringgröße als Speichermessung belegt | Code + Parität + Doku | S |
+| **WP-2-128K-Gate** (offen) | **Der Arbeitspunkt bei realistischem Kontext** (128K-Rechnung: 4,10 Bit / 788 MiB bei `B = 512`, 4,79 / 920 MiB mit `--prefill auto` = 6.144, gegen `int8` 8,25 / 1.584): (a) Laufzeit-A/B `int8` / 256/64 `B = 6.144` / 256/64 `B = 512` bei 128K — Prefill-/Decode-tok/s, freier VRAM, Expert-Slots und Hit-Rate über eine gemischte Prompt-Menge; (b) Qualität cwe-4k + Nadel 32K/128K für 256/64 und 512/128; (c) danach der Setup-Eintrag (ein Nutzerwert, `--prefill`-Kopplung, `choices_from_config` + Byte-Tabellen) | Meßbericht + Setup-Vorschlag | M |
 | **WP-2** | **Echtes asymmetrisches Layout** (K4/V3-Klasse, echte Bytes, ehrliche BPE-Bilanz nach OSCAR) mit vorbereitetem, unbestücktem Slot für kalibriert-nur-K. **Bau erst nach WP-1 + WP-2a** | Format + Tests + Messbericht | L |
 | **WP-3** | **Kalibriert-nur-K als Vergleichsarm** (WUSH geschlossen / OSCAR Kovarianz; V fest; kein V-Folding; Kalibrierung ~8k Tokens). **Vergleich, nicht Hauptlinie** | Vergleichsarm + Messbericht | M–L |
 | **WP-4** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
@@ -864,10 +868,10 @@ dieselben 8 Segmente):
   2K), nicht gemessen; bei längerem Kontext sinkt der Fenster-Anteil, das Cross-Over kann sich verschieben. Die
   Qualitätsmessung ist 2K; ob das Fenster bei 128K noch so viel zurückholt, ist **nicht** gemessen.
   **Korrektur (§7.19):** dieses Modell war zweifach zu optimistisch — der Pool hält die exakte Zelle **zusätzlich**
-  zum quantisierten Wert (16 Bit, nicht 16 − Basis) und die feste Spanne ist seit dem Ring `S + B`. Richtig ist
-  `Basis + 16·(S+B)/L`: bei 2K ≈10,5 Bit für 256/64 (statt 5,9), ab ≈8K unter `int8`, bei 64K 4,2 Bit. Die
-  **Rangfolge** der Arme und jede **Qualitäts**aussage hier bleiben davon unberührt; die absoluten Byte-Zahlen in
-  §7.14–§7.16 sind Modellwerte vor dem Ring.
+  zum quantisierten Wert (16 Bit, nicht 16 − Basis) und die feste Spanne ist seit dem Ring `R + S + B` (Sinks sind
+  Zeilen). Richtig ist `Basis + 16·(R+S+B)/L`: bei 2K ≈10,5 Bit für 256/64 (statt 5,9), ab ≈8K unter `int8`, bei 64K
+  4,2 Bit, bei 128K 4,10 Bit (788 MiB, `B = 512`). Die **Rangfolge** der Arme und jede **Qualitäts**aussage hier
+  bleiben davon unberührt; die absoluten Byte-Zahlen in §7.14–§7.16 sind Modellwerte vor dem Ring.
 - **„3 Bit tot" also genauer:** ohne Fenster gilt es (§7.9); mit Fenster ist die 3-Bit-Basis im hier gemessenen
   `R = 8`-Gitter (≈4,8–10 Bit) pro Byte knapp konkurrenzfähig, das Cross-Over liegt bei ≈4,8–5,3 Bit. **Beides gilt
   nur für `R = 8`:** §7.16 mißt das OSCAR-Knie (`R = 64`) nach und findet die 3-Bit-Basis pro Byte nirgends meßbar
@@ -1116,11 +1120,13 @@ VRAM-Differenz dieses Laufs (1.456 MiB) ist **nicht** als Ringgröße lesbar, we
 Prefill-Puffer mitbringt — deshalb stehen oben die Arme mit `--prefill 512`. (Die Größe der Prefill-Puffer mit dem
 Chunk ist ein eigener Posten: 1,4 GiB zwischen `--prefill 512` und `2048` auf dieser Karte, unabhängig vom Fenster.)
 
-**Was das für die Bytes heißt (Rechnung, keine Messung).** Mit dem Ring ist die feste Spanne `S + B` Zellen, und sie
-wird **zusätzlich** zum quantisierten Pool gehalten (eine Zelle bleibt quantisiert lesbar, das Tag ist der Rückfall).
-Die Bit-Bilanz aus §12.4 (`Basis + (16 − Basis)·(S+R)/L`) war dafür zweifach zu optimistisch: sie rechnete die exakte
-Zelle nur als **Differenz** zum quantisierten Wert (der Pool hält beides) und mit der Spanne `S + R` statt `S + B`.
-Richtig ist `Basis + 16·(S+B)/L` (plus 4 B Tag je Ringzeile, hier 19,5 MiB / 832 ≈ 0,4 % davon). Für `q4lm8v`
+**Was das für die Bytes heißt (Rechnung, keine Messung).** Mit dem Ring ist die feste Spanne `R + S + B` Zellen (die
+Sinks sind Zeilen wie die Ringzeilen), und sie wird **zusätzlich** zum quantisierten Pool gehalten (eine Zelle bleibt
+quantisiert lesbar, das Tag ist der Rückfall). Die Bit-Bilanz aus §12.4 (`Basis + (16 − Basis)·(S+R)/L`) war dafür
+zweifach zu optimistisch: sie rechnete die exakte Zelle nur als **Differenz** zum quantisierten Wert (der Pool hält
+beides) und mit der Spanne `S + R` statt `R + S + B`. Richtig ist `Basis + 16·(R+S+B)/L` plus **15 KiB** Tag (nur die
+`S + B` Ringzeilen tragen eines, `int32` je Zeile und Layer: 320 × 4 B × 12 = 15 KiB, 0,08 % des Rings; die Sinks
+brauchen keines, ihre Zeile *ist* die Zelle). Für `q4lm8v`
 (Basis ≈ 4,0 gespeicherte Bit), Fenster 256/64, `B = 512`:
 
 | `L` (Zellen) | Bit/Wert | gegen `int8` (8,25 Bit) |
@@ -1129,19 +1135,42 @@ Richtig ist `Basis + 16·(S+B)/L` (plus 4 B Tag je Ringzeile, hier 19,5 MiB / 83
 | 8.192 | 5,6 | 32 % billiger |
 | 16.384 | 4,8 | 42 % billiger |
 | 65.536 | 4,2 | 49 % billiger |
+| **131.072 (128K)** | **4,10** | **50 % billiger (788 MiB gegen 1.584 MiB)** |
 
 Die Bytes sind bei 64K nachgerechnet: 65.536 × 12.288 Werte × 4,20 Bit ≈ 403 MiB (384 MiB quantisierter Pool +
-19,5 MiB Ring) — gegen 792 MiB bei `int8`. Break-even gegen `int8` liegt bei ≈3.100 Zellen; **darunter ist der
-Fensterarm teurer als `int8`**, weil die Ring-Spanne eines 512er Chunks einen Viertel des 2K-Kontexts ausmacht. Das
-2K-Set prüft also die **Lesepolitik**, nicht die Auslieferungsbytes; die gelten ab ≈8K.
+19,5 MiB Ring) — gegen 792 MiB bei `int8`. Bei 128K: 131.072 × 12.288 × 4,10 Bit ≈ 788 MiB (768 + 19,5) gegen
+1.584 MiB. Break-even gegen `int8` liegt bei ≈3.100 Zellen; **darunter ist der Fensterarm teurer als `int8`**, weil die
+Ring-Spanne eines 512er Chunks einen Viertel des 2K-Kontexts ausmacht. Das 2K-Set prüft also die **Lesepolitik**, nicht
+die Auslieferungsbytes; die gelten ab ≈8K.
 
 **Was das für den Arbeitspunkt bedeutet.** Bei 64K kosten die Fensterformen fast dasselbe: 128/8 = 4,16, 256/64 = 4,20,
-512/128 = 4,28 Bit — 2–3 MiB Unterschied bei 400 MiB. Wo die Ring-Spanne noch zählt (2K), ist es umgekehrt: 128/8
-9,1 gegen 256/64 10,5 Bit, und beide über `int8`. Die Wahl `S/R = 256/64` (KL 0,00702, von `int8` nicht zu trennen)
-ist damit bei den Kontexten, für die das Fenster gedacht ist, **nicht** durch Speicher teurer als 128/8
-(KL 0,00869), und bei 2K ist ohnehin keiner der beiden die billige Wahl. Die „≈5,9 Bit" aus §7.16 sind der alte
-Modellwert für 2K; mit Ring und doppelter Haltung sind es dort ≈10,5 Bit (§7.16 bleibt als **Qualitäts**messung
-gültig — der Ring ist byte-identisch, s. o.).
+512/128 = 4,28 Bit — 2–3 MiB Unterschied bei 400 MiB. Bei 128K sind es 4,08 / 4,10 / 4,14 Bit, also **783 / 788 /
+795 MiB** (12 MiB von der schmalsten zur breitesten Form) — der Speicher unterscheidet die Form dort nicht mehr, die
+Qualität muß es tun. Wo die Ring-Spanne noch zählt (2K), ist es umgekehrt: 128/8 9,1 gegen 256/64 10,5 Bit, und beide
+über `int8`. Die Wahl `S/R = 256/64` (KL 0,00702, von `int8` nicht zu trennen) ist damit bei den Kontexten, für die
+das Fenster gedacht ist, **nicht** durch Speicher teurer als 128/8 (KL 0,00869), und bei 2K ist ohnehin keiner der
+beiden die billige Wahl. Die „≈5,9 Bit" aus §7.16 sind der alte Modellwert für 2K; mit Ring und doppelter Haltung sind
+es dort ≈10,5 Bit (§7.16 bleibt als **Qualitäts**messung gültig — der Ring ist byte-identisch, s. o.).
+
+**`B` ist die zweite Byte-Achse (Rechnung).** Bei 128K kostet jede zusätzliche 512er-Chunk-Zelle 16 · 512 / 131.072 =
+0,0625 Bit = 12 MiB; der Ring hat `R + S + B` Zeilen. Für 256/64:
+
+| `B` (Prompt-Chunk) | Ring | Bit/Wert | KV bei 128K | gegen `int8` |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 19,5 MiB | **4,10** | **788 MiB** | −50 % |
+| 2.048 | 55,5 MiB | 4,29 | 824 MiB | −48 % |
+| 6.144 | 151,5 MiB | 4,79 | 920 MiB | −42 % |
+| 8.192 | 199,5 MiB | 5,04 | 968 MiB | −39 % |
+| 16.384 | 391,5 MiB | 6,04 | 1.160 MiB | −27 % |
+
+Die Ringgrößen **19,5 und 391,5 MiB sind gemessen** (4K/64K mit `B = 512` bzw. `B = 16.384`, §7.19 oben); 55,5 MiB ist
+die Engine-Meldung für `--prefill 2048` (deren VRAM-Delta ist wegen der Prefill-Puffer nicht lesbar), 151,5/199,5 MiB
+sind dieselbe 24-KiB-Zelle. Die 128K-Spalte ist dieselbe Ringgröße, weil sie kontextunabhängig ist (4K/64K gemessen).
+**`B` folgt dem Prompt-Chunk** (`qsa_set_kv_win_batch`), und ein blankes `--prefill auto` ist auf diesem
+Windows-HIP-Build bei **6.144** gedeckelt (`host_limits.hpp:19`) — die 4,10 Bit gelten also nur mit ausdrücklichem
+`--prefill 512`, nicht mit der Setup-Vorgabe `--prefill auto`. `--prefill auto:N` kann nicht unter 8.192
+(`generate.cpp:2073`). Das ist eine Laufzeit-/Byte-Abwägung (Prefill-Durchsatz gegen 132 MiB), keine Konstante; der
+128K-A/B (§11.5.1) entscheidet sie.
 
 **Nicht geändert.** Die laute Verweigerung „Fenster + elastic K/V" bleibt (die Kombination ist ungemessen, nicht
 falsch); R4 (`swin[c]`-Hoist im Decode) und R5 (pre75-Schleife) bleiben offen — R5 läuft in einem Kernel, den diese
@@ -1368,15 +1397,20 @@ K-Kanäle) und QuaRot/KVQuant als Rotations-/Per-Kanal-Kontext.
 
 ### 11.5 Empfehlungen (ohne Planänderung)
 
-1. **≤3 Bit × Fenster — erledigt (§7.15), entschieden (§7.16).** Mit `R = 64` erreichen beide Basen `int8`-Niveau,
-   die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit (Modellwert für 2K; mit Ring und doppelter Haltung sind es dort ≈10,5 Bit,
-   bei 64K 4,2 — §7.19; die **Qualitäts**aussage bleibt); die verbleibende Format-Differenz ist ns. Damit entscheidet
-   nicht mehr das Format, sondern die **Fensterform**: `R` ist ein eigener Hebel (R 8 → 128 bei festem S = 512 bringt
-   +0,0020…0,0026 KL zurück, richtungskonstant über 7–8 von 8 Segmenten). **Arbeitspunkt ab hier:
-   Fenster `S/R = 256/64` auf der 3-Bit-Basis `q4lm8v`** (KL 0,00702, von `int8` nicht zu trennen; Bytes: 4,2 Bit
-   bei 64K gegen `int8`s 8,25, 10,5 bei 2K) — das ist der billigste Punkt, der `int8`-Niveau erreicht; 128/8 bleibt
-   meßbar darüber (KL 0,00869) und spart bei 64K nur 2 MiB Ring. Wichtiger als beides wäre ein **längerer Kontext**
-   (der Fenster-Anteil sinkt mit L, das Byte-Bild wandert — bei 2K gemessen).
+1. **≤3 Bit × Fenster — erledigt (§7.15), entschieden (§7.16), auf 128K gerechnet.** Mit `R = 64` erreichen beide
+   Basen `int8`-Niveau, die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit (Modellwert für 2K; mit Ring und doppelter Haltung
+   sind es dort ≈10,5 Bit, bei 64K 4,2, **bei 128K 4,10 Bit / 788 MiB bei `B = 512`** — §7.19; die **Qualitäts**aussage
+   bleibt); die verbleibende Format-Differenz ist ns. Damit entscheidet nicht mehr das Format, sondern die
+   **Fensterform**: `R` ist ein eigener Hebel (R 8 → 128 bei festem S = 512 bringt +0,0020…0,0026 KL zurück,
+   richtungskonstant über 7–8 von 8 Segmenten). **Arbeitspunkt ab hier: Fenster `S/R = 256/64` auf der 3-Bit-Basis
+   `q4lm8v`** (KL 0,00702, von `int8` nicht zu trennen; Bytes: 4,10 Bit bei 128K, 4,2 bei 64K, 10,5 bei 2K, jeweils
+   `B = 512`) — das ist der billigste Punkt, der `int8`-Niveau erreicht; 128/8 bleibt meßbar darüber (KL 0,00869) und
+   spart bei 128K nur 4 MiB Ring. Bei 128K kostet die Formwahl 12 MiB (128/8 → 512/128), also entscheidet dort die
+   Qualität. **Nächster Schritt ist das 128K-Gate**, weil die Qualität nur bei 2K gemessen ist: (a) Laufzeit-A/B
+   `int8` / 256/64 mit `B = 6.144` (blankes `--prefill auto`) / 256/64 mit `B = 512` — Prefill- und Decode-tok/s,
+   freier VRAM, Expert-Slots und Hit-Rate über eine **gemischte Prompt-Menge** (mehrsprachig, Coding), weil die
+   Slot-Zahl erst mit vielen echten Aufgaben steigt; (b) cwe-4k + Nadel 32K/128K für 256/64 und 512/128. Danach der
+   Setup-Eintrag.
 2. **K-vs-V-Power vor WP-2 einlösen** — cwe-4k oder McNemar-primär (§8.6) —, sonst nagelt WP-2 eine Zuteilung
    fest, die unser Setting nicht zeigt.
 3. **Speed-A/B gelaufen (§7.17), `kQ4lMap`→Shared-Memory offen.** Die KV-Arm-Liste (fp16/int8/q4lm32/q4lm32w/
@@ -1485,14 +1519,17 @@ Das `--kv`-Argument (auch die Formatspalte in den TSVs):
 
 ### 12.4 Bytes / BPE
 
-- **Bit/Wert (Auslieferung, Modell):** `Basis + 16·(S+B)/L`, wobei `Basis` die **gespeicherten** Bits des Formats,
-  `B` der größte Append-Batch (Prompt-Chunk) und **L** die Zahl Zellen je Sequenz ist (cwe-2k: L ≈ 2044 =
-  16.351 / 8). Das ist eine **Rechnung, keine Messung** — die Probe-Bytes sind für alle Arme gleich. Zwei
-  Korrekturen gegenüber der früheren Form `Basis + (16 − Basis)·(S+R)/L`: der Pool hält die exakte Zelle
-  **zusätzlich** zum quantisierten Wert (also volle 16 Bit, nicht die Differenz), und die feste Spanne ist seit dem
-  Ring `S + B`, nicht `S + R` (jede Query eines Chunks hat ihren eigenen Horizont, §7.19). Bei 2K hebt das die Zahl
-  für 256/64 von ≈5,9 auf ≈10,5 Bit; ab ≈3.100 Zellen (Break-even gegen `int8`) liegt sie darunter (64K: 4,2 Bit,
-  §7.19-Tabelle).
+- **Bit/Wert (Auslieferung, Modell):** `Basis + 16·(R+S+B)/L`, wobei `Basis` die **gespeicherten** Bits des Formats,
+  `R`/`S` die Sink-/Recent-Zellen, `B` der größte Append-Batch (Prompt-Chunk) und **L** die Zahl Zellen je Sequenz ist
+  (cwe-2k: L ≈ 2044 = 16.351 / 8). Das ist eine **Rechnung, keine Messung** — die Qualitätsläufe tragen die Bytes
+  nicht, ihre Probe war für alle Arme gleich. Drei Korrekturen gegenüber der früheren Form
+  `Basis + (16 − Basis)·(S+R)/L`: der Pool hält die exakte Zelle
+  **zusätzlich** zum quantisierten Wert (also volle 16 Bit, nicht die Differenz); die feste Spanne ist seit dem Ring
+  `R + S + B`, nicht `S + R` (die Sinks sind Zeilen, und jede Query eines Chunks hat ihren eigenen Horizont, §7.19);
+  und das Tag kostet 4 B je Ringzeile (hier 15 KiB, 0,08 %). Bei 2K hebt das die Zahl für 256/64 von ≈5,9 auf ≈10,5
+  Bit; ab ≈3.100 Zellen (Break-even gegen `int8`) liegt sie darunter (64K: 4,2 Bit; 128K: 4,10 Bit / 788 MiB bei
+  `B = 512`, §7.19-Tabellen). Bei 128K ist `B` die zweite Achse: 512 → 4,10, 2.048 → 4,29, 6.144 (`--prefill auto`
+  auf Windows HIP) → 4,79, 16.384 → 6,04 Bit.
 - **BPE (bits per element):** „ehrliche BPE-Bilanz" = Payload + Skalen-/Nullpunkt-Metadaten + Fensterbytes bei
   **genannter** Kontextlänge (§8.5).
 - **Cross-Over:** der Byte-Bereich, in dem zwei Basen (hier ≤3 Bit vs. 4 Bit) die Führung **pro Byte** tauschen.
