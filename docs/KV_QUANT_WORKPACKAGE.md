@@ -950,6 +950,12 @@ bei diesem Modell sind `n_head_kv = 2`, `head_dim = 256` und **12** Layer tragen
 **1.536 MiB** — der Pool skaliert mit `max_context`, nicht mit dem Resident-Set, **hebelt also das Streaming
 aus** (16K ≈ 384 MiB, 64K ≈ 1,5 GiB, 128K ≈ 3 GiB). **Korrektur:** der Review hatte „2K ≈ 10 MB, 16K ≈ 64 MB,
 128K ≈ 512 MB" und 48 Layer genannt; richtig sind 12 QSA-Layer und 24 KiB/Zelle (2K ≈ 48 MiB).
+**Aber das ist die Form der *Probe*, nicht die der Auslieferung:** der flache Pool hält fp16 für **jede** Zelle,
+weil er direkt über die Zellnummer indiziert wird. Die Auslieferungsform ist ein **Ring von `S + R` Zeilen**
+(Sink-Bereich `cell < R`, Ringbereich `R + cell % S`) — bei 256/64 also `320 × 2 KiB × 12 Layer = **7,5 MiB**`,
+**kontextunabhängig** (512/128: 15 MiB; Rechenweg aus der exakten 2 KiB/Zelle/Layer der 64K-Messung, keine eigene
+Messung). Damit fällt auch der Grund für die laute Verweigerung „Fenster + elastic K/V" weg (der flache Pool paßt
+nicht in die per-Slot-Pools). Bis dieser Ring gebaut ist, gilt die Zahl oben **nur für die Probe**.
 
 ### 7.18 Nachbesserungen aus dem Code-Review (K1–K4, R6)
 
@@ -1320,7 +1326,8 @@ Das `--kv`-Argument (auch die Formatspalte in den TSVs):
   die **Lesepolitik**, nicht die Auslieferungsbytes. Größe (§7.17, gemessen): `max_cells × n_head_kv × head_dim × 4 B`
   je Layer = 2.048 B/Zelle, bei **12** QSA-Layern dieses Modells (`qsa_interval = 4`) also **24 KiB je Kontextzelle**
   über alle Layer (16K ≈ 384 MiB, 64K ≈ 1,5 GiB). Der Pool folgt `max_context`, **nicht** dem Resident-Set —
-  `--kv-resident` verkleinert ihn nicht.
+  `--kv-resident` verkleinert ihn nicht. **Auslieferung wäre ein Ring** von `S + R` Zeilen (7,5 MiB bei 256/64,
+  kontextunabhängig, §7.17) — die Streaming-Unverträglichkeit oben ist die der Probe.
 
 ### 12.4 Bytes / BPE
 

@@ -71,6 +71,12 @@ everything loaded` zwischen Fenster-Arm und seinem Zwilling):
 Er skaliert mit `max_context`, nicht mit dem Resident-Set — das Fenster hebelt das Streaming aus. Hochgerechnet:
 16K ≈ 384 MiB, 64K ≈ 1,5 GiB, 128K ≈ 3 GiB, unabhängig von `--kv-resident`.
 
+**Aber:** das ist die Form der **Probe**, nicht die der Auslieferung. Der flache Pool hält fp16 für *jede* Zelle,
+weil der Leser direkt über die Zellnummer indiziert. Die Auslieferung wäre ein **Ring von `S + R` Zeilen**
+(Sinks `cell < R`, Ring `R + cell % S`) → bei 256/64 `320 × 2 KiB × 12 Layer = 7,5 MiB`, **kontextunabhängig**
+(512/128: 15 MiB). Das ist ein Rechenweg aus der exakten 2 KiB/Zelle/Layer der 64K-Messung, **keine** Messung:
+die Streaming-Unverträglichkeit gilt für die Probe, ein Ring würde sie nicht haben.
+
 **Korrektur einer Review-Zahl.** Der Code-Review hatte „2K ≈ 10 MB, 16K ≈ 64 MB, 128K ≈ 512 MB" und 48 Layer
 genannt. Beides war falsch: es sind **12** QSA-Layer (nicht 48) und **24 KiB pro Kontextzelle** (nicht ~4 KiB) →
 2K ≈ 48 MiB, 16K ≈ 384 MiB, 128K ≈ 3 GiB. Die 64K-Messung (1.536 MiB, exakt 12 × 128 MiB) ist die belastbare.
