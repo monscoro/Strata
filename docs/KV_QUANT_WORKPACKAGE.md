@@ -1230,7 +1230,7 @@ Gepaart, ganze Segmente (`ref − run`, negativ = `ref` besser): `int8 − 256/6
 `int8` zu trennen; Fenster gegen `q4lm8v` +0,0149/+0,0167 (8/8). Das Fenster schließt bei 4K **73 %** der
 `q4lm8v`→`int8`-Lücke (0,01093/0,01494). **Grenze:** bei 4K sind mit `B = 512` 832 von 4.096 Zellen exakt (20,3 %),
 bei 128K nur 0,63 % (`B = 512`) bzw. 4,9 % (`B = 6.144`) — das 4K-KL ist eine **Obergrenze** für den
-Langkontext-Nutzen, kein 128K-KL.
+Langkontext-Nutzen, kein 128K-KL; das 128K-KL steht in §7.21.
 
 **Nadel 32K/128K** (`B = 6.144`, Tiefen 10/50/90 %, je ein Code-Needle): `q4lm8v` 6/6, 256/64 6/6, 512/128 6/6
 (18/18). 128K-Prompts 125.256–125.258 Tokens, Prefill 242–299 s bei Tiefe 10/50 (der plain `q4lm8v`-Arm 298,8 s
@@ -1265,6 +1265,73 @@ cwe-4k 73 % der Lücke geschlossen und in der Antwortregion `int8`-gleich, Nadel
 der Prefill-Vorteil nicht reproduziert). `int8` bleibt der Default; das Fenster ist opt-in. Der Setup-Eintrag schreibt
 `--kv q4lm8v`, die S/R-Werte in `env` und läßt `--prefill auto`; die Byte-Tabelle nennt **5,29 Bit / 1.016 MiB**, nicht
 die 4,60/884 des 512er Chunks.
+
+### 7.21 128K-KL des Produktionspunkts (cwe-128k, 2026-10-21)
+
+**Aufbau.** Ein cwe-128k-Segment mit **131.063 Tokens**; 131.072 gehen nicht, weil der Engine-Check
+`n + max_new + 8 > max_context` lautet und `GEN 1` 8 Tokens Kopfraum braucht (131.063 liegt 0,007 % unter der
+128K-Grenze). `--max-context 131072`, `--short-read 131071`, `--prefill 512`, `--expert-cache 1` (ein Slot wie
+cwe-2k/cwe-4k), feste Swift-IQ3_XXS-Gewichte, fp16-K/V als Referenz; RX 9060 XT 16 GB (gfx1200), Windows HIP,
+Engine 0.1.44.1. Vier Läufe, je 131.062 Positionen: fp16 5.049 s, 256/64 4.943,5 s, `int8` 4.542,4 s, plain
+`q4lm8v` 4.541,5 s. Der Harness deckelt `--max-context` auf 131.072 (`9364d7f7`); unter 130.560 Tokens bleibt
+die Argumentliste unverändert. cwe-128k ist ein **anderer Satz** als cwe-4k (2.621 Codewörter statt 82); die
+4K-Zahlen sind kein Längenvergleich. Der Lauf nutzt `--prefill 512` (Short-Read); die Qualität ist die des
+Fensters 256/64, pro Query R+S = 320 exakte Zellen, unabhängig von der Ringkapazität B (die 832/6.464 in §7.20
+zählen die exakt gespeicherten Ringzellen R+S+B). Die 1.016 MiB gelten für den Produktionsring `B = 6.144`.
+
+**Letzte 4.096 Positionen** (Kontext 126.967–131.062), KL gegen fp16:
+
+| Arm | Bit @128K | KV MiB | KL | KL p99 | Top-1 (Agr. fp16) | PPL |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `int8` | 8,25 | 1.584 | 0,00959 | **0,01655** | 99,73 % | 2,4052 |
+| 256/64 | **5,29** | **1.016** | **0,00663** | 0,02977 | 99,73 % | 2,4079 |
+| plain `q4lm8v` | 4,50 | 864 | 0,01587 | 0,03079 | 99,51 % | 2,4029 |
+
+fp16-Referenz: KL 0, PPL 2,4149, Ziel-Top-1 79,74 %. Die KV-Werte für `int8` und 256/64 sind die Laufzeitwerte
+aus §7.20 (die KV-Größe hängt nicht am Expert-Cache); die 864 MiB des plainen `q4lm8v` sind aus dem Byte-Modell
+gerechnet (576 B/Zelle/Schicht, 12 QSA-Schichten), nicht als Laufzeitwert gemessen. „Top-1“ ist die
+Übereinstimmung mit dem fp16-Argmax; die Trefferquote des Text-Tokens (Ziel-Top-1) liegt bei allen vier Armen
+bei 75,4–76,1 % (ganz) und 79,7–79,8 % (Tail) — der Argmax bewegt sich kaum, die KL ist das Maß.
+
+**Weitere Bereiche:**
+
+| Bereich | `int8` | 256/64 | plain `q4lm8v` |
+| --- | ---: | ---: | ---: |
+| letzte 1.024, KL | **0,00265** | 0,00444 | 0,01096 |
+| letzte 1.024, p99 | **0,04056** | 0,06283 | 0,13641 |
+| ganzes Segment, KL | **0,10715** | 0,13312 | 0,15758 |
+| ganzes Segment, p99 | **3,65623** | 4,75603 | 5,55046 |
+| Antwortregion (27), KL | **0,00526** | 0,00861 | 0,01155 |
+| Antwortregion, Ziel-Top-1 | **96,30 %** | 92,59 % | 96,30 % |
+
+**Fenster gegen die Basis.** Auf den letzten 4.096 Positionen senkt 256/64 die KL gegenüber plain `q4lm8v` um
+**58 %** (0,00663 gegen 0,01587); p99 0,0298 gegen 0,0308, Top-1 99,73 gegen 99,51 %, ganzes Segment 0,1331
+gegen 0,1576 und p99 4,76 gegen 5,55. Der gepaarte 8-Block-t ist −1,77 (negativ = Fenster besser; die Blöcke
+sind benachbart und nicht unabhängig, der Test ist eine grobe Lesart). Die 0,79 Bit über der 4,5-Bit-Basis
+zahlen sich auf diesem Text im Tail-Mittel und im ganzen Segment aus, auch wenn der Block-t das bei 8
+benachbarten Blöcken nicht signifikant macht.
+
+**Fenster gegen `int8`.** Im Tail-Mittel liegt 256/64 vorn (0,00663 gegen 0,00959), aber der 8-Block-t ist
+**−0,74** — nicht signifikant; der Vorsprung kommt aus zwei Blöcken, in denen `int8` eigene Spitzen hat. In der
+robusteren Lesart ist `int8` vorn: p99 0,0166 gegen 0,0298, letzte 1.024 Positionen 0,00265 gegen 0,00444,
+Antwortregion 0,00526 gegen 0,00861, ganzes Segment 0,1072 gegen 0,1331 (p99 3,66 gegen 4,76). Ein
+Ziel-Top-1-Unterschied in der Antwortregion (96,30 gegen 92,59 %) ist **eine** Position von 27 — nicht
+belastbar. Das Fenster kauft bei 128K also keine Qualität gegenüber `int8`, sondern **Speicher**: −36 % KV
+(5,29/1.016 gegen 8,25/1.584).
+
+**Grenzen.** Ein Segment, ein Text; die 8 Blöcke sind benachbart, kein Segment-Paar wie bei cwe-4k (8 Segmente).
+Die Antwortregion hat 27 Positionen. Die p99 im ganzen Segment ist bei allen Armen hoch (3,66–5,55); die größten
+Einzel-KLs des Fensters liegen bei Position 3.033 (17,3), 124.954 (17,1) und 18.995 (15,8) — seltene harte
+Stellen des Texts, nicht auf den Anfang beschränkt (erste 4.096: KL 0,054; ein mittlerer 4K-Block 65.536–69.631:
+0,164). Auch `int8` hat p99 3,66, der Ausreißer ist also nicht allein der 4-Bit-Sockel. Bei allen drei Armen
+liegt die PPL auf diesem Text unter fp16 (Tail 2,403–2,408 gegen 2,415; ganz 3,136–3,316 gegen 3,178); die KL
+ist in allen Fällen positiv — die PPL-Differenz ist ein Endlich-Text-Effekt, kein Qualitätsgewinn.
+
+**Entscheidung.** Der Produktionspunkt bleibt **`q4lm8v` + Fenster 256/64 + `--prefill auto` (B = 6.144) =
+5,29 Bit / 1.016 MiB bei 128K**; `int8` bleibt der Qualitäts-Default (8,25/1.584), das Fenster der
+opt-in-Speicherpunkt. Die 128K-Messung stützt die 4K-Lesart: das Fenster schließt einen großen Teil der Lücke
+zur Basis und bleibt in der Nähe von `int8`, ohne es in der p99 und am Segmentende zu schlagen. Sie ersetzt die
+4K-Zahlen nicht (anderer Satz) und ändert den Setup-Eintrag nicht.
 
 ## 8. Messplan und Gate
 
