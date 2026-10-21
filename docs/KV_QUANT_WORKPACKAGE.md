@@ -1242,7 +1242,21 @@ bei Token **98.304** (= 16 × 6.144) stehen: `no progress for 60 s ... waiting f
 layer 38 of the prompt chunk from token 98304`, Selbststopp, Exit 3221226505 (0xC0000409), Engine 0.1.44.1. Der
 Server startete neu, der Wiederholungslauf war sauber (246 s). In den 8 × 123K-Prefills des Laufzeit-A/B (Fenster
 und `int8`) trat er nicht auf. Bedingungen für den Report: frischer Server nach 3 × 32K-Nadeln, erster 125.256-Token-
-Prompt, `--prefill auto` (6.144), 2.216 MiB frei beim Start (1.969 MiB, als die Anfrage begann), RX 9060 XT 16 GB.
+Prompt, `--prefill auto` (6.144), 2.216 MiB frei mit allem geladen (1.969 MiB, als die Anfrage begann), RX 9060 XT 16 GB.
+
+**Reproduktion (21.10.2026, Build 12:13).** Die exakte Folge — frischer Server, 3 × 32K-Nadel bei 10/50/90 %, dann
+128K — lief **6/6 ohne Hang**: 32K 66–68 s, 128K 252 / 251 / 147 s (der dritte mit Präfix-Wiederverwendung), 98.304
+in allen drei 128K-Prompts überschritten. Der Auto-Cache hatte **3.909 Slots / 6,37 GiB** und **2.216 MiB frei mit
+allem geladen** — **derselbe Wert** wie im Hang-Lauf (2.216; der Wiederholungslauf 2.203), aber **1.021 Slots mehr**:
+der Hang-Lauf hatte **2.888 Slots / 4,72 GiB**. Der freie VRAM trennt die Läufe also **nicht**; die Cache-Größe (und
+was im Hang-Lauf sonst 1,65 GiB belegte — nicht gemessen) tut es. Der Minidump-Hauptthread steht in
+`libhipblas.dll`/`amdhip64_7.dll`, alle 38 Threads in ntdll-Waits; ohne PDB und mit einem Dump-Binary (0x1cce000), das
+nicht der 12:13-Build (0x1bf5000) ist, ist das **kein** Beleg für einen q4-KV-Kernel. Die drei Fenster-Arme liefen
+3 × 128K (8/8 Zellen) ohne Hang. **Der manuelle Wert reproduziert den Hang nicht:** `--expert-cache 2888` ergab im
+Log **3.843 Slots**, nicht 2.888; die 2.888 des Hang-Laufs kamen aus dem **Auto-Shrink**, nicht aus dem manuellen
+Wert. Der Lauf wurde nach dem Start abgebrochen, damit kein zweiter GPU-Job neben dem Rebuild läuft. **Status:
+intermittierend, auf dem 12:13-Build nicht reproduziert; kein Hinweis auf einen q4-KV-Kernel; die Produktionsform
+(Fenster) ist nicht betroffen.**
 
 **Entscheidung.** Produktionspunkt ist **`q4lm8v` + Fenster 256/64 + `--prefill auto` (B = 6.144) = 5,29 Bit /
 1.016 MiB bei 128K** gegen `int8` 8,25 / 1.584 (−36 %), Prefill gleich, Decode innerhalb der Streuung, +14 % Slots,
