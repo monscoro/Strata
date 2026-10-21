@@ -94,6 +94,18 @@ VRAM. RTX 3090, the Coder at 198K context: 99 instead of 85 tokens/s output, the
 slower. It streams its KV cache like the other formats (`--kv-resident N`): on an RTX 2060 SUPER 8 GB at 128K with
 20,480 resident cells, +780 expert slots over resident K8V4, and it scores better than 4-bit KV on long documents.
 
+**4-bit Lloyd KV with the exact-cell window (opt-in):** setup's third KV choice (offered at 32K and more; below the
+~24K break-even the ring costs more than the 4-bit base saves) writes `--kv q4lm8v` and the engine env
+`STRATA_KV_WINDOW=1`, `STRATA_KV_WINDOW_S=256`, `STRATA_KV_WINDOW_R=64`; a hand-written config needs both. The
+first 64 cells (sinks) and the most recent 256 cells of each QSA layer stay in exact fp16, the rest in the 4-bit
+Lloyd format, and the window's ring is sized for the prompt chunk and stays resident. At 128K (131,072 cells, B =
+6,144, RX 9060 XT, Windows HIP): 4.79 bit / 920 MiB against 8-bit's 8.25 / 1,584 MiB (-42%), prompt 528 vs 526
+tok/s and decode 34.2 vs 35.2 tok/s (inside 8-bit's run-to-run spread), 14% more expert slots, hit rate 0.76 vs
+0.74. On cwe-4k (32,746 teacher-forced positions) KL 0.02090 against 8-bit's 0.01688 and plain `q4lm8v`'s 0.03182
+- 73% of the gap closed, and in the answer region no longer distinguishable from 8-bit; needles 6/6 at 32K and
+128K. `--prefill 512` reaches 4.10 bit / 788 MiB but prompts at 105 tok/s (-80%): offline only. 8-bit stays the
+default. Details: [`docs/KV_QUANT_WORKPACKAGE.md`](KV_QUANT_WORKPACKAGE.md).
+
 **Reproducible greedy output (0.1.30, opt-in, `STRATA_IQ_MT_MIN=1`):** with the IQ models, the CPU computes an
 expert for one token with ggml's dot product and for several tokens with Strata's multi-token kernels, which round
 slightly differently. How many tokens share an expert depends on the drafts in a verify window, so the same prompt

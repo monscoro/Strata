@@ -280,7 +280,7 @@ erfüllt, ohne einen hier nicht baubaren SYCL-Build zu behaupten.
 | **WP-2-Laufzeit** (erledigt §7.17) | **Speed-A/B der KV-Arme** (§11.4.3): 8 Arme × 3 Runden, Swift, 16K-Kontext. Ergebnis: Decode ist **formatfrei** (±6 %, `int8` führt), der Fenster-Überbau unsichtbar; der Fenster-Pool kostet **24 KiB je Kontextzelle** (64K ≈ 1,5 GiB) und ignoriert `--kv-resident` | Messbericht | S |
 | **WP-2-Review** (erledigt §7.18) | **Nachbesserungen aus dem Code-Review**: K1 Fenster nur auf q4-**Lloyd** (laut statt pfadabhängig), K2/K3 laute Fehler + Pool-Schranke (die `win_cells`-Schranke ist in §7.19 durch die Ring-Invariante ersetzt), K4 Snapshot nur bei vorhandenem Seitenpool, R6 Drafter reserviert keine Fenster-Pools. Als **datenneutral** gezeigt (Parität 12/12, zwei Arme byte-gleich zu ihren TSVs); R1/R4/R5 bewußt offen (Perf, §7.17 zeigt keinen meßbaren Effekt), B1 Metal-Stubs sind **älter als diese Arbeit** | Code + Doku | S |
 | **WP-2-Auslieferung** (erledigt §7.19) | **Der Ring + R1**: `R` Sink- plus `S + B` Ringzeilen mit Zell-Tag (statt flachem, kontextgroßem Pool), laut geprüfte Invariante `T ≤ S + B`, `B` folgt dem Prompt-Chunk; dazu der Fenster-Writer für K **und** V in einem Launch. Als **datenneutral** gezeigt (4 Arme byte-gleich) und die Ringgröße als Speichermessung belegt | Code + Parität + Doku | S |
-| **WP-2-128K-Gate** (offen) | **Der Arbeitspunkt bei realistischem Kontext** (128K-Rechnung: 4,10 Bit / 788 MiB bei `B = 512`, 4,79 / 920 MiB mit `--prefill auto` = 6.144, gegen `int8` 8,25 / 1.584): (a) Laufzeit-A/B `int8` / 256/64 `B = 6.144` / 256/64 `B = 512` bei 128K — Prefill-/Decode-tok/s, freier VRAM, Expert-Slots und Hit-Rate über eine gemischte Prompt-Menge; (b) Qualität cwe-4k + Nadel 32K/128K für 256/64 und 512/128; (c) danach der Setup-Eintrag (ein Nutzerwert, `--prefill`-Kopplung, `choices_from_config` + Byte-Tabellen) | Meßbericht + Setup-Vorschlag | M |
+| **WP-2-128K-Gate** (erledigt §7.20) | **Der Arbeitspunkt bei realistischem Kontext** (128K-Rechnung: 4,10 Bit / 788 MiB bei `B = 512`, 4,79 / 920 MiB mit `--prefill auto` = 6.144, gegen `int8` 8,25 / 1.584): (a) Laufzeit-A/B `int8` / 256/64 `B = 6.144` / 256/64 `B = 512` / 512/128 `B = 6.144` bei 128K — Prefill/Decode, freier VRAM, Slots, Hit-Rate über eine gemischte Prompt-Menge; (b) Qualität cwe-4k + Nadel 32K/128K; (c) Setup-Eintrag. **Ergebnis:** Produktionspunkt 256/64 `B = 6.144` (4,79/920): Prefill gleich `int8`, Decode −1,0 t/s (ns), +14 % Slots; `B = 512` Prefill 105 t/s (5× langsamer) → offline; 512/128 qualitativ gleich (t 0,02), +8–10 MiB, Decode −0,85 t/s; cwe-4k 0,02090 (73 % der `q4lm8v`-Lücke, Antwortregion = `int8`); Nadel 3 × 6/6 (gesättigt); ein Engine-Hang (plain `q4lm8v`, §7.20) | Meßbericht + Setup | M |
 | **WP-2** | **Echtes asymmetrisches Layout** (K4/V3-Klasse, echte Bytes, ehrliche BPE-Bilanz nach OSCAR) mit vorbereitetem, unbestücktem Slot für kalibriert-nur-K. **Bau erst nach WP-1 + WP-2a** | Format + Tests + Messbericht | L |
 | **WP-3** | **Kalibriert-nur-K als Vergleichsarm** (WUSH geschlossen / OSCAR Kovarianz; V fest; kein V-Folding; Kalibrierung ~8k Tokens). **Vergleich, nicht Hauptlinie** | Vergleichsarm + Messbericht | M–L |
 | **WP-4** | `STRATA_KV_SRHT=1` | Toggle + Messbericht | S |
@@ -1176,6 +1176,73 @@ Windows-HIP-Build bei **6.144** gedeckelt (`host_limits.hpp:19`) — die 4,10 Bi
 falsch); R4 (`swin[c]`-Hoist im Decode) und R5 (pre75-Schleife) bleiben offen — R5 läuft in einem Kernel, den diese
 Karte nie betritt (`pre75_attn()` ist auf gfx1200 falsch), ist dort also unmeßbar; B1/B2 wie in §7.18.
 
+### 7.20 WP-2-128K-Gate: der Arbeitspunkt bei 128K (Laufzeit, Qualität, Nadel)
+
+**Aufbau.** Acht Läufe (2 Runden × 4 Arme), Swift IQ3_XXS, `--max-context 131072` (128K = 131.072 Zellen), `--expert-cache auto`, kein
+`--kv-resident`, `--spec 4`, sechs kurze gemischte Prompts und ein 123.341–123.355-Token-Prompt (Repo-Korpus);
+RX 9060 XT 16 GB (gfx1200), Windows HIP, Engine 0.1.44.1. Mediane über die zwei Runden:
+
+| Arm | Bit @128K | KV MiB | Slots | Experten-Cache MiB | frei MiB | Prefill t/s | Decode t/s | Hit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `int8` | 8,25 | 1.584 | 3.033 | 5.075 | 2.285 | 526,1 | **35,2** | 0,74 |
+| 256/64 `B = 6.144` | 4,79 | 920 | 3.449 | 5.766 | 2.229 | 528,0 | 34,2 | 0,76 |
+| 256/64 `B = 512` | **4,10** | **788** | 3.496 | 5.842 | 2.204 | **105,0** | 34,5 | 0,76 |
+| 512/128 `B = 6.144` | 4,83 | ≈930 | 3.412 | 5.705 | 2.209 | **634,0** | 33,35 | 0,77 |
+
+Gepaart pro Runde gegen `int8` (Decode): 256/64 `B = 6.144` −2,4 / +0,4; `B = 512` −0,7 / −0,7; 512/128 −3,2 / −0,5.
+
+**Lesart.** `B = 512` ist als interaktiver 128K-Punkt erledigt: 105 gegen 526–634 t/s Prefill, der 123K-Prompt
+braucht ~19,5 statt ~3,9 min. Die 4,10 Bit / 788 MiB bleiben eine Offline-/Batch-Form. `B = 6.144` (blankes
+`--prefill auto`) ist der Produktionspunkt: −42 % KV, +14 % Slots, +2 pp Hit, Prefill **gleich** (528,0 gegen 526,1),
+Decode −1,0 t/s (−2,8 %) mit wechselnden Vorzeichen (−2,4 / +0,4) — innerhalb der Streuung; `int8` selbst lief
+36,6 → 33,8, der Fensterarm beide Male 34,2. `512/128` gegen `256/64`: 8–10 MiB mehr, Decode im Median 0,85 t/s
+langsamer, im A/B +20 % Prefill (634 gegen 528, beide Runden), aber **auf der Nadel nicht reproduziert** (246,3
+gegen 247,7 s bei Tiefe 10, 241,5 gegen 251,2 s bei 50 — also 1–4 % schneller, nicht 20 %) — der Vorteil hängt am
+Prompt-Inhalt, nicht an der Form. Der
+freie VRAM bleibt bei allen Armen ~2,2 GiB, weil `--expert-cache auto` 2.560 MiB Reserve hält; die KV-Ersparnis
+wird zu Slots. Mit `B = 6.144` liegt der Break-even gegen `int8` bei ≈24.300 Zellen (32K: 7,16 Bit, 64K: 5,58);
+darunter ist der 152-MiB-Ring teurer als die 4-Bit-Basis spart — der Setup-Eintrag bietet die Form deshalb erst ab
+32K an.
+
+**Qualität cwe-4k** (`--prefill 512`, ein Expert-Slot wie bei cwe-2k; 8 Segmente × 4.096 = 32.746 Positionen;
+cwe-4k ist ein anderer Satz als cwe-2k, die Zahlen sind nicht über die Sätze hinweg vergleichbar):
+
+| Arm | Top-1 | KL | KL p99 | PPL |
+| --- | ---: | ---: | ---: | ---: |
+| `int8` | 99,05 % | **0,01688** | 0,1888 | 2,860 |
+| `q4lm8v` | 98,40 % | 0,03182 | 0,5785 | 2,888 |
+| 256/64 | 98,84 % | **0,02090** | 0,2811 | 2,858 |
+| 512/128 | 98,95 % | **0,02088** | 0,2822 | 2,858 |
+
+Gepaart, ganze Segmente (`ref − run`, negativ = `ref` besser): `int8 − 256/64` **−0,00402** (t −3,55, 1/8 positiv);
+`int8 − 512/128` −0,00401 (t −2,74, 2/8 positiv); `q4lm8v − 256/64` **+0,01093** (t +4,10, **8/8**); `q4lm8v − 512/128`
++0,01094 (t +5,21, 8/8); `256/64 − 512/128` **+0,00001** (t +0,02, 4/8) — die beiden Formen sind nicht zu trennen.
+**Antwortregion:** `int8 − 256/64` −0,00159 (t −0,51, 2/8); `int8 − 512/128` +0,00014 (t +0,08, 4/8) — nicht von
+`int8` zu trennen; Fenster gegen `q4lm8v` +0,0149/+0,0167 (8/8). Das Fenster schließt bei 4K **73 %** der
+`q4lm8v`→`int8`-Lücke (0,01093/0,01494). **Grenze:** bei 4K sind mit `B = 512` 832 von 4.096 Zellen exakt (20,3 %),
+bei 128K nur 0,63 % (`B = 512`) bzw. 4,9 % (`B = 6.144`) — das 4K-KL ist eine **Obergrenze** für den
+Langkontext-Nutzen, kein 128K-KL.
+
+**Nadel 32K/128K** (`B = 6.144`, Tiefen 10/50/90 %, je ein Code-Needle): `q4lm8v` 6/6, 256/64 6/6, 512/128 6/6
+(18/18). 128K-Prompts 125.256–125.258 Tokens, Prefill 242–299 s bei Tiefe 10/50 (der plain `q4lm8v`-Arm 298,8 s
+bei 50, die beiden Fensterarme 241–251 s), 139–149 s bei 90 (Präfix-Wiederverwendung); 32K 62–68 s. Der Test ist
+**gesättigt** — er zeigt keine Regression, aber auch keine Auflösung zwischen den Armen.
+
+**Engine-Hang (offen, Bug-Report).** Im ersten 128K-Prefill des **plain** `q4lm8v` (ohne Fenster) blieb die Engine
+bei Token **98.304** (= 16 × 6.144) stehen: `no progress for 60 s ... waiting for the GPU (attention, router) at
+layer 38 of the prompt chunk from token 98304`, Selbststopp, Exit 3221226505 (0xC0000409), Engine 0.1.44.1. Der
+Server startete neu, der Wiederholungslauf war sauber (246 s). In den 8 × 123K-Prefills des Laufzeit-A/B (Fenster
+und `int8`) trat er nicht auf. Bedingungen für den Report: frischer Server nach 3 × 32K-Nadeln, erster 125.256-Token-
+Prompt, `--prefill auto` (6.144), 2.216 MiB frei beim Start (1.969 MiB, als die Anfrage begann), RX 9060 XT 16 GB.
+
+**Entscheidung.** Produktionspunkt ist **`q4lm8v` + Fenster 256/64 + `--prefill auto` (B = 6.144) = 4,79 Bit /
+920 MiB bei 128K** gegen `int8` 8,25 / 1.584 (−42 %), Prefill gleich, Decode innerhalb der Streuung, +14 % Slots,
+cwe-4k 73 % der Lücke geschlossen und in der Antwortregion `int8`-gleich, Nadel ohne Regression. `B = 512`
+(4,10/788) ist offline; `512/128` wird nicht genommen (Qualität gleich, +8–10 MiB, Decode ~0,85 t/s langsamer,
+der Prefill-Vorteil nicht reproduziert). `int8` bleibt der Default; das Fenster ist opt-in. Der Setup-Eintrag schreibt
+`--kv q4lm8v`, die S/R-Werte in `env` und läßt `--prefill auto`; die Byte-Tabelle nennt **4,79 Bit / 920 MiB**, nicht
+die 4,10/788 des 512er Chunks.
+
 ## 8. Messplan und Gate
 
 **Gewichts-Modell (ab 2026-10-14):** die Meßbasis ist **Swift IQ3_XXS**, nicht Q2_0. Begründung in §7.5: Q2_0 ist
@@ -1397,20 +1464,19 @@ K-Kanäle) und QuaRot/KVQuant als Rotations-/Per-Kanal-Kontext.
 
 ### 11.5 Empfehlungen (ohne Planänderung)
 
-1. **≤3 Bit × Fenster — erledigt (§7.15), entschieden (§7.16), auf 128K gerechnet.** Mit `R = 64` erreichen beide
-   Basen `int8`-Niveau, die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit (Modellwert für 2K; mit Ring und doppelter Haltung
-   sind es dort ≈10,5 Bit, bei 64K 4,2, **bei 128K 4,10 Bit / 788 MiB bei `B = 512`** — §7.19; die **Qualitäts**aussage
-   bleibt); die verbleibende Format-Differenz ist ns. Damit entscheidet nicht mehr das Format, sondern die
-   **Fensterform**: `R` ist ein eigener Hebel (R 8 → 128 bei festem S = 512 bringt +0,0020…0,0026 KL zurück,
-   richtungskonstant über 7–8 von 8 Segmenten). **Arbeitspunkt ab hier: Fenster `S/R = 256/64` auf der 3-Bit-Basis
-   `q4lm8v`** (KL 0,00702, von `int8` nicht zu trennen; Bytes: 4,10 Bit bei 128K, 4,2 bei 64K, 10,5 bei 2K, jeweils
-   `B = 512`) — das ist der billigste Punkt, der `int8`-Niveau erreicht; 128/8 bleibt meßbar darüber (KL 0,00869) und
-   spart bei 128K nur 4 MiB Ring. Bei 128K kostet die Formwahl 12 MiB (128/8 → 512/128), also entscheidet dort die
-   Qualität. **Nächster Schritt ist das 128K-Gate**, weil die Qualität nur bei 2K gemessen ist: (a) Laufzeit-A/B
-   `int8` / 256/64 mit `B = 6.144` (blankes `--prefill auto`) / 256/64 mit `B = 512` — Prefill- und Decode-tok/s,
-   freier VRAM, Expert-Slots und Hit-Rate über eine **gemischte Prompt-Menge** (mehrsprachig, Coding), weil die
-   Slot-Zahl erst mit vielen echten Aufgaben steigt; (b) cwe-4k + Nadel 32K/128K für 256/64 und 512/128. Danach der
-   Setup-Eintrag.
+1. **≤3 Bit × Fenster — erledigt (§7.15), entschieden (§7.16), 128K-Gate gelaufen (§7.20).** Mit `R = 64` erreichen
+   beide Basen `int8`-Niveau, die 3-Bit-Basis bei ≈5,9 statt 8,25 Bit (Modellwert für 2K; mit Ring und doppelter
+   Haltung sind es dort ≈10,5 Bit, bei 64K 4,2 (B = 512), **bei 128K 4,79 Bit / 920 MiB mit `B = 6.144`** — §7.20;
+   die 4,10/788 aus §7.19 gelten nur mit `--prefill 512` und sind offline, weil der Prefill dort 5× langsamer ist);
+   die verbleibende Format-Differenz ist ns. Damit entscheidet nicht mehr das Format, sondern die **Fensterform**:
+   `R` ist ein eigener Hebel (R 8 → 128 bei festem S = 512 bringt +0,0020…0,0026 KL zurück, richtungskonstant über
+   7–8 von 8 Segmenten). **Arbeitspunkt: Fenster `S/R = 256/64` auf der 3-Bit-Basis `q4lm8v`**, mit `--prefill auto`
+   (B = 6.144): cwe-4k 0,02090 (73 % der Lücke zu `int8`, Antwortregion nicht zu trennen), Nadel 6/6 bei 32K/128K,
+   Prefill gleich `int8`, Decode −1,0 t/s (ns), +14 % Slots, 920 statt 1.584 MiB. 512/128 ist qualitativ gleich
+   (t 0,02) und wird nicht genommen (+8–10 MiB, Decode ~0,85 t/s langsamer, der Prefill-Vorteil im A/B nicht auf der
+   Nadel reproduziert). **Der Setup-Eintrag ist der nächste Schritt**: ein Nutzerwert („4-bit with exact window“),
+   `--prefill auto`, S/R in `env`, `choices_from_config` liest `--kv q4lm8v`, Byte-Tabelle 4,79/920; angeboten erst
+   ab 32K (Break-even ≈24K).
 2. **K-vs-V-Power vor WP-2 einlösen** — cwe-4k oder McNemar-primär (§8.6) —, sonst nagelt WP-2 eine Zuteilung
    fest, die unser Setting nicht zeigt.
 3. **Speed-A/B gelaufen (§7.17), `kQ4lMap`→Shared-Memory offen.** Die KV-Arm-Liste (fp16/int8/q4lm32/q4lm32w/
