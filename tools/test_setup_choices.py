@@ -471,7 +471,9 @@ class WindowKV(unittest.TestCase):
 
     def test_effective_bytes_fall_with_context(self):
         self.assertEqual(setup.kv_cell_bytes("int8", 131072), 1056)
-        self.assertEqual(setup.kv_cell_bytes("q4lm8v", 131072), 566)   # 4.79 bit / 920 MiB at 128K
+        self.assertEqual(setup.kv_cell_bytes("q4lm8v", 32768), 905)    # ring 152 MiB over 32K
+        self.assertEqual(setup.kv_cell_bytes("q4lm8v", 65536), 718)
+        self.assertEqual(setup.kv_cell_bytes("q4lm8v", 131072), 625)   # 5.29 bit / 1,016 MiB at 128K
         self.assertGreater(setup.kv_cell_bytes("q4lm8v", 32768), setup.kv_cell_bytes("q4lm8v", 65536))
         self.assertGreater(setup.kv_cell_bytes("q4lm8v", 65536), setup.kv_cell_bytes("q4lm8v", 131072))
 

@@ -195,7 +195,7 @@ CUDA12_MIN_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 44, 1)             # versions compare all numbers; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
-KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816, "q4lm8v": 566}
+KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 KV_WINDOW_RING_MIB = 152               # q4lm8v's exact-cell window at B=6144: 12.6 MiB x 12 QSA layers + tags
 
 
@@ -203,10 +203,11 @@ def kv_cell_bytes(kv: str, ctx: int) -> int:
     """The KV cache's bytes per context token and attention layer (the 13-layer convention of the estimates below).
 
     q4lm8v (4-bit Lloyd K/V plus the exact-cell window) is not a flat number: its 152 MiB ring is always resident and
-    the 4.0-bit base covers the 12 QSA layers, so the effective value falls as the context grows - 846 B at 32K,
-    659 B at 64K, 566 B at 128K (measured 4.79 bit / 920 MiB at 128K, RX 9060 XT, Windows HIP, B=6144)."""
+    the 4.5-bit base (576 B per cell, the same 18-byte block as q4_0) covers the 12 QSA layers, so the effective value
+    falls as the context grows - 905 B at 32K, 718 B at 64K, 625 B at 128K (measured 5.29 bit / 1,016 MiB at 128K,
+    RX 9060 XT, Windows HIP, B=6144)."""
     if kv == "q4lm8v":
-        return int((512 * 12 * ctx + KV_WINDOW_RING_MIB * 2 ** 20) / (13 * max(ctx, 1)))
+        return int((576 * 12 * ctx + KV_WINDOW_RING_MIB * 2 ** 20) / (13 * max(ctx, 1)))
     return KV_CELL_BYTES.get(kv, 1056)
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
@@ -5172,8 +5173,11 @@ PARALLEL_COST_NOTE = ("parallel N reduces waiting for several users but costs ab
 def parallel_slot_gb(ctx: int, kv: str, streaming: bool) -> float:
     """#465: the VRAM one batch slot's session takes: its KV cache (12 QSA layers; with KV streaming only the 32K
     positions the attention reads stay in VRAM) and the DeltaNet state (~0.17 GB).  Measured: 0.56 GiB at 32K int8."""
-    kv_tok = 12 * kv_cell_bytes(kv, ctx) if kv == "q4lm8v" else 12 * (576 if kv == "q4_0" else 1056)
-    return (min(ctx, 32768) if streaming else ctx) * kv_tok / 1e9 + 0.17
+    cells = min(ctx, 32768) if streaming else ctx
+    if kv == "q4lm8v":   # 12 QSA layers at 576 B/cell plus the exact-cell window's ring, which is always resident
+        return cells * 12 * 576 / 1e9 + KV_WINDOW_RING_MIB * 2 ** 20 / 1e9 + 0.17
+    kv_tok = 12 * (576 if kv == "q4_0" else 1056)
+    return cells * kv_tok / 1e9 + 0.17
 
 
 def parallel_recommend(vram_gbs, arena_gb: float, ctx: int, kv: str, streaming: bool) -> int:
@@ -5734,7 +5738,7 @@ def main() -> int:
     ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "q4lm8v"],
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise), k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell) or q4lm8v (4-bit with the exact-cell "
-                         "window, 256/64: 4.79 bit/cell at 128K, 920 MiB against 1,584 MiB for int8; opt-in)")
+                         "window, 256/64: 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8; opt-in)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (yes = the encoder on the GPU)")
     ap.add_argument("--vision-tokens", type=int, metavar="N",
@@ -6305,9 +6309,9 @@ def main() -> int:
         say("  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
         say("             documents; long-context lookups (needle tests) still pass")
         opts = ["int8", "q4_0"]
-        if ctx >= 32768:        # below ~24K the 152 MiB ring costs more than the 4-bit base saves
+        if ctx >= 32768:        # below ~28K the 152 MiB ring costs more than the 4-bit base saves
             int8_mib = ctx * 12 * 1056 / 2 ** 20
-            win_mib = ctx * 12 * 512 / 2 ** 20 + KV_WINDOW_RING_MIB
+            win_mib = ctx * 12 * 576 / 2 ** 20 + KV_WINDOW_RING_MIB
             say(f"  3) 4-bit with exact window  (q4lm8v + 256/64: {win_mib:.0f} MiB at {ctx // 1024}K against "
                 f"{int8_mib:.0f} MiB")
             say("             for 8-bit, about as fast, more expert slots; accuracy at 4K between 8- and 4-bit, at")
@@ -6316,8 +6320,8 @@ def main() -> int:
         kv = opts[int(ask("KV cache?", [str(i + 1) for i in range(len(opts))], "1", a.yes)) - 1]
     if kv == "q4lm8v" and ctx < 32768:
         warn(f"the exact-cell window's ring is resident: at {ctx // 1024}K it needs about "
-             f"{ctx * 12 * 512 / 2 ** 20 + KV_WINDOW_RING_MIB:.0f} MiB against "
-             f"{ctx * 12 * 1056 / 2 ** 20:.0f} MiB for 8-bit (break-even ~24K); your choice is kept")
+             f"{ctx * 12 * 576 / 2 ** 20 + KV_WINDOW_RING_MIB:.0f} MiB against "
+             f"{ctx * 12 * 1056 / 2 ** 20:.0f} MiB for 8-bit (break-even ~28K); your choice is kept")
     if ctx > 8192:
         ok("KV cache: " + {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)",
                            "q4lm8v": "4-bit with exact window (256/64)"}[kv])

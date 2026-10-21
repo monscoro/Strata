@@ -16,6 +16,14 @@ class Parallel(unittest.TestCase):
         self.assertEqual(S.parallel_slot_gb(262144, "int8", True), S.parallel_slot_gb(32768, "int8", False))
         self.assertLess(S.parallel_slot_gb(32768, "q4_0", False), S.parallel_slot_gb(32768, "int8", False))
 
+    def test_q4lm8v_slot_adds_the_ring_once(self):
+        # 12 QSA layers at 576 B/cell + the 152 MiB exact-cell ring (always resident) + the DeltaNet state
+        self.assertAlmostEqual(S.parallel_slot_gb(32768, "q4lm8v", False), 0.556, delta=0.001)
+        # the ring is not scaled by KV streaming, and only the 32K positions stay
+        self.assertAlmostEqual(S.parallel_slot_gb(131072, "q4lm8v", True),
+                               S.parallel_slot_gb(32768, "q4lm8v", False), delta=0.001)
+        self.assertGreater(S.parallel_slot_gb(131072, "q4lm8v", False), 1.2)
+
     def test_recommendation_only_where_the_experts_mostly_fit(self):
         q2, iq3s = S.MODELS["Q2_0"]["arena_gb"], S.MODELS["IQ3_S"]["arena_gb"]
         # most experts on the CPU: slots cost speed per request (measured on the 12 GB 5070) - none recommended
