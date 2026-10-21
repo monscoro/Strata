@@ -215,8 +215,12 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16") -> li
     fixed = list(FIXED)
     if gpu_experts:
         fixed[1] = gpu_experts if isinstance(gpu_experts, str) else "1500"
-    return [cfg["exe"], "--serve", *out, *fixed, "--kv", kv, "--max-context", str(seg_tokens + 512),
-            "--short-read", str(seg_tokens + 64), "--prefill", "512"]
+    # The pack's context is 131,072 tokens; a 128K segment needs the whole window for the prompt plus one token.
+    # Without the cap a 128K set would ask for 131,584 and the engine would refuse the model's own context.
+    max_ctx = min(seg_tokens + 512, 131072)
+    short = min(seg_tokens + 64, max_ctx - 1)
+    return [cfg["exe"], "--serve", *out, *fixed, "--kv", kv, "--max-context", str(max_ctx),
+            "--short-read", str(short), "--prefill", "512"]
 
 
 def cmd_run(a) -> int:
