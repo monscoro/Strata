@@ -1,4 +1,4 @@
-# Arbeitspaket: die KV-Cache-Quantisierung verbessern (Stand 2026-10-18)
+# Arbeitspaket: die KV-Cache-Quantisierung verbessern (Stand 2026-10-21)
 
 Status: **WP-0 steht; WP-1a, WP-1 und WP-2a-Clip sind gebaut und gemessen** (`q4lm32`/`q4lm32s`: §5.1-Nachtrag,
 §7.3, §7.4; WP-1-Arme `q4lm32t`/`q4lm32nr`/`q4lm8v`: §7.8, §7.9; Clip `q4lm32c`: §7.10, §7.11). Der
@@ -16,10 +16,11 @@ datenneutral gezeigt (§7.18: Parität 12/12, zwei Arme byte-gleich zu ihren 202
 Auslieferungsform**: der Seitenpool ist ein **Ring** aus `R` Sink- plus `S + B` Ringzeilen mit Zell-Tag statt eines
 flachen, kontextgroßen Pools (19,5 MiB konstant bei 256/64 gegen 1,5 GiB bei 64K), mit laut geprüfter Batch-Schranke,
 `B` aus dem Prompt-Chunk, und **R1** (K und V in einem Launch) ist nachgezogen; Parität 12/12 und der Arbeitspunkt
-byte-gleich. **Arbeitspunkt ab hier: Fenster `S/R = 256/64` auf `q4lm8v`** (§11.5.1). Auf **128K** gerechnet sind das
-**4,60 Bit = 884 MiB** bei `B = 512` (5,29 Bit / 1.016 MiB, wenn `--prefill auto` den Ring auf 6.144 Zellen bemisst) gegen
-`int8`s 8,25 Bit / 1.584 MiB; die Fensterform kostet dort nur 12 MiB, die Formwahl fällt über Qualität. **Offen ist das
-128K-Gate** (§11.5.1): Laufzeit und Qualität bei 128K sind nicht gemessen. Der
+byte-gleich. **Produktionspunkt, festgeschrieben am 2026-10-21: Fenster `S/R = 256/64` auf `q4lm8v` mit
+`--prefill auto` (B = 6.144)** (§11.5.1) — 5,29 Bit / 1.016 MiB bei 128K gegen `int8`s 8,25 / 1.584 (−36 %).
+Das 128K-Gate ist geschlossen: Laufzeit, Slots und Nadel in §7.20, KL in §7.21 (letzte 4.096 Positionen 0,00663
+gegen `int8` 0,00959 und plain `q4lm8v` 0,01587; p99 und Segmentende gehören `int8`). `B = 512` (4,60/884)
+bleibt offline. `int8` bleibt der Default, das Fenster ist opt-in. Der
 Plan-Teil §1–§6 stammt aus dem Survey
 [KV_QUANT_RESEARCH.md](KV_QUANT_RESEARCH.md); wo die eigenen Messungen ihn korrigieren, steht das dabei. §4/§5 sind
 **Erwartungen aus fremden Messungen** und so gekennzeichnet; alle Zahlen in §7 sind **Strata-Messungen** mit dem
@@ -1327,8 +1328,8 @@ Stellen des Texts, nicht auf den Anfang beschränkt (erste 4.096: KL 0,054; ein 
 liegt die PPL auf diesem Text unter fp16 (Tail 2,403–2,408 gegen 2,415; ganz 3,136–3,316 gegen 3,178); die KL
 ist in allen Fällen positiv — die PPL-Differenz ist ein Endlich-Text-Effekt, kein Qualitätsgewinn.
 
-**Entscheidung.** Der Produktionspunkt bleibt **`q4lm8v` + Fenster 256/64 + `--prefill auto` (B = 6.144) =
-5,29 Bit / 1.016 MiB bei 128K**; `int8` bleibt der Qualitäts-Default (8,25/1.584), das Fenster der
+**Entscheidung.** Der Produktionspunkt ist damit **festgeschrieben: `q4lm8v` + Fenster 256/64 + `--prefill auto`
+(B = 6.144) = 5,29 Bit / 1.016 MiB bei 128K**; `int8` bleibt der Qualitäts-Default (8,25/1.584), das Fenster der
 opt-in-Speicherpunkt. Die 128K-Messung stützt die 4K-Lesart: das Fenster schließt einen großen Teil der Lücke
 zur Basis und bleibt in der Nähe von `int8`, ohne es in der p99 und am Segmentende zu schlagen. Sie ersetzt die
 4K-Zahlen nicht (anderer Satz) und ändert den Setup-Eintrag nicht.

@@ -503,6 +503,8 @@ class WindowKVWrite(unittest.TestCase):
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW"], "1")
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_S"], "256")
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_R"], "64")
+        # The production point keeps the engine's chunk choice; B = 6,144 on the Windows HIP build.
+        self.assertEqual(cfg["args"][cfg["args"].index("--prefill") + 1], "auto")
 
     def test_the_third_choice(self):
         code, out, cfg, _ = self.install(answers={"KV cache?": "3"})

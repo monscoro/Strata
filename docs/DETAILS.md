@@ -103,7 +103,9 @@ Lloyd format, and the window's ring is sized for the prompt chunk and stays resi
 tok/s and decode 34.2 vs 35.2 tok/s (inside 8-bit's run-to-run spread), 14% more expert slots, hit rate 0.76 vs
 0.74. On cwe-4k (32,746 teacher-forced positions) KL 0.02090 against 8-bit's 0.01688 and plain `q4lm8v`'s 0.03182
 - 73% of the gap closed, and in the answer region no longer distinguishable from 8-bit; needles 6/6 at 32K and
-128K. `--prefill 512` reaches 4.60 bit / 884 MiB but prompts at 105 tok/s (-80%): offline only. 8-bit stays the
+128K. At 128K on cwe-128k (131,062 teacher-forced positions; last 4,096) the window scores KL 0.00663 against
+8-bit's 0.00959 and plain `q4lm8v`'s 0.01587; 8-bit stays ahead in the p99 (0.0166 vs 0.0298) and in the last
+1,024 positions (0.00265 vs 0.00444). `--prefill 512` reaches 4.60 bit / 884 MiB but prompts at 105 tok/s (-80%): offline only. 8-bit stays the
 default. Details: [`docs/KV_QUANT_WORKPACKAGE.md`](KV_QUANT_WORKPACKAGE.md).
 
 **Reproducible greedy output (0.1.30, opt-in, `STRATA_IQ_MT_MIN=1`):** with the IQ models, the CPU computes an
