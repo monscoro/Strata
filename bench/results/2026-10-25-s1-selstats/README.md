@@ -83,8 +83,12 @@ Rand ist das Ergebnis „kein Hebel gefunden".
 ## Reproduktion
 
 ```powershell
-# 1. Bauen (ROCm-clang braucht die MSVC-Umgebung, docs/AMD_HIP.md)
-& "$env:TEMP\opencode\build-selstats.ps1"
+# 1. Bauen. ROCm-clang zielt auf die MSVC-ABI, also zuerst vcvars64 laden (docs/AMD_HIP.md), sonst
+#    bricht der Build mit "'cstdint' file not found" ab; danach ROCm und Ninja auf den Pfad.
+cmd /c "`"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat`" && set" |
+    ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') } }
+$env:PATH = "C:\Program Files\AMD\ROCm\7.1\bin;" + $env:PATH
+& "C:\Users\krone\git\kv-quant-strata\.venv\Scripts\ninja.exe" -C build-hip-port strata.exe
 
 # 2. Rauchtest: 2.048 Token, prüft nur, dass die TSV entsteht und plausibel ist
 python tools\kv_selstats.py run --out C:\Users\krone\git\Strata-data\bench\2026-10-25-s1-smoke `
