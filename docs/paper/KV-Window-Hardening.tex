@@ -75,33 +75,38 @@ This paper positions the window against prior and current KV-cache compression w
 
 \section{Related Work}\label{sec:related}
 
-KV-cache compression splits into \emph{eviction} and \emph{quantization}.
-Eviction keeps a subset of cells and drops the rest: H2O~\cite{h2o} accumulates attention as heavy hitters, SnapKV~\cite{snapkv} selects per-head clusters from an observation window, and PyramidKV~\cite{pyramidkv} allocates larger budgets to lower layers. Quantization keeps every cell at a lower bit width: KIVI~\cite{kivi} shows tuning-free 2-bit quantization with per-channel K and per-token V plus an fp16 residual over recent tokens; KVQuant~\cite{kvquant} adds per-channel keys, pre-RoPE key quantization and non-uniform datatypes to reach sub-0.1 PPL degradation at 3 bits; GEAR~\cite{gear} corrects residual error with a low-rank plus sparse-outlier decomposition. Rotations make low-bit quantization robust to channel outliers: QuaRot~\cite{quarot} and RotateKV~\cite{rotatekv} apply orthogonal or Hadamard rotations before quantization. Strata's 4-bit base quantizes per cell after exactly such an orthonormal Walsh--Hadamard rotation, so it belongs to that family. Its production split stores K with 16 Lloyd levels and V with 8 inside the same 4-bit block; the paired K-vs-V contrast on Swift did not support a K-is-more-sensitive story ($t{=}{+}0.05$, McNemar $p{=}1.0$\,\cite{strata-wp}), so the split is a byte/codebook choice, and KVTuner~\cite{kvtuner}'s layer-wise pairs are a different, so-far unmeasured axis. For token-precision co-tuning, \cite{top-k} studies the token/bit trade-off. Table~\ref{tab:survey} collects the documented operating points in one view.
+KV-cache compression splits into methods that drop cells, methods that store every cell in fewer bits, and methods that do not read every stored cell. The window is in the second family, with one exact overlay. The paragraphs below keep only the mechanisms that share a part with that design. Every number in them is the cited paper's, on that paper's models. None was re-run here.
 
 \begin{table}[t]
 \centering
-\small
+\footnotesize
 \begin{tabular}{@{}lll@{}}
 \toprule
 \textbf{System} & \textbf{Point} & \textbf{Documented outcome} \\
 \midrule
-KIVI~\cite{kivi} & 2b & per-channel K,\\
+KIVI~\cite{kivi} & 2b + recent fp16 & per-channel K, \\
 & & per-token V \\
-KVQuant~\cite{kvquant} & 3b per-channel & $<$0.1 PPL degradation \\
+SKVQ~\cite{skvq} & 2b K / 1.5b V & high-precision \\
+& & recent window \\
+IntactKV~\cite{intactkv} & fp16 pivots & first tokens exact, \\
+& & rest quantized \\
+RotateKV~\cite{rotatekv} & 2b + sinks & FWHT, sink-aware \\
+KVQuant~\cite{kvquant} & 3b per-channel & $<$0.1 PPL \\
 & + pre-RoPE & (Wikitext-2/C4) \\
+SAW-INT4~\cite{sawint4} & INT4 + Hadamard & paged serving; \\
+& & near-lossless (theirs) \\
+QServe~\cite{qserve} & KV4, W4A8KV4 & serving speedup \\
+& & on A100 / L40S \\
 GEAR~\cite{gear} & 4b + correction & low-rank + sparse \\
-RotateKV~\cite{rotatekv} & 2b & rotation-based \\
-KVTuner~\cite{kvtuner} & 3.25--4.0b & layer-wise pairs, \\
-& & nearly lossless \\
+KVTuner~\cite{kvtuner} & 3.25--4.0b & layer-wise pairs \\
+DuoAttention~\cite{duoattn} & head split & full cache only on \\
+& & retrieval heads \\
 SnapKV~\cite{snapkv} & eviction & per-head clusters \\
-H2O~\cite{h2o} & eviction & attention-accumulated \\
-& & heavy hitters \\
-PyramidKV~\cite{pyramidkv} & eviction & 12\% of cache matches \\
-& & full cache (LongBench) \\
-\texttt{llama.cpp}~\cite{llama-cpp} & q8\_0 / q4\_0 & block-quantized, \\
-& & per-cache type \\
+H2O~\cite{h2o} & eviction & heavy hitters \\
+PyramidKV~\cite{pyramidkv} & eviction & 12\% matches full \\
+& & cache (LongBench) \\
+\texttt{llama.cpp}~\cite{llama-cpp} & q8\_0 / q4\_0 & block-quantized \\
 \texttt{vLLM}~\cite{vllm-fp8} & FP8 & $\leq$1--2 acc.\ points \\
-& & up to 1M-token prompts \\
 \bottomrule
 \end{tabular}
 \caption{Documented operating points from the literature and production
@@ -110,15 +115,23 @@ own hardware and models; they are not comparable across rows.}
 \label{tab:survey}
 \end{table}
 
-In production, \texttt{llama.cpp} ships block-quantized KV (q8\_0, q4\_0) selected per cache\,\cite{llama-cpp}, and \texttt{vLLM} ships an FP8 KV-cache path whose reported degradation stays within 1--2 accuracy points on its reasoning-suite benchmark (the caveats already stated above apply)\,\cite{vllm-fp8}. Strata targets a corner where neither path exists---one consumer GPU through HIP, no FP8 attention kernels---so its block-quantized \texttt{int8} default already provides the two-times point, and this paper moves toward 4-bit.
+\paragraph{An exact residual on a low-bit bulk.}
+This is the closest family. KIVI keeps a fixed fp16 residual of recent tokens and quantizes the rest at 2 bits, per-channel for K and per-token for V~\cite{kivi}. SKVQ keeps a high-precision sliding window of recent tokens and reports 2-bit keys with 1.5-bit values at small loss on its models, up to a 1M context for a 7B model on an 80\,GB GPU~\cite{skvq}. IntactKV keeps the KV of a few pivot tokens, the ones that collect the attention mass, in fp16 and quantizes the rest~\cite{intactkv}. RotateKV protects attention sinks explicitly, reorders channels, and rotates with a fast Walsh--Hadamard transform before a 2-bit code; on LLaMA-2-13B it reports under 0.3 WikiText-2 perplexity degradation~\cite{rotatekv}. PM-KVQ, aimed at long chain-of-thought, stores the first token at higher precision, keeps a recent window, and lowers the bit width only as the block ages~\cite{pmkvq}. The window shares the recent residual with KIVI and SKVQ and the sink retention with StreamingLLM~\cite{streamingllm}, IntactKV and RotateKV. It does not share their quantizers. The exact cells are an \emph{additional} side pool: the quantized row stays, so a missed exact read falls back to 4 bits instead of a hole. No calibration set is used.
 
-The window itself is a quantization-side design: it keeps the whole context addressable (no eviction, unlike~\cite{h2o,snapkv,pyramidkv}), and it spends fp16 bytes on a small recent-plus-sink overlay. The recent-token residual is KIVI's~\cite{kivi} and the sink retention is StreamingLLM's~\cite{streamingllm}; what this paper adds is the overlay on top of a block-quantized Lloyd base on this engine, the hardening around it, and the paired-statistics discipline used to read it. The fair competitor we do not measure here is a per-channel-K arm in the KIVI/KVQuant style on the same engine; it is listed as follow-up work.
+\paragraph{Axis, rotation, and which tensor gets the bits.}
+KVQuant quantizes keys per channel, before RoPE, into non-uniform datatypes, and reports sub-0.1 perplexity degradation at 3 bits on WikiText-2 and C4~\cite{kvquant}. QuaRot and SpinQuant rotate weights, activations and the KV cache so that 4-bit inference is less outlier-sensitive; SpinQuant learns the rotation and reports a smaller gap than QuaRot's random one on its LLaMA models~\cite{quarot,spinquant}. SAW-INT4, a 2026 serving design, finds that token-wise INT4 plus a block-diagonal Hadamard recovers nearly all of the accuracy naive INT4 loses, once the method must fit a paged cache and a fused attention kernel; heavier schemes added little once that constraint bound~\cite{sawint4}. Strata's 4-bit base quantizes per cell after an orthonormal Walsh--Hadamard, so it sits in that family. A paired on/off ablation of that rotation, on the 16-level base without the window, was a tie at 2K and 4K~\cite{strata-wp}. That tie is not a statement about the production window, about 128K, or about SAW-INT4's INT4. The production split stores K at 16 Lloyd levels and V at 8 in one 4-bit block. A paired K-versus-V bit contrast on Swift did not support a ``keys want the bits'' story ($t{=}{+}0.05$, McNemar $p{=}1.0$\,\cite{strata-wp}). That story is nevertheless the published direction of a 2025 geometry argument, which reports that key-favored allocations retain more accuracy than uniform ones on its models~\cite{spectralkv}. The two results are not a contradiction until they are run on the same model. KVTuner's layer-wise pairs, reported nearly lossless at 3.25--4.0 bits on its models~\cite{kvtuner}, and the token/bit co-tuning of~\cite{top-k} are different axes. Neither is measured here.
 
-Code and documentation for the compared systems are listed with the references\,\cite{streamingllm,kivi,kvquant,kvtuner,llama-cpp,vllm-fp8}. Strata's own measurement provenance lives in the repository and is described in Section~6.6.
+\paragraph{Correcting the residual, and not reading every cell.}
+GEAR adds a low-rank plus sparse correction on top of a quantized cache~\cite{gear}. Palu compresses the hidden dimension with a low-rank projection and reports that stacking quantization on that projection costs little extra perplexity on its models~\cite{palu}. ShadowKV keeps a low-rank key cache, offloads values, and reconstructs a sparse set at decode; on an A100 it reports up to $6\times$ batch and $3.04\times$ throughput, including on RULER and needle tests~\cite{shadowkv}. A 2026 adaptation result is the caution those correction papers need: low-rank updates recovered 54\% and 76\% of the held-out perplexity gap of a frozen 4-bit cache on two models, but a 2-bit recovery that restored perplexity restored only 11--12 of 180 retrieval cases~\cite{kvadapt}. Perplexity and retrieval are not the same yardstick. Eviction drops cells: H2O by accumulated attention, SnapKV by per-head clusters, PyramidKV by a larger budget in lower layers, Scissorhands by a persistence hypothesis, ChunkKV by semantic chunks~\cite{h2o,snapkv,pyramidkv,scissorhands,chunkkv}. The window does not. Selection without a drop is the other line, and it is the one this model already uses. Quest loads the top pages for the current query~\cite{quest}. DuoAttention and RazorAttention keep a full cache only on retrieval heads and a short cache on streaming heads~\cite{duoattn,razorattn}. Native Sparse Attention trains a hierarchical compression-plus-selection in place of dense attention~\cite{nsa}. The measured model is not that architecture. It is a hybrid whose indexer selects at most 2,048 cells per query (Section~3). The window changes the precision of selected cells that fall in the sink or recent set. It does not change the selection. That last sentence is a static reading, listed as follow-up.
+
+\paragraph{What production ships.}
+Table~\ref{tab:survey} collects operating points. They are not comparable across rows. QServe ships a 4-bit KV cache inside a W4A8KV4 stack and reports serving speedups against TensorRT-LLM on A100 and L40S~\cite{qserve}. \texttt{llama.cpp} ships block-quantized KV (q8\_0, q4\_0) selected per cache~\cite{llama-cpp}. \texttt{vLLM} ships an FP8 KV path whose reported degradation stays within 1--2 accuracy points on its reasoning suite, with the caveats already stated in Section~1~\cite{vllm-fp8}. Strata's corner has none of those kernels: one consumer GPU through HIP, no FP8 attention. The \texttt{int8} default is already the two-times point, and this paper moves toward 4 bits. The fair competitor not measured here is a per-channel-K arm, before the rotation, on this indexer cache. It is follow-up work, not a claim.
+
+Code and documentation for the compared systems are listed with the references. Strata's own measurement provenance is in Section~6.6.
 
 \section{Design of the Exact-Cell Window}
 
-We name the machine (a static reading of the compiled \texttt{geometry.hpp}, not a measurement): the measured model is Qwen3.8-Flash-Next, a hybrid of 48 layers in which every fourth layer (layers 3, 7, \ldots{}, 47) is a full-attention QSA layer with the KV cache this paper quantizes --- 12 such layers; the other 36 carry no cache of this kind. A QSA query does not read the whole cache: its indexer selects at most 2,048 cells (plus block rounding) per query. The window changes the \emph{precision} of selected cells that fall in the sink or recent set, not the selection itself --- we found no code that forces sinks or recent cells into the selection, and verifying that is on the follow-up list (Section~10). ``Keeps the cells that matter most'' (Section~1) is therefore a precision statement about selected cells, and the eviction comparison of Section~2 is about storage, not about which cells are attended.
+We name the machine (a static reading of the compiled \texttt{geometry.hpp}, not a measurement): the measured model is Qwen3.8-Flash-Next, a hybrid of 48 layers in which every fourth layer (layers 3, 7, \ldots{}, 47) is a full-attention QSA layer with the KV cache this paper quantizes --- 12 such layers; the other 36 carry no cache of this kind. A QSA query does not read the whole cache: its indexer selects at most 2,048 cells (plus block rounding) per query. Of the 256 dimensions in a head, the rotary embedding covers 64; the other 192 are not rotated. The indexer's own keys are a separate fp32 store, because a different selection is a different attention. Both facts are the same static reading. The window changes the \emph{precision} of selected cells that fall in the sink or recent set, not the selection itself --- we found no code that forces sinks or recent cells into the selection, and verifying that is on the follow-up list (Section~10). ``Keeps the cells that matter most'' (Section~1) is therefore a precision statement about selected cells, and the eviction comparison of Section~2 is about storage, not about which cells are attended.
 
 Three sizes need distinct words. A \emph{token position} is one context token in one layer; in the 4-bit base its stored cost is 576\,B per layer (K and V together). A \emph{scalar element} is one K or V number --- 1,024 per token position (2 KV heads $\times$ 256, K and V) --- and the rates of this paper (4.50, 5.29, 8.25 \emph{bit/cell}) are bits per element. In the prose, \emph{cell} means one token position's K/V entry in one cache-carrying layer, and a \emph{row} is that position's storage within the layer's cache. \texttt{int8} names the default's block format: 8-bit content with one fp16 scale per 64 elements, 8.25 effective bit/element.
 
@@ -394,21 +407,40 @@ Two questions bound how the point is used today. First, multi-turn growth: the w
 
 \section{Threats to Validity}
 
-The measurements come from one GPU (RX~9060~XT, gfx1200), one operating system (Windows), one ROCm/HIP stack (7.1) and one weight set (Swift~1.5 IQ3\_XXS); the tables name the engine build that produced them (Section~6.6). CUDA and SYCL were not built; the changes are backend-agnostic, but that is an argument, not a measurement. The short-context results have eight segments; each 128K result is one text with adjacent blocks, so those $t$ values are descriptive. The $R{+}S{+}B$ ring is 20.3\% of the 4K context at $B{=}512$ and 4.9\% of the 128K context at $B{=}6{,}144$; those are the ring's resident capacity. A scored token under the short-read quality path sees the $R{+}S$ overlay (320 positions\,\cite{strata-wp}), of which only the cells the indexer selects are read exact (Section~3, static reading); the 4K KL is an upper bound on the long-context benefit, not a prediction, and the 128K KL is measured separately. The prefill KV is also quantized, so the absolute KL gaps are not comparable with decode-only field numbers. Finally, the window is a memory trade-off, not a quality improvement over \texttt{int8}; the paper should be read that way. Two coverage limits stand out. The quality evidence comes from one task family (RULER complex word extraction) on one model; the full RULER set or LongBench subsets were not run, so the quality sentences here carry no claim outside this family. And no community-standard arm --- for example a KIVI-style per-channel-K quantization with an fp16 residual~\cite{kivi,kvquant} --- was measured on this engine, so the 5.29-bit point has no external anchor on the published trade-off curve; the fair version of that arm is per-channel on this indexer-architecture cache, not on a dense-attention cache. One intermittent engine hang was seen once on the \emph{plain} 4-bit arm (no window) during a 128K prefill; it did not reproduce in 6/6 reruns, and the window arms completed three 128K runs without it --- an open engine bug report, not evidence against the window.
+The measurements come from one GPU (RX~9060~XT, gfx1200), one operating system (Windows), one ROCm/HIP stack (7.1) and one weight set (Swift~1.5 IQ3\_XXS); the tables name the engine build that produced them (Section~6.6). CUDA and SYCL were not built; the changes are backend-agnostic, but that is an argument, not a measurement. The short-context results have eight segments; each 128K result is one text with adjacent blocks, so those $t$ values are descriptive. The $R{+}S{+}B$ ring is 20.3\% of the 4K context at $B{=}512$ and 4.9\% of the 128K context at $B{=}6{,}144$; those are the ring's resident capacity. A scored token under the short-read quality path sees the $R{+}S$ overlay (320 positions\,\cite{strata-wp}), of which only the cells the indexer selects are read exact (Section~3, static reading); the 4K KL is an upper bound on the long-context benefit, not a prediction, and the 128K KL is measured separately. The prefill KV is also quantized, so the absolute KL gaps are not comparable with decode-only field numbers. Finally, the window is a memory trade-off, not a quality improvement over \texttt{int8}; the paper should be read that way. Two coverage limits stand out. The quality evidence comes from one task family (RULER complex word extraction) on one model; the full RULER set or LongBench subsets were not run, so the quality sentences here carry no claim outside this family. And no community-standard arm --- for example a KIVI-style per-channel-K quantization with an fp16 residual~\cite{kivi,kvquant} --- was measured on this engine, so the 5.29-bit point has no external anchor on the published trade-off curve; the fair version of that arm is per-channel before the rotation, on this indexer-architecture cache, not on a dense-attention cache (Section~\ref{sec:followup}). One intermittent engine hang was seen once on the \emph{plain} 4-bit arm (no window) during a 128K prefill; it did not reproduce in 6/6 reruns, and the window arms completed three 128K runs without it --- an open engine bug report, not evidence against the window.
 
-\section{Follow-up Work}\label{sec:followup}
+\section{Avenues for Improvement}\label{sec:followup}
 
-Two gates remain. A full cell-to-row parity test should dump every window row at write time and re-read it through the window reader on every shape: ring wrap after scrolling past $R$ rows, stale-tag fallback, sink rows, batch-boundary shapes and the empty-tag case. The second gate is build coverage: CUDA (nvcc) and Intel SYCL (dpcpp) should compile and pass their parity suites. \texttt{q4lm8v} is not offered on SYCL, so the window paths are dead there, but they should still compile.
+The sections above are the status quo. The window does not beat \texttt{int8} on the statistics that carry weight, and a larger window is not how that changes. It spends the byte headroom, from 5.29 toward 8.25 bit/cell, on more exact cells and leaves the bulk at 4 bits, where \texttt{int8} is the better code. The 512/128 pair already ties 256/64 at 4K (Section~8.2). The package below is a falsification ladder. Nothing in it is a result.
 
-Beyond the gates, the next measurement round has six limbs. Three need GPU time: a per-channel-K arm in the KIVI/KVQuant style on the same engine (the fair community competitor this paper does not include, Section~4); a second RULER task family at 4K, since the quality evidence above covers only cwe; and a finer $S/R$ sweep at 128K including pairs smaller than 256/64, because the current data support 256/64 as the cheapest measured arm, not as a local optimum (Section~8.2). Two more score existing corpora differently: the paired mid-segment scoring of the middle 4K block (positions 65,536--69,631) on the 128K text, where the window arm is already scored but the other arms are not (Section~8.4), and a multi-turn append A/B where short prompts grow a long context turn by turn (Section~8.3). The last limb is offline arithmetic: a bootstrap over positions for the p99 entries, which needs no engine runs (Section~6.3). Optionally, the $\leq$3-bit overlay crossover at 128K (Section~8.4) rounds out the byte side. Both gates are review items, not shipped claims.
+An arm wins only if four things hold, all set before the first new run. Paired mean KL at 4K does not favor \texttt{int8}. Whole-segment KL and p99 at 128K do not favor \texttt{int8} on either text. The effective rate at 128K stays under 8.25 bit/cell; otherwise the result is to keep \texttt{int8}. The \texttt{int8} dump-logits SHA is unchanged. A tie is not a win. A tail-mean win on one text is not a win: the window already has one, and it reverses on the second text. A 128K run is not started for an arm that has not won at 4K. Every arm is opt-in.
+
+The work package has already closed five doors, and this package does not reopen them\,\cite{strata-wp}. Clipping after the rotation made the 2K KL worse. Turning the Walsh--Hadamard off was a tie on the 16-level base at 2K and 4K, which is not a statement about the production window. A K-versus-V bit contrast did not support giving the keys more bits ($t{=}{+}0.05$). A 3-bit base without the window was worse. $R{=}8$ was too small a sink count. The published direction that keys should keep the bits\,\cite{spectralkv} stands as their result on their models. It is not a reason to rerun a contrast this model has already failed.
+
+Each step has a kill, and the next step starts only if the kill did not fire.
+
+\begin{enumerate}
+\item Rescore one existing 4K pair under a wider KL than the top-64 truncation of Section~6.3. Scorer only; the engine is not touched. If the ranking and the sign count agree with Table~\ref{tab:q4k}, the bar stands. If they flip, no kernel is built until 128K is reread under the same definition.
+\item Count, on one 128K prefill, the share of indexer selections that fall in $R$, in $S$, and in neither. The rule, set now, is that a share below one half in $R{+}S$ kills a larger positional window. The sink-and-recent overlay is then the literature's mechanism\,\cite{kivi,skvq,intactkv,rotatekv} implemented on cells this model does not read. That sentence is a static reading until the counter is run (Section~3).
+\item Report channel second moments of K before and after the Walsh--Hadamard, split into the 64 rotated dimensions and the 192 that are not. If the pre-rotation channels are not the heavier tail, a per-channel arm is not built. Per-channel scales after the rotation are not the arm: the rotation mixes the channels (Section~3, static).
+\item Run only formats the engine already has: 16 levels on K and on V, plus the production window, against \texttt{int8}, at 4K. A tie kills it. No 128K follows a tie.
+\item Build a per-channel scale before the rotation, on the two slices of step 3, only if step 3 did not kill it. Score it at 4K. It is the KVQuant axis\,\cite{kvquant} in the form this geometry allows, not a pre-RoPE port of a fully rotated head.
+\item Take a 4K winner to 128K, both texts, whole segment and p99. Ignore the tail mean. A second task family is the check after that win, not the search for it.
+\end{enumerate}
+
+Two facts about this model bound which survey methods can be that winner. Only 12 of 48 layers carry this cache; the other 36 keep a fixed recurrent state, so a method that compresses every layer's cache does not apply. And the indexer may later select any stored cell. Dropping cells, or replacing the selection, is not a cache format here: a selected cell that is no longer present is the silent failure the A-series already treats as a fault. Two KV heads leave no room for a retrieval-head split\,\cite{duoattn,razorattn}. Learned rotations, calibrated codebooks and rewritten projections\,\cite{spinquant,palu} are a different model, not an opt-in flag. FP8 is not a kernel this GPU has.
+
+If step 2 says the positional overlay misses the cells that are read, the remaining avenue is to spend the exact bytes on cells the indexer returned and keep every cell addressable at 4 bits\,\cite{top-k}. The selected set changes per query, so the pool is a union or the last selection, and a promised exact cell that has left the pool is the same fault as a dropped cell. That avenue does not start until the counter says the current overlay is in the wrong place.
+
+Two review gates stay beside the ladder, and neither is a quality claim. A full cell-to-row parity test should dump every window row at write time and re-read it on every shape: ring wrap, stale tags, sinks, batch boundaries and the empty tag. CUDA and SYCL should compile and pass their parity suites. \texttt{q4lm8v} is not offered on SYCL, so the window paths are dead there, but they should still compile. The paired mid-segment score and a multi-turn append (Section~8.4) stay on the list. They bound how the current point is used. They are not a path past \texttt{int8}.
 
 \section{Conclusion}
 
-Hardening the exact-cell window was primarily an exercise in preventing silent failures at integration boundaries. Setup-side prevention and engine-side enforcement close the window-plus-streaming hole; a frozen grid closes state drift; sentinel tags close the empty-cell misread; a capped automatic chunk closes the mid-prompt abort. The default \texttt{int8} path stays byte-identical. The measurement-first validation shows the intended trade-off clearly: on the cwe corpora, the window removes most of the 4-bit base's KL error (73\% of its gap to \texttt{int8} at 4K; 34--58\% of the plain base's tail mean KL across the two 128K texts), approaches \texttt{int8} at 2K, and saves 36\% of the KV memory at 128K. It does not beat \texttt{int8} in the tail regions that carry weight --- the p99 and whole-segment numbers say so on both texts. That is the correct result for an opt-in memory point: keep \texttt{int8} as the quality default, offer the window where memory is the constraint, and measure both.
+Hardening the exact-cell window was primarily an exercise in preventing silent failures at integration boundaries. Setup-side prevention and engine-side enforcement close the window-plus-streaming hole; a frozen grid closes state drift; sentinel tags close the empty-cell misread; a capped automatic chunk closes the mid-prompt abort. The default \texttt{int8} path stays byte-identical. The measurement-first validation shows the intended trade-off clearly: on the cwe corpora, the window removes most of the 4-bit base's KL error (73\% of its gap to \texttt{int8} at 4K; 34--58\% of the plain base's tail mean KL across the two 128K texts), approaches \texttt{int8} at 2K, and saves 36\% of the KV memory at 128K. It does not beat \texttt{int8} in the tail regions that carry weight --- the p99 and whole-segment numbers say so on both texts. That is the correct result for an opt-in memory point: keep \texttt{int8} as the quality default, offer the window where memory is the constraint, and measure both. Section~\ref{sec:followup} is the package that would have to beat that default, and the kills under which it would be dropped.
 
 Two habits generalize beyond this feature. First, correctness is enforced where the failure would be silent: setup-side for users, engine-side for hand-edited configs, and a byte-identity gate for everything the default path touches. Second, an opt-in point earns its existence only against measured alternatives --- here, against \texttt{int8} in regions that the mean KL alone cannot see. Both habits cost little and transfer to the next integration-boundary feature.
 
-\begin{thebibliography}{18}
+\begin{thebibliography}{34}
 \setlength{\itemsep}{0pt}\footnotesize
 
 \bibitem{streamingllm}
@@ -447,12 +479,94 @@ Z.~Zhang et~al.
 NeurIPS 2023, arXiv:2306.14048.
 
 \bibitem{quarot}
-\emph{QuaRot: Outlier-Free 4-Bit Inference in LLMs via Rotations}.
+S.~Ashkboos, A.~Mohtashami, M.~L.~Croci, B.~Li, P.~Cameron, M.~Jaggi, D.~Alistarh, T.~Hoefler, J.~Hensman.
+\emph{QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs}.
 arXiv:2404.00456, 2024.
 
 \bibitem{rotatekv}
-\emph{RotateKV: Accurate and Robust 2-Bit KV Cache Quantization for Large Language Models}.
-IJCAI 2025 (proceedings 2025/0690).
+Z.~Su, Z.~Chen, W.~Shen, H.~Wei, L.~Li, H.~Yu, K.~Yuan.
+\emph{RotateKV: Accurate and Robust 2-Bit KV Cache Quantization for LLMs via Outlier-Aware Adaptive Rotations}.
+arXiv:2501.16383, 2025 (IJCAI 2025).
+
+\bibitem{skvq}
+H.~Duanmu, Z.~Yuan, X.~Li, J.~Duan, X.~Zhang, D.~Lin.
+\emph{SKVQ: Sliding-window Key and Value Cache Quantization for Large Language Models}.
+arXiv:2405.06219, 2024.
+
+\bibitem{intactkv}
+R.~Liu, H.~Bai, H.~Lin, Y.~Li, H.~Gao, Z.~Xu, L.~Hou, J.~Yao, C.~Yuan.
+\emph{IntactKV: Improving Large Language Model Quantization by Keeping Pivot Tokens Intact}.
+ACL Findings 2024, arXiv:2403.01241.
+
+\bibitem{pmkvq}
+T.~Liu, S.~Li, J.~Yang, T.~Zhao, F.~Zhou, X.~Song, G.~Dai, S.~Yan, H.~Yang, Y.~Wang.
+\emph{PM-KVQ: Progressive Mixed-precision KV Cache Quantization for Long-CoT LLMs}.
+ICLR 2026, arXiv:2505.18610.
+
+\bibitem{spectralkv}
+M.~Hariri, A.~Luo, W.~Chen, S.~Zhong, T.~Zhang, Q.~Wang, X.~Hu, X.~Han, V.~Chaudhary.
+\emph{Quantize What Counts: More for Keys, Less for Values}.
+ACL 2026, arXiv:2502.15075.
+
+\bibitem{spinquant}
+Z.~Liu, C.~Zhao, I.~Fedorov, B.~Soran, D.~Choudhary, R.~Krishnamoorthi, V.~Chandra, Y.~Tian, T.~Blankevoort.
+\emph{SpinQuant: LLM quantization with learned rotations}.
+ICLR 2025, arXiv:2405.16406.
+
+\bibitem{sawint4}
+J.~Jia, J.~Li, Z.~Zhou, J.~H.~Heo, J.~Wang, T.~Dao, S.~L.~Song, B.~Athiwaratkun, C.~Xu, T.~Zhang, X.~Wu.
+\emph{SAW-INT4: System-Aware 4-Bit KV-Cache Quantization for Real-World LLM Serving}.
+arXiv:2604.19157, 2026.
+
+\bibitem{kvadapt}
+S.~Abdellatif.
+\emph{Quality Recovery for Quantized KV Caches via Low-Rank Attention Adaptation}.
+arXiv:2609.04263, 2026.
+
+\bibitem{palu}
+C.-C.~Chang, W.-C.~Lin, C.-Y.~Lin, C.-Y.~Chen, Y.-F.~Hu, P.-S.~Wang, N.-C.~Huang, L.~Ceze, M.~S.~Abdelfattah, K.-C.~Wu.
+\emph{Palu: Compressing KV-Cache with Low-Rank Projection}.
+arXiv:2407.21118, 2024.
+
+\bibitem{shadowkv}
+H.~Sun, L.-W.~Chang, W.~Bao, S.~Zheng, N.~Zheng, X.~Liu, H.~Dong, Y.~Chi, B.~Chen.
+\emph{ShadowKV: KV Cache in Shadows for High-Throughput Long-Context LLM Inference}.
+ICML 2025, arXiv:2410.21465.
+
+\bibitem{quest}
+J.~Tang, Y.~Zhao, K.~Zhu, G.~Xiao, B.~Kasikci, S.~Han.
+\emph{Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference}.
+ICML 2024, arXiv:2406.10774.
+
+\bibitem{duoattn}
+G.~Xiao, J.~Tang, J.~Zuo, J.~Guo, S.~Yang, H.~Tang, Y.~Fu, S.~Han.
+\emph{DuoAttention: Efficient Long-Context LLM Inference with Retrieval and Streaming Heads}.
+arXiv:2410.10819, 2024.
+
+\bibitem{razorattn}
+H.~Tang, Y.~Lin, J.~Lin, Q.~Han, S.~Hong, Y.~Yao, G.~Wang.
+\emph{RazorAttention: Efficient KV Cache Compression Through Retrieval Heads}.
+arXiv:2407.15891, 2024.
+
+\bibitem{nsa}
+J.~Yuan, H.~Gao, D.~Dai, J.~Luo, L.~Zhao, Z.~Zhang, Z.~Xie, Y.~X.~Wei, L.~Wang, Z.~Xiao, Y.~Wang, C.~Ruan, M.~Zhang, W.~Liang, W.~Zeng.
+\emph{Native Sparse Attention: Hardware-Aligned and Natively Trainable Sparse Attention}.
+arXiv:2502.11089, 2025.
+
+\bibitem{scissorhands}
+Z.~Liu, A.~Desai, F.~Liao, W.~Wang, V.~Xie, Z.~Xu, A.~Kyrillidis, A.~Shrivastava.
+\emph{Scissorhands: Exploiting the Persistence of Importance Hypothesis for LLM KV Cache Compression at Test Time}.
+arXiv:2305.17118, 2023.
+
+\bibitem{chunkkv}
+X.~Liu, Z.~Tang, P.~Dong, Z.~Li, Y.~Liu, B.~Li, X.~Hu, X.~Chu.
+\emph{ChunkKV: Semantic-Preserving KV Cache Compression for Efficient Long-Context LLM Inference}.
+NeurIPS 2025, arXiv:2502.00299.
+
+\bibitem{qserve}
+Y.~Lin, H.~Tang, S.~Yang, Z.~Zhang, G.~Xiao, C.~Gan, S.~Han.
+\emph{QServe: W4A8KV4 Quantization and System Co-design for Efficient LLM Serving}.
+arXiv:2405.04532, 2024.
 
 \bibitem{kvtuner}
 X.~Li, Z.~Xing, Y.~Li, L.~Qu, H.~Zhen, Y.~Yao, W.~Liu, S.~J.~Pan, M.~Yuan.
