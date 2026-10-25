@@ -3376,6 +3376,84 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                               m.max_blocks, s, m.sel_scores, m.cs, active);
                         strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                         m.sel_ids + t0 * m.cap, m.cs, active);
+                        // STRATA_KV_SELSTATS=<path> (S1, debug): where does the indexer's selection land relative to
+                        // the exact overlay, and how close is the selection boundary?  One line per sampled query and
+                        // QSA layer; R and S are the window's own numbers, so the run must have the window on.  A
+                        // prefill query at position p sees the same keys a decode step at p would, so this covers the
+                        // decode pattern too.  Costs two readbacks and a sync per sampled query: a debug run, not a
+                        // timing run.
+                        if (const char* selstats_path = std::getenv("STRATA_KV_SELSTATS")) {
+                            static int every = std::getenv("STRATA_KV_SELSTATS_EVERY")
+                                                   ? std::max(1, std::atoi(std::getenv("STRATA_KV_SELSTATS_EVERY")))
+                                                   : 32;
+                            static FILE* selstats = nullptr;
+                            if (selstats == nullptr) {
+                                selstats = std::fopen(selstats_path, "w");
+                                if (selstats == nullptr) {
+                                    std::fprintf(stderr, "strata prefill: STRATA_KV_SELSTATS: cannot write %s\n",
+                                                 selstats_path);
+                                } else {
+                                    std::fprintf(selstats, "layer\tpos\tn_kv\twidth\tblocks\tin_r\tin_s\tin_b\toutside"
+                                                           "\tmin_sel\tmax_unsel\ts_min\ts_max\n");
+                                }
+                            }
+                            if (selstats != nullptr) {
+                                const int64_t R = core::qsa_kv_win_r(), S = core::qsa_kv_win_s(),
+                                              B = core::qsa_kv_win_b();
+                                std::vector<int64_t> pick;
+                                for (int64_t i = 0; i < nb; i += every) pick.push_back(i);
+                                std::vector<int32_t> h_ids((size_t) pick.size() * (size_t) m.cap);
+                                std::vector<float> h_sc((size_t) pick.size() * (size_t) m.max_blocks);
+                                for (size_t k = 0; k < pick.size(); ++k) {
+                                    const int64_t i = pick[k];
+                                    const int64_t w = m.steps_host[(size_t) ((t0 + i) * strata::kernels::kStepCount +
+                                                                            strata::kernels::kStepWidth)];
+                                    cudaMemcpyAsync(h_ids.data() + k * (size_t) m.cap, m.sel_ids + (t0 + i) * m.cap,
+                                                    (size_t) w * 4, cudaMemcpyDeviceToHost, m.cs);
+                                    cudaMemcpyAsync(h_sc.data() + k * (size_t) m.max_blocks, m.sel_scores + i * m.max_blocks,
+                                                    (size_t) m.max_blocks * 4, cudaMemcpyDeviceToHost, m.cs);
+                                }
+                                cudaStreamSynchronize(m.cs);
+                                for (size_t k = 0; k < pick.size(); ++k) {
+                                    const int32_t* step = m.steps_host.data() + (size_t) ((t0 + pick[k]) *
+                                                                                         strata::kernels::kStepCount);
+                                    const int64_t n_kv = step[strata::kernels::kStepNKv];
+                                    const int64_t n_bid = step[strata::kernels::kStepNBid];
+                                    const int64_t w = step[strata::kernels::kStepWidth];
+                                    if (n_kv <= 0 || n_bid < 0) continue;
+                                    const int32_t* ids = h_ids.data() + k * (size_t) m.cap;
+                                    const float* sc = h_sc.data() + k * (size_t) m.max_blocks;
+                                    int64_t in_r = 0, in_s = 0, in_b = 0, outside = 0;
+                                    std::vector<char> sel((size_t) n_bid + 1, 0);
+                                    for (int64_t j = 0; j < w; ++j) {
+                                        const int64_t c = ids[j];
+                                        // qsa_win_slot's predicate: R is the sink rows, S the recent window; the B rows
+                                        // past S are overlaid (they pay) but read quantized, the rest is outside.
+                                        if (c < R) ++in_r;
+                                        else if (c >= n_kv - S) ++in_s;
+                                        else if (c >= n_kv - S - B) ++in_b;
+                                        else ++outside;
+                                        const int64_t b = c / s.idx_block;
+                                        if (b >= 0 && b <= n_bid) sel[(size_t) b] = 1;
+                                    }
+                                    float min_sel = 1e30f, max_unsel = -1e30f, s_min = 1e30f, s_max = -1e30f;
+                                    for (int64_t b = 0; b <= n_bid; ++b) {
+                                        const float v = sc[b];
+                                        s_min = std::min(s_min, v);
+                                        s_max = std::max(s_max, v);
+                                        if (sel[(size_t) b]) min_sel = std::min(min_sel, v);
+                                        else max_unsel = std::max(max_unsel, v);
+                                    }
+                                    std::fprintf(selstats, "%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%.9g\t%.9g\t%.9g\t%.9g\n",
+                                                 (long long) qsa_index, (long long) step[strata::kernels::kStepPos],
+                                                 (long long) n_kv, (long long) w, (long long) n_bid + 1,
+                                                 (long long) in_r, (long long) in_s, (long long) in_b,
+                                                 (long long) outside,
+                                                 min_sel, max_unsel, s_min, s_max);
+                                }
+                                std::fflush(selstats);
+                            }
+                        }
                     }
                     // STRATA_SEL_OVERLAP (debug, D-1's question): how much do neighbouring queries' selections share?
                     // Per tile of 16 queries: the union of their selected cells against the sum of their widths.
