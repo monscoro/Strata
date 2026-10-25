@@ -194,13 +194,13 @@ per-Position-Raw-Logs (deshalb der D2/D6/E4-Logs-Vorbehalt).
 Reviews: GLM-5.3-Selbst-Review (Blindstellen in dessen §8) und der
 grok-4.7-Desk-Review. Beide Dateien liegen **außerhalb dieses Repos**; zitiert
 wird hier nur, was in Paper oder Messordnern belegt ist. Literatur: die
-Bibliographie von `KV-Window-Hardening.tex`, nicht die Draft-Formulierungen der
-Reviews (dort steht u. a. noch „4-bit K / 8-bit V" und der GEAR-Titel
-„Serving"). Die **Margen in §7 (Latte 1) stehen nur hier**, nicht im Paper: das
-Paper nennt Latte A (Parität bei ≤ 6,0 bit/cell, opt-in) und Latte B
-(Default-Wechsel unter 8,25 bit/cell); §7 verschärft beide auf **5,0 bit/cell mit
-den K-Margen**. Diese Zahlen sind eine Arbeitsfassung und werden mit dem ersten
-Lauf eingefroren.
+Bibliographien von `KV-Window-Hardening.tex` und `KV-Quant-5bit.tex`, nicht die
+Draft-Formulierungen der Reviews (dort steht u. a. noch „4-bit K / 8-bit V" und
+der GEAR-Titel „Serving"). Die **Margen in §7 (Latte 1) stehen nur hier**, nicht
+im Paper: das Paper nennt Latte A (Parität bei ≤ 6,0 bit/cell, opt-in) und
+Latte B (Default-Wechsel unter 8,25 bit/cell); §7 verschärft beide auf
+**5,0 bit/cell mit den K-Margen**. Diese Zahlen sind eine Arbeitsfassung und
+werden mit dem ersten Lauf eingefroren.
 **Aufwand und Prioritäten sind Schätzungen (statische Analyse), keine Messwerte.**
 
 ## 6. Literaturabgleich (Paper-Bibliographie gegen den Status quo)
@@ -229,10 +229,10 @@ Scissorhands, ChunkKV, und die Gegenrichtung „keys want the bits"
 
 ## 7. Arbeitsplan: besser als `int8` bei 5 bit/cell
 
-Die Leiter steht seit dem 2026-10-25 im Paper (`KV-Window-Hardening.tex`,
-Abschnitt „Avenues for Improvement"), dort mit zwei Latten: A fragt nach Parität
-bei 6,0 bit/cell, B nach Überlegenheit unter 8,25. Dieses Kapitel ist die
-Arbeitsfassung und **verschärft** das Ziel: **5,0 bit/cell** — weniger Speicher
+Die Leiter steht seit dem 2026-10-25 in zwei Papers: `KV-Window-Hardening.tex`
+(Abschnitt „Avenues for Improvement", zwei Latten A/B) und `KV-Quant-5bit.tex`
+(das 5,0-Ziel mit Kriterien K1–K6 und derselben Leiter S0–S5). Dieses Kapitel ist
+die Arbeitsfassung und **verschärft** das Ziel: **5,0 bit/cell** — weniger Speicher
 als das heutige Fenster (5,29) bei besserer Qualität als `int8` (8,25). Das ist
 die einzige Fassung, die den Branch-Namen trägt: `int8`-Qualität, nicht „etwas
 weniger schlecht als `int8`".
