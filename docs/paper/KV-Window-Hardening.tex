@@ -1,7 +1,9 @@
 % ---------------------------------------------------------------------------
 % Version history (visible on page 1 and in the PDF metadata; one line per
-% built PDF, newest first).  Version = number of the built PDF, date = the
-% build, not the content freeze.
+% content revision, newest first).  The version counts content revisions; the
+% build time on page 1 is generated at compile time (\buildstamp), so it always
+% matches the file it is printed on.
+%   v1.8  2026-10-25  build stamp is generated at compile time
 %   v1.7  2026-10-25  rebuild, no content change (v1.5's build stamp was
 %                     recorded before the clock check; this build carries the
 %                     correct one, and it is the newest PDF)
@@ -47,13 +49,22 @@
 % ACM caption style: bold label, small text.
 \captionsetup{labelfont=bf,font=small,skip=6pt}
 
+% Build stamp: taken from the compile-time clock (the same \year/\month/\day/\time
+% pdfTeX writes into the PDF's /CreationDate), so the visible version line cannot
+% drift from the file it is printed on.  Zero-padded by hand because the engine's
+% numbers are not.
+\makeatletter
+\newcommand{\twod}[1]{\ifnum\numexpr#1\relax<10 0\fi\number\numexpr#1\relax}
+\makeatother
+\newcommand{\buildstamp}{\number\year-\twod{\month}-\twod{\day}, \twod{\time/60}:\twod{\time-(\time/60)*60} CET}
+
 % ACM link colors.
 \definecolor{ACMPurple}{cmyk}{0.55,1,0,0.15}
 \definecolor{ACMDarkBlue}{cmyk}{1,0.58,0,0.21}
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Hardening the Exact-Cell KV Window for --kv q4lm8v},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 1.7, built 2026-10-25 10:01 CET; first version 2026-10-24}}
+  pdfsubject={Version 1.8, built \buildstamp; first version 2026-10-24}}
 
 \setlength{\parindent}{10pt}
 
@@ -66,7 +77,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 1.7 \,\textperiodcentered\, built 2026-10-25, 10:01 CET \,\textperiodcentered\, first version 2026-10-24\par}
+    {\small Version 1.8 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-24\par}
   \end{center}
   \vspace{1.0em}
 }]

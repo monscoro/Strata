@@ -36,8 +36,9 @@ Crossover, untraceable Gates-Zählungen entfernt).
 - **Sichtbare Versionierung:** jedes Paper trägt auf Seite 1 eine Versionszeile
   (Version, Build-Zeit mit Zeitzone, Datum der Erstfassung) und dieselbe Angabe
   in den PDF-Metadaten; die `.tex`-Datei führt die Versionshistorie als
-  Kommentarblock, eine Zeile pro gebautem PDF. Die Version zählt gebaute PDFs,
-  nicht Inhaltsstände; das Datum ist der Build, nicht die Messung.
+  Kommentarblock, eine Zeile pro Inhaltsrevision. Die Version zählt
+  Inhaltsrevisionen; die Zeit ist der Build und wird beim Kompilieren aus der
+  Uhr gesetzt (`\buildstamp`), damit sie nicht von der Datei abweicht.
 
 ## 1. Status quo (gemessene Basis)
 

@@ -1,7 +1,8 @@
 ﻿% ---------------------------------------------------------------------------
 % Version history (visible on page 1 and in the PDF metadata; one line per
-% built PDF, newest first).  Version = number of the built PDF, date = the
-% build, not the content freeze.
+% content revision, newest first).  The version counts content revisions; the
+% build time on page 1 is generated at compile time (\buildstamp), so it always
+% matches the file it is printed on.
 %   v0.1  2026-10-25  first version (working paper, no 5.0-bit measurement)
 % ---------------------------------------------------------------------------
 \documentclass[10pt,twocolumn]{article}
@@ -38,13 +39,22 @@
 % ACM caption style: bold label, small text.
 \captionsetup{labelfont=bf,font=small,skip=6pt}
 
+% Build stamp: taken from the compile-time clock (the same \year/\month/\day/\time
+% pdfTeX writes into the PDF's /CreationDate), so the visible version line cannot
+% drift from the file it is printed on.  Zero-padded by hand because the engine's
+% numbers are not.
+\makeatletter
+\newcommand{\twod}[1]{\ifnum\numexpr#1\relax<10 0\fi\number\numexpr#1\relax}
+\makeatother
+\newcommand{\buildstamp}{\number\year-\twod{\month}-\twod{\day}, \twod{\time/60}:\twod{\time-(\time/60)*60} CET}
+
 % ACM link colors.
 \definecolor{ACMPurple}{cmyk}{0.55,1,0,0.15}
 \definecolor{ACMDarkBlue}{cmyk}{1,0.58,0,0.21}
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Five Bits per Cell: What a 4-Bit KV Cache Needs to Match int8},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.1, built 2026-10-25, 09:51 CET; first version 2026-10-25}}
+  pdfsubject={Version 0.1, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -59,7 +69,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.1 \,\textperiodcentered\, built 2026-10-25, 09:51 CET \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.1 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
