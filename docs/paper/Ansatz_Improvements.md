@@ -362,8 +362,23 @@ und `int8`-SHA haben sich bewegt". Jede Stufe ist opt-in.
 | **S4** | Welche 5,0-Komposition hält? | Nur der S3-Sieger als Bulk, drei Byte-Varianten bei 128K, beide Texte, alle K-Statistiken, Byte-Modell vorher: (a) fp16-Ring, R+S+B=4.096 (B=3.776); (b) int8-Ring, R+S+B=7.943 (B=7.623); (c) 12-bit-Ring, R+S+B=5.461 (B=5.141) | Keine Variante erfüllt K1–K5 → Latte 1 ist nicht erreichbar; dann Latte 2 prüfen (Parität bei 6,0) oder negatives Ergebnis. Prefill unter 90 % von `int8` → Variante tot, auch wenn die Qualität passt | (a) nur Konfiguration; (b)/(c) neuer Ring-Tier im Schreiber/Leser, eigener Härtungspunkt |
 | **S5** | Ist der Gewinn nicht cwe-spezifisch? | Nur nach einem K1–K6-Gewinn: zweiter RULER-Task bei 4K (D1), dieselben Kriterien | Verliert dort → kein Auslieferungs-Claim; der Arm bleibt Forschungsarm | Ein Task, nicht LongBench |
 
-S0 braucht einen 4K-Lauf je Arm (Rohlogs fehlen, siehe Kostenspalte), S1 einen
-Zählerlauf auf einem 128K-Prefill; S3 kostet 4K-GPU-Zeit für höchstens drei
+**Stand 2026-10-25, gemessen** (`bench/results/2026-10-25-s0-kl-support/`,
+`…-s1-selstats/`, `…-e4-error-shape/`). S0: Rangfolge und Vorzeichen halten unter
+top-64 und top-256, der Kill feuert nicht. E4: der Rest ist dünn (schlimmstes 1 %
+trägt 71–86 % der KL) und ein Kopf-Phänomen (88–90 % sind Ränge 1–8); GEAR ist
+nicht getötet und nicht gestartet. S1 lief bei 32K, nicht 128K. Die 50-%-Schwelle
+ist an diesem Punkt arithmetisch unerreichbar (Breite 2.051, R+S = 320, Decke
+15,6 %). Gemessen bei `n_kv` > 16.384: 11,7 % der Treffer werden exakt gelesen,
+Recall von S 86 %, von R 29 %. 98,9 % der Treffer im bezahlten Ring haben noch
+ihren Tag; ein Tag-Read würde 70,2 % der Selektion exakt lesen, bei denselben
+Bytes. **B1 läuft nicht, E3 in Fenstergröße auch nicht** — beide sind von diesem
+Read dominiert. Der nächste Arm ist der Read selbst, opt-in, Default unverändert,
+Qualität auf cwe-4k gegen das heutige Fenster und gegen `int8`. Kein
+Qualitätsanspruch aus dem Zähler. Der Score-Rand (0,01 % der Spreizung) trägt
+keinen Score-Pool.
+
+S0 brauchte einen 4K-Lauf je Arm (die Logs liegen jetzt vor), S1 einen
+Zählerlauf (gelaufen, 32K); S3 kostet 4K-GPU-Zeit für höchstens drei
 Arme; S4 ist der einzige 128K-Block (drei Varianten × zwei Texte). Wenn S3 keinen
 Sieger hat, endet der Branch mit einem dokumentierten Negativ-Ergebnis — das ist
 ein valides Ergebnis und billiger als ein 128K-Sweep.
