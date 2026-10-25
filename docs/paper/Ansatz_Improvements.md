@@ -33,6 +33,21 @@ Crossover, untraceable Gates-Zählungen entfernt).
 - Jede Prüfung, die sich zu einem offiziellen Claim hardnet, braucht einen
   Messbericht in `bench/results/<datum>-…` mit genau derselben Methodik wie
   das Paper (fp16-Referenz, gepaarte Statistik, vorzeichenbewusste Lesung).
+- **Die Reviews sind Werkzeug, nicht Auftrag.** Die Textpunkte beider Reviews
+  sind abgeschlossen und werden nicht erneut aufgerollt. Die Messpunkte (GLM
+  Nr. 11/12, Grok Q2/Q3) sind in die Leiter S0–S5 eingegangen, **soweit sie dem
+  5,0-Bit-Ziel dienen**; sie sind damit Leiterstufen, keine Review-Pflichten.
+  Was dem Ziel nicht dient, wird nicht gemessen: Multi-Turn (D3), der
+  S/R-Knie-Sweep und ein Vokabular-Vollrescore bleiben offen. Die *Regeln*
+  dieses Abschnitts gelten weiter — nicht weil ein Review sie verlangt, sondern
+  weil der neue Claim („`int8`-Qualität unter 5,0 bit") an genau denselben
+  Schwächen gemessen würde (trunkierte KL, fehlender Build, fehlende Rohlogs).
+- **Bilanzregel Indexer:** Der FP32-Indexer (128 Dimensionen je 4-Zellen-Block,
+  rechnerisch 192 MiB bei 128K bzw. 1,0 bit je KV-Wert) ist **Teil der
+  Modellarchitektur**, nicht des KV-Codecs. Er wird deshalb **nicht** in bit/cell
+  eingerechnet und nicht mit dem KV-Speicher gemittelt; eine Indexer-Kompression
+  ist eine eigene, spätere Frage mit eigenem Selektions-Nachweis (Score-Abstand an
+  der Grenze, Flip-Rate), kein Hebel dieses Arbeitspakets.
 - **Sichtbare Versionierung:** jedes Paper trägt auf Seite 1 eine Versionszeile
   (Version, Build-Zeit mit Zeitzone, Datum der Erstfassung) und dieselbe Angabe
   in den PDF-Metadaten; die `.tex`-Datei führt die Versionshistorie als
