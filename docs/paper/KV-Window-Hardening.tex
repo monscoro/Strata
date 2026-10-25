@@ -2,6 +2,7 @@
 % Version history (visible on page 1 and in the PDF metadata; one line per
 % built PDF, newest first).  Version = number of the built PDF, date = the
 % build, not the content freeze.
+%   v1.6  2026-10-25  exact-cell share under the 6.0 ceiling: 9%, not 13%
 %   v1.5  2026-10-25  visible version line (version, build time, first version)
 %   v1.4  2026-10-25  follow-up section names both bars (opt-in 6.0, default)
 %   v1.3  2026-10-25  improvement avenues and related work extended
@@ -49,7 +50,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Hardening the Exact-Cell KV Window for --kv q4lm8v},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 1.5, built 2026-10-25 09:52 CET; first version 2026-10-24}}
+  pdfsubject={Version 1.6, built 2026-10-25 09:47 CET; first version 2026-10-24}}
 
 \setlength{\parindent}{10pt}
 
@@ -62,7 +63,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 1.5 \,\textperiodcentered\, built 2026-10-25, 09:52 CET \,\textperiodcentered\, first version 2026-10-24\par}
+    {\small Version 1.6 \,\textperiodcentered\, built 2026-10-25, 09:47 CET \,\textperiodcentered\, first version 2026-10-24\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -423,7 +424,7 @@ The measurements come from one GPU (RX~9060~XT, gfx1200), one operating system (
 
 \section{Avenues for Improvement}\label{sec:followup}
 
-The sections above are the status quo. The window does not beat \texttt{int8} on the statistics that carry weight, and a larger window is not how that changes. It spends the byte headroom, from 5.29 toward 8.25 bit/cell, on more exact cells and leaves the bulk at 4 bits, where \texttt{int8} is the better code. Under a ceiling of 6.0 bit/cell at most 13\% of the cells can be exact (an exact cell adds 11.5 bit/cell over a 4-bit one), and the 512/128 pair already ties 256/64 at 4K while doubling the exact overlay (Section~8.2). The package below is a falsification ladder. Nothing in it is a result.
+The sections above are the status quo. The window does not beat \texttt{int8} on the statistics that carry weight, and a larger window is not how that changes. It spends the byte headroom, from 5.29 toward 8.25 bit/cell, on more exact cells and leaves the bulk at 4 bits, where \texttt{int8} is the better code. Under a ceiling of 6.0 bit/cell at most 9\% of the cells can be exact (the exact side copy costs 16 bit/cell and the 4-bit row it duplicates stays), and the 512/128 pair already ties 256/64 at 4K while doubling the exact overlay (Section~8.2). The package below is a falsification ladder. Nothing in it is a result.
 
 Two bars apply, and they answer different questions. \textbf{Bar~A asks whether a new mode is worth shipping as an opt-in.} The paired 4K mean KL stays within $+0.002$ nats of \texttt{int8} (the current window sits at $+0.00402$), the 128K whole segment and p99 stay within $+0.013$ and $+0.007$ on both texts (the current window sits at $+0.02597$ and $+0.01322$ on its worse text), the effective rate stays at or below 6.0 bit/cell, and the correctness gates stay green. At 6.0 bit/cell the byte model gives about 1,152\,MiB at 128K against \texttt{int8}'s 1,584\,MiB --- about 432\,MiB, or 27\%, less, linear between the two measured points of Table~\ref{tab:runtime}. The margins are choices, not measurements: each is half of today's measured gap, and the raw numbers are reported either way. A mode that meets Bar~A replaces the current opt-in point and leaves the default alone.
 
