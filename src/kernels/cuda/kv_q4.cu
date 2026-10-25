@@ -243,7 +243,8 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
                                     const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
                                     uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch,
                                     const uint16_t* __restrict__ k_win, const uint16_t* __restrict__ v_win,
-                                    const int32_t* __restrict__ win_tag, int win_s, int win_r, int win_b) {
+                                    const int32_t* __restrict__ win_tag, int win_s, int win_r, int win_b,
+                                    int win_all) {
     const long long n_ids = (long long) __ldg(step + kStepWidth);
     const int blocks_per_head = head_dim / QK4_0;                        // 8
     const int bytes_per_head = blocks_per_head * sizeof(block_q4_0);    // 144
@@ -275,6 +276,7 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
         wq.win_s = win_s;
         wq.win_r = win_r;
         wq.win_b = win_b;
+        wq.win_all = win_all;
         const long long ws = qsa_win_slot(wq, cell, (long long) __ldg(step + kStepNKv));
         if (ws >= 0) {
             const long long wrow = (ws * kv_heads + h) * head_dim + (b * QK4_0 + t);
@@ -500,7 +502,7 @@ void kv_append_win(uint16_t* k_win, uint16_t* v_win, int32_t* win_tag, int64_t p
 #define STRATA_KV_Q4_GATHER(NK, NV)                                                                              \
     kv_gather_q4_kernel<NK, NV><<<dim3(num_blocks), dim3(32, rows_per_block), 0, (cudaStream_t) stream>>>(        \
         k_q4, v_q4, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size, k_scratch,     \
-        v_scratch, k_win, v_win, win_tag, win_s, win_r, win_b)
+        v_scratch, k_win, v_win, win_tag, win_s, win_r, win_b, win_all)
 
 void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* page_table, const int32_t* ids,
                        const int32_t* step, int64_t max_ids, const QsaShapes& s, uint16_t* k_scratch,
@@ -511,6 +513,9 @@ void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* 
     const int64_t total_blocks = max_ids * s.n_head_kv * blocks_per_head;
     const int rows_per_block = 4;
     const unsigned num_blocks = (unsigned) ((total_blocks + rows_per_block - 1) / rows_per_block);
+    // Same switch as qsa_attn_pools: STRATA_KV_WINDOW_TAG=1, off unless set. Read here so the scratch path and
+    // the fused path agree without a new argument on every backend's stub.
+    static const int win_all = [] { const char* e = std::getenv("STRATA_KV_WINDOW_TAG"); return e && e[0] == '1'; }();
     if (q4_lloyd(mode)) {   // the gather reads every level-table mode alike: the scale is in the block
         if (q4_l8_k(mode) && q4_l8_v(mode)) STRATA_KV_Q4_GATHER(8, 8);
         else if (q4_l8_k(mode)) STRATA_KV_Q4_GATHER(8, 16);

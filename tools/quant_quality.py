@@ -245,6 +245,8 @@ def cmd_run(a) -> int:
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
     args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv)
+    if getattr(a, "exe", None):
+        args[0] = a.exe
     if a.wrap:
         args = a.wrap.split() + args
     errf = open(str(out) + ".stderr.txt", "w")
@@ -817,6 +819,7 @@ def main() -> int:
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--ids", default=str(SET_DIR / "set.ids.json"))
+    p.add_argument("--exe", default=None, help="override the config's engine binary")
     p.add_argument("--env", action="append")
     p.add_argument("--gpu-experts", nargs="?", const=True, default=False,
                    help="--expert-cache 1500 (or the N given, e.g. auto) instead of one slot (the experts on the GPU kernels)")

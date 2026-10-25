@@ -212,6 +212,7 @@ strata::kernels::Q4Mode g_kv_q4_mode = strata::kernels::Q4Mode::kUniform;
 // is all the harness needs.
 bool g_kv_win = false;
 int64_t g_kv_win_s = 128, g_kv_win_r = 8, g_kv_win_b = 512;
+bool g_kv_win_all = false;   // STRATA_KV_WINDOW_TAG=1: tag hit is exact, not only the last S
 /// STRATA_KV_WINDOW_BATCH was given: then the ring gets exactly that, and the append's own check (T <= S + B) is
 /// the guard. Without it the ring follows the prompt chunk (qsa_set_kv_win_batch from generate.cpp), because a
 /// ring smaller than one chunk would refuse that chunk loudly.
@@ -277,9 +278,16 @@ void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
         if (g_kv_win_s < 0) g_kv_win_s = 0;
         if (g_kv_win_r < 0) g_kv_win_r = 0;
         if (g_kv_win_b < 0) g_kv_win_b = 0;
+        const char* et = std::getenv("STRATA_KV_WINDOW_TAG");
+        g_kv_win_all = et != nullptr && et[0] == '1';
+        if (g_kv_win_all)
+            std::fprintf(stderr, "strata: KV window reads every ring row whose tag still names the cell "
+                                 "(STRATA_KV_WINDOW_TAG=1), not only the last %lld\n",
+                         (long long) g_kv_win_s);
     } else {
         g_kv_win_s = g_kv_win_r = g_kv_win_b = 0;
         g_kv_win_b_env = false;
+        g_kv_win_all = false;
     }
 }
 strata::kernels::Q4Mode qsa_kv_q4_mode() { return g_kv_q4_mode; }
@@ -850,6 +858,7 @@ uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 int qsa_kv_win_s() { return (int) g_kv_win_s; }
 int qsa_kv_win_r() { return (int) g_kv_win_r; }
 int qsa_kv_win_b() { return (int) g_kv_win_b; }
+int qsa_kv_win_all() { return g_kv_win_all ? 1 : 0; }
 // The ring's size came from the user (STRATA_KV_WINDOW_BATCH), not from the engine: then the engine neither grows
 // it nor caps the prompt chunk for it, and the append refuses a chunk that does not fit (it says what to change).
 bool qsa_kv_win_batch_is_explicit() { return g_kv_win && g_kv_win_b_env; }
@@ -1154,6 +1163,7 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
         pools.win_s = (int) g_kv_win_s;
         pools.win_r = (int) g_kv_win_r;
         pools.win_b = (int) g_kv_win_b;
+        pools.win_all = g_kv_win_all ? 1 : 0;
     }
     return pools;
 }

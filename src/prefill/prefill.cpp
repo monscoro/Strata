@@ -3602,6 +3602,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             pools.win_s = core::qsa_kv_win_s();
                             pools.win_r = core::qsa_kv_win_r();
                             pools.win_b = core::qsa_kv_win_b();
+                            pools.win_all = core::qsa_kv_win_all();
                         }
                     }
                     pt.mark(kPfQsaAttn, cs);

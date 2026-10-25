@@ -373,6 +373,8 @@ int qsa_kv_win_r();
 /// a smaller ring cannot serve it, and the append refuses that loudly instead of overwriting rows a reader still
 /// needs.
 int qsa_kv_win_b();
+/// STRATA_KV_WINDOW_TAG=1: read exact wherever the ring tag still names the cell, not only the last S. 0 otherwise.
+int qsa_kv_win_all();
 /// Size the ring for the prompt chunk the engine settled on (generate.cpp, before the state is carved). An
 /// explicit STRATA_KV_WINDOW_BATCH wins over this, and it only ever grows the ring (never shrinks an explicit one).
 void qsa_set_kv_win_batch(const ModelGeometry& g, int64_t chunk);

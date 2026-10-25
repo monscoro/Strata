@@ -47,6 +47,7 @@ struct QsaAttnPools {
     int win_s = 0;    ///< recent exact cells per horizon (STRATA_KV_WINDOW_S, default 128)
     int win_r = 0;    ///< exact sink cells at the start (STRATA_KV_WINDOW_R, default 8)
     int win_b = 0;    ///< recent ring rows beyond win_s: the largest append batch (STRATA_KV_WINDOW_BATCH)
+    int win_all = 0;  ///< 1: tag hit is exact (STRATA_KV_WINDOW_TAG); 0: the horizon check, unchanged
     // NOTE: no horizon field - readers take it from step[kStepNKv] (pos + 1, device-fresh and graph-safe;
     // qsa_step_fill derives all four step entries from one position). A host horizon would bake stale on
     // graph reuse.
@@ -72,7 +73,9 @@ inline __host__ __device__ bool qsa_win_on(const QsaAttnPools& p) {
 /// (a rewind or a resume can leave a later cell there) - otherwise -1, and the caller reads the quantized pool.
 inline __host__ __device__ long long qsa_win_slot(const QsaAttnPools& p, long long c, long long n) {
     if (c < (long long) p.win_r) return c;
-    if (p.win_s <= 0 || c < n - (long long) p.win_s) return -1;
+    // win_all == 0 is the published horizon, unchanged. win_all == 1 skips it: the tag check below is then the
+    // only gate, so a ring row that still names this cell is read exact.
+    if (p.win_all == 0 && (p.win_s <= 0 || c < n - (long long) p.win_s)) return -1;
     const long long ring = (long long) p.win_s + (long long) p.win_b;
     if (ring <= 0 || p.win_tag == nullptr) return -1;
     const long long i = c % ring;
@@ -92,7 +95,9 @@ inline bool qsa_win_on(const QsaAttnPools& p) {
 /// (a rewind or a resume can leave a later cell there) - otherwise -1, and the caller reads the quantized pool.
 inline long long qsa_win_slot(const QsaAttnPools& p, long long c, long long n) {
     if (c < (long long) p.win_r) return c;
-    if (p.win_s <= 0 || c < n - (long long) p.win_s) return -1;
+    // win_all == 0 is the published horizon, unchanged. win_all == 1 skips it: the tag check below is then the
+    // only gate, so a ring row that still names this cell is read exact.
+    if (p.win_all == 0 && (p.win_s <= 0 || c < n - (long long) p.win_s)) return -1;
     const long long ring = (long long) p.win_s + (long long) p.win_b;
     if (ring <= 0 || p.win_tag == nullptr) return -1;
     const long long i = c % ring;
