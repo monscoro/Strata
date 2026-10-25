@@ -131,7 +131,7 @@ Informationsgewinn pro Aufwand.
    Eingangsgrößen für S0 und S1.
 3. **WP-3c — Engineering:** C1 (A4-Parität) → C2 (CUDA/SYCL).
    *Ergebnis:* Die zwei offenen Review-Gates des Papers schließen. Für Latte 1
-   nicht blockierend, für Latte 2 (Default) schon.
+   (Default-Anspruch) blockierend, für Latte 2 (opt-in) nicht.
 4. **WP-3d — Anker und Breite, nur auf Zuruf:** E2 (`q4_0` auf cwe-4k, der
    llama.cpp-Anker auf demselben Harness), D1 (zweiter RULER-Task; als S5 nur
    nach einem Latte-Gewinn), D3 (Multi-Turn), B2 (≤3-Bit-Overlay bei 128K,
@@ -163,12 +163,13 @@ Informationsgewinn pro Aufwand.
   der Gleichstand gilt für `q4lm32` bei 2K/4K (WP §7.9), und ein Speed-Claim
   über drei gesparte FWHTs ist auf dem Fensterpfad nicht gemessen.
 - **R=4** nicht aus StreamingLLM ableiten. R=8 war auf dem alten Gitter zu knapp.
-- **Keine Default-Änderung ohne Latte 2**: `int8` bleibt Standard, bis ein Arm
-  `int8` auf der robusten KL **überlegen** ist (§7, Latte 2: 4K gepaart, 128K
-  Ganzsegment + p99 auf beiden Texten, < 8,25 bit/cell) **und** alle
-  Korrektheits-Gates grün sind (SHA-Byteidentität, Parität 12/12, Nadel,
-  Setup-Suite, plus für einen Default C1 und C2). Ein Arm, der nur Latte 1
-  erreicht, wird als opt-in Modus ausgeliefert und ändert den Default nicht.
+- **Keine Default-Änderung ohne Latte 1**: `int8` bleibt Standard, bis ein Arm
+  auf **keiner** robusten Statistik hinter `int8` liegt (§7, Latte 1: 4K gepaart,
+  128K Ganzsegment + p99 + letzte 1.024 auf beiden Texten) **bei ≤ 5,0 bit/cell**
+  **und** alle Korrektheits-Gates grün sind (SHA-Byteidentität, Parität 12/12,
+  Nadel, Setup-Suite, plus C1 und C2). Ein Arm, der nur Latte 2 erreicht (Parität
+  innerhalb der Margen bei ≤ 6,0 bit/cell), wird als opt-in Modus ausgeliefert und
+  ändert den Default nicht.
 
 ## 5. Quellen
 
@@ -191,8 +192,10 @@ wird hier nur, was in Paper oder Messordnern belegt ist. Literatur: die
 Bibliographie von `KV-Window-Hardening.tex`, nicht die Draft-Formulierungen der
 Reviews (dort steht u. a. noch „4-bit K / 8-bit V" und der GEAR-Titel
 „Serving"). Die **Margen in §7 (Latte 1) stehen nur hier**, nicht im Paper: das
-Paper nennt die vier Punkte der Latte 2, die Zahlen der K-Margen sind eine
-Arbeitsfassung und werden mit dem ersten Lauf eingefroren.
+Paper nennt Latte A (Parität bei ≤ 6,0 bit/cell, opt-in) und Latte B
+(Default-Wechsel unter 8,25 bit/cell); §7 verschärft beide auf **5,0 bit/cell mit
+den K-Margen**. Diese Zahlen sind eine Arbeitsfassung und werden mit dem ersten
+Lauf eingefroren.
 **Aufwand und Prioritäten sind Schätzungen (statische Analyse), keine Messwerte.**
 
 ## 6. Literaturabgleich (Paper-Bibliographie gegen den Status quo)
@@ -219,91 +222,96 @@ Scissorhands, ChunkKV, und die Gegenrichtung „keys want the bits"
 | llama.cpp q4_0 / q8_0 | `q4_0` ist auf anderen Protokollen gemessen, nicht auf cwe gegen das Fenster | E2 |
 | vLLM FP8 | Kein FP8-Attention-Pfad auf der Zielkarte. Ihre 1–2 Punkte sind suite-spezifisch | Nicht verfolgen |
 
-## 7. Arbeitsplan: `int8`-Qualität bei ≤ 6 bit/cell
+## 7. Arbeitsplan: besser als `int8` bei 5 bit/cell
 
-Die Leiter steht seit dem 2026-10-25 auch im Paper (`KV-Window-Hardening.tex`,
-Abschnitt „Avenues for Improvement"), dort als Falsifikationsleiter mit denselben
-Kills. Dieses Kapitel ist die Arbeitsfassung: es begründet die Latte, rechnet den
-Produktgewinn und ordnet die Schritte nach Abhängigkeit. Der Artikel bleibt der
-Status quo; hier stehen die Zahlen hinter den Setzungen, die das Paper in einem
-Absatz nennt.
+Die Leiter steht seit dem 2026-10-25 im Paper (`KV-Window-Hardening.tex`,
+Abschnitt „Avenues for Improvement"), dort mit zwei Latten: A fragt nach Parität
+bei 6,0 bit/cell, B nach Überlegenheit unter 8,25. Dieses Kapitel ist die
+Arbeitsfassung und **verschärft** das Ziel: **5,0 bit/cell** — weniger Speicher
+als das heutige Fenster (5,29) bei besserer Qualität als `int8` (8,25). Das ist
+die einzige Fassung, die den Branch-Namen trägt: `int8`-Qualität, nicht „etwas
+weniger schlecht als `int8`".
 
-### Warum „besser als `int8`, sonst verwerfen" zu streng war
+### Warum die alte Latte zu schwach war
 
-Die alte Fassung hatte eine Latte: den Arm nur behalten, wenn er `int8` auf der
-robusten KL schlägt. Das verwirft den wahrscheinlichsten Ausgang. Ein Modus, der
-`int8`-Qualität bei 6,0 bit/cell erreicht, ist kein Trostpreis: er spart 27 % des
-KV-Speichers bei 128K (Rechenweg unten) und ist damit ein Produkt. Die alte Latte
-hätte ihn weggeworfen, weil er nicht *besser* ist.
+Die alte Fassung verlangte Überlegenheit und ließ 8,25 bit/cell zu. Ein Arm, der
+`int8` bei 8,2 bit/cell schlägt, spart 0,6 % Speicher — ein Sieg ohne Produkt.
+Die Byte-Grenze ist das, was aus einem Qualitätsergebnis ein Produkt macht.
 
-Zweitens ist „mehr Fenster" als Weg zu `int8` arithmetisch zu. Zwischen der
-4-bit-Basis (4,50 bit) und der 6,0-Grenze liegen 1,5 bit/cell; eine exakte Zelle
-kostet 11,5 bit/cell mehr als eine 4-bit-Zelle. Also können höchstens
-1,5/11,5 ≈ 13 % der Zellen exakt werden — bei 128K rund 17.000 Positionen,
-also ein Ring der Größe B≈17.000. Bei 4K verdoppelt 512/128 das exakte
-Overlay von 320 auf 640 Positionen (7,8 % → 15,6 % von 4096) und ist trotzdem
-ein statistischer Gleichstand (t=+0,02). Und der billigere Chunk B=512 kostet
-Prefill: 105 t/s statt 528 (Tab. 4). Der Ring ist kein Skalierungsweg; die
-Fehlerfläche, die `int8` gewinnt, ist der **Bulk**, nicht das Fenster.
+Umgekehrt fehlte der Rückfall. Ein Arm, der `int8` nicht schlägt, aber bei
+6,0 bit/cell innerhalb einer Marge bleibt, ist dem heutigen Fenster (5,29 mit
+gemessenem Rückstand) vorzuziehen und als opt-in auslieferbar. Diesen Rückfall
+hält das Paper als Latte A fest; er bleibt hier als Latte 2 stehen, aber er ist
+nicht das Ziel.
 
-Drittens verliert das Fenster nicht überall, sondern in den robusten
-Statistiken. Es gewinnt die Tail-Mean auf Text 1 (0,00663 gegen 0,00959) und
-verliert sie auf Text 2 (0,00437 gegen 0,00324). Deshalb zählt ein
-Tail-Mean-Gewinn auf einem Text nicht, und deshalb steht die Latte unten auf
-Ganzsegment und p99, nicht auf dem Mittelwert.
+Und 5,0 ist keine Rundung von 5,29: es sind 6 % weniger Speicher als das
+heutige Fenster und 39 % weniger als `int8` (Rechenweg unten). Wer 5,0 erreicht,
+hat das Fenster nicht verbessert, sondern ersetzt.
 
-### Zwei Latten
+### Das Ziel (Latte 1)
 
-**Latte 1 — opt-in „`int8`-Qualität" (Ziel dieses Branches).** Ein Arm darf als
-opt-in Modus ausgeliefert werden, wenn K1–K4 gelten. Die Kriterien heißen K,
-nicht A: A1–A5 sind im Katalog die Quantisierungs-Arme, im Paper die
-Entscheidungen der A-Serie.
+Ein Arm gewinnt nur, wenn **alle** Punkte gelten. „Besser als `int8` in allen
+Bereichen" heißt: `int8` liegt auf keiner der robusten Statistiken vorn. Ein
+Gleichstand auf einer Statistik ist kein Verlust (die Rate ist 39 % niedriger),
+ein Rückstand ist einer.
 
-| # | Punkt | Schwelle | Anker |
+| # | Punkt | Schwelle | Anker (heute) |
 |---|---|---|---|
-| K1 | cwe-4k, gepaarte Mean-KL (Arm − `int8`) | obere 95-%-Grenze der gepaarten 8-Segment-Differenz ≤ **+0,002 nats**, und `int8` führt in höchstens 6 von 8 Segmenten | halber heutiger Fenster-Abstand (+0,00402 = 0,02090 − 0,01688; `int8` führt heute in 7/8 Segmenten, t = −3,55) |
-| K2 | cwe-128k, **beide** Texte, Ganzsegment-KL | ≤ `int8` + **0,013** | halber schlechtester heutiger Abstand (+0,02597 auf Text 1; Text 2: +0,01089) |
-| K2 | cwe-128k, **beide** Texte, p99 | ≤ `int8` + **0,007** | halber schlechtester heutiger Abstand (+0,01322 auf Text 1; Text 2: +0,00450) |
-| K3 | effektive Rate bei 128K | ≤ **6,0 bit/cell** (Byte-Modell, vor dem Lauf aufgeschrieben) | 27 % unter `int8` (8,25) |
-| K4 | Gates | `int8`-dump-logits-SHA unverändert, Parität 12/12, Nadel 6/6 + 6/6, Setup-Suite grün | wie heute |
+| K1 | cwe-4k, gepaarte Mean-KL (Arm − `int8`) | Differenz ≤ 0, obere 95-%-Grenze < **+0,001 nats**, `int8` führt in höchstens 4 von 8 Segmenten | +0,00402, t = −3,55, `int8` führt in 7/8 |
+| K2 | cwe-128k, **beide** Texte, Ganzsegment-KL | ≤ `int8` auf beiden Texten | +0,02597 (Text 1), +0,01089 (Text 2) |
+| K3 | cwe-128k, **beide** Texte, p99 und letzte 1.024 | ≤ `int8` auf beiden Texten und beiden Statistiken | p99 +0,01322 / +0,00450; letzte 1.024: 0,00444 gegen 0,00265 |
+| K4 | effektive Rate bei 128K | ≤ **5,0 bit/cell** (Byte-Modell, vor dem Lauf aufgeschrieben) | 39 % unter `int8`, 6 % unter dem Fenster |
+| K5 | Laufzeit | Prefill höchstens **10 % unter `int8`** (526 t/s), Decode in der Streubreite | Setzung; B=512 zeigt −80 %, das Risiko ist real |
+| K6 | Gates | `int8`-SHA unverändert, Parität 12/12, Nadel 6/6 + 6/6, Setup-Suite, plus C1/C2 | wie heute |
 
-Die Schwellen sind **Setzungen, keine Messungen**: die Hälfte des heute
-gemessenen Abstands. Wer die Hälfte für zu groß hält, verschiebt K1/K2 nach
-unten — die Rohzahlen werden in jedem Fall berichtet, damit die Verschiebung
-nachvollziehbar bleibt.
+Die 10 % in K5 sind eine Setzung, keine Messung: das heutige Fenster liegt bei
+528 gegen 526 t/s (+0,4 %), also praktisch gleich; ein Ring, der ein Drittel
+kleiner ist, kann Prefill kosten, und dieser Preis muss begrenzt sein.
 
-**Latte 2 — Default-Wechsel.** `int8` ist erst dann nicht mehr Standard, wenn
-ein Arm auf **allen** robusten Statistiken vorne liegt, nicht nur innerhalb einer
-Marge:
+**Latte 2 (Rückfall, opt-in).** Wenn Latte 1 nicht erreichbar ist, bleibt der
+Rückfall aus dem Paper: Parität innerhalb der halben heutigen Abstände bei
+≤ 6,0 bit/cell — 4K-Mean ≤ +0,002, Ganzsegment ≤ +0,013 auf beiden Texten, p99
+≤ +0,007 auf beiden Texten, Rate ≤ 6,0. K5 (Laufzeit) und die Gates aus K6 ohne
+C1/C2 gelten auch hier. Ein Arm, der das erfüllt, ersetzt das heutige Fenster
+als opt-in Punkt und lässt den Default bei `int8`. Latte 2 ist kein Ziel, sondern
+die Untergrenze, unter der der Branch nichts ausliefert.
 
-1. cwe-4k, gepaarte Mean-KL: `int8` nicht vorn (t und Vorzeichenanzahl).
-2. cwe-128k, Ganzsegment **und** p99, **beide** Texte: `int8` nicht vorn.
-3. Effektive Rate bei 128K **unter** 8,25 bit/cell.
-4. Alle Gates aus K4, plus C1 (volle Zell→Zeilen-Parität) und C2 (CUDA/SYCL).
+### Das Byte-Budget bei 5,0 (Rechnung, keine Messung)
 
-Latte 2 ist die alte Latte; nur Punkt 4 nennt jetzt zusätzlich C1/C2, weil ein
-Default-Wechsel die zwei offenen Review-Gates braucht. Latte 2 ist die einzige,
-die den Default bewegt. Ein Arm, der Latte 2 erfüllt, erfüllt Latte 1
-automatisch — die Leiter wird also einmal gelaufen und gegen beide Latten
-gelesen, nicht zweimal.
+Das Byte-Modell des Papers (§3.2): bits/cell ≈ 4,50 + 16(R+S+B)/L, mit L =
+131.072 bei 128K. Die 4,50 sind die 4-bit-Basis (576 B je Zelle und Layer); der
+zweite Term ist der residente Ring, der die Zellen exakt hält. Daraus:
+
+- Bei 5,0 bleiben für den Ring **0,50 bit/cell** → **R+S+B ≤ 4.096 Zellen**.
+  Mit 256/64 ist das B ≤ 3.776 gegen heute 6.144; der Ring schrumpft damit von
+  6.464 auf 4.096 Zellen (**−37 %**), wenn er fp16 bleibt.
+- Der Ring muss aber nicht fp16 sein. `int8` ist das Qualitätsziel, nicht fp16:
+  ein Ring aus int8-Zellen (8,25 bit inkl. Skala) erlaubt **7.943 Zellen** —
+  23 % mehr als heute — bei 5,0. Ein 12-bit-Ring erlaubt 5.461 (−15 %).
+- Die Basis kann nicht unter 4,50: 1.024 Werte je Zelle und Layer ergeben bei
+  4,5 bit je Wert 576 Byte (32 Blöcke à 18 Byte), und weniger Level passen nicht
+  in dieselben 4 bit.
+
+Damit hat das Ziel zwei Stellschrauben, und beide sind nötig: **weniger oder
+billigere exakte Zellen** (Byte-Seite) und **bessere Bulk-Kodierung** (Qualität
+für den Rest). Keine allein reicht: ein kleinerer Ring verliert die
+Tail-Statistiken, die `int8` heute gewinnt; ein besserer Bulk ohne Byte-Seite
+bleibt über 5,0.
+
+Nebenbei: der Break-even gegen `int8` sinkt mit dem kleineren Ring von ≈27.600
+auf ≈17.500 Zellen. Setup bietet das Fenster ab 32K an; daran ändert sich
+nichts, aber der Punkt wird auch bei 24K schon billiger als `int8`.
 
 ### Was das Produkt davon hat (Rechenweg, linear aus Tab. 4)
 
-Die zwei gemessenen Punkte sind `int8` 8,25 bit → 1.584 MiB und Fenster
-5,29 bit → 1.016 MiB bei 128K (B=6.144). Linear dazwischen:
+Die zwei gemessenen Punkte: `int8` 8,25 bit → 1.584 MiB, Fenster 5,29 →
+1.016 MiB bei 128K (B=6.144).
 
-- 6,0 bit/cell → ≈ **1.152 MiB**, also **≈ 432 MiB (27 %) weniger** als `int8`.
-- Expert-Cache: 416 Slots je 568 MiB (Tab. 4) → **≈ 315 Slots mehr** bei
-  432 MiB. Ein Slot ist modell- und quantisierungsabhängig; die Zahl gilt für
-  Swift 1.5 IQ3_XXS auf der RX 9060 XT.
-- Eine per-channel-Skala (ein fp16-Wert je 128 Zellen, nur auf der K-Hälfte)
-  kostet 16/128 × 0,5 ≈ **0,06 bit/cell**. Wenn die Kanalachse der Fehler ist,
-  liegt Latte 1 also bei ≈ 5,35 bit/cell, nicht bei 6,0. Die 6,0 sind die
-  Grenze, an der das Speicherargument stirbt — nicht das Ziel.
-
-Der Gewinn ist ein Speicher- und Slot-Gewinn, kein Speed-Gewinn: Prefill ist
-gleich, Decode liegt in der Streubreite (Tab. 4). Serving bei Concurrency ist
-nicht gemessen.
+- 5,0 bit/cell → ≈ **960 MiB**, also **≈ 624 MiB (39 %) weniger** als `int8`
+  und **56 MiB (6 %) weniger** als das heutige Fenster.
+- Expert-Cache: 416 Slots je 568 MiB (Tab. 4) → **≈ 457 Slots mehr** als `int8`.
+- Der Gewinn ist Speicher und Slots, kein Speed: Prefill muss in der 10-%-Grenze
+  bleiben (K5), Decode liegt heute in der Streubreite.
 
 ### Schon tot für dieses Ziel
 
@@ -311,9 +319,9 @@ Nicht noch einmal messen: Clip nach FWHT (WP §7.11), Hadamard an/aus als
 Qualitätsarm (WP §7.9), K-vs-V-Bit-Story (t +0,05), 3 bit ohne Fenster
 (+51 % KL, t −3,60), R=8, Nadel (gesättigt, keine Trennung), PPL (dreht die
 Rangfolge um). cwe-2k „erreicht `int8`-Niveau" (WP §7.16) ist kein 4K- und kein
-128K-Gewinn. **Neu hier:** ein größerer Ring (S/R 512/128) als Weg zu
-`int8` — bei 4K Gleichstand mit 256/64 (t +0,02), bei 128K nie qualitativ
-gemessen, und arithmetisch auf ≤ 13 % exakte Zellen begrenzt (oben).
+128K-Gewinn. **Neu hier:** ein größerer fp16-Ring als Weg zu `int8` — bei 4K
+Gleichstand mit 256/64 (t +0,02), bei 128K nie qualitativ gemessen, und
+arithmetisch bei 5,0 auf 4.096 Zellen begrenzt (oben).
 
 ### Leiter S0–S5
 
@@ -324,27 +332,27 @@ und `int8`-SHA haben sich bewegt". Jede Stufe ist opt-in.
 
 | Stufe | Frage | Prüfung | Kill | Kosten |
 |---|---|---|---|---|
-| **S0** | Ist die Latte selbst stabil? | Ein vorhandenes cwe-4k-Paar (`int8`, Fenster 256/64, plain) zusätzlich zur heutigen KL unter einer zweiten Definition rescoren (top-256 oder volles Vokabular), **auf denselben Positionen**, Vorzeichen mitberichten. Das Histogramm derselben Positionen ist E4, kein eigener Lauf | Rangfolge oder Vorzeichen drehen → kein Kernel, bis 128K unter derselben Definition neu gelesen ist; die Margen aus K1/K2 sind dann undefiniert | Scorer only, keine GPU |
-| **S1** | Sitzt das fp16-Geld auf Zellen, die der Indexer liest? | C4 (statisch, dieser Branch), dann ein 128K-Prefill-Zähler: Anteil der Indexer-Auswahl in R, in S, in keinem von beiden, je QSA-Layer. Dazu E4: ist der 4K-Restfehler dicht oder dünn? | < ½ der Treffer in R+S → das positionsfeste Overlay ist der falsche Ausgabeort; **B1 läuft nicht**, der Weg ist der Bulk (S2/S3), und E3 (auswahlfolgendes Overlay) wird der Kandidat — unter derselben Regel „eine versprochene exakte Zelle, die den Pool verlassen hat, ist ein Fehler". Dichter Rest → kein GEAR-Kernel | Ein Zählerlauf, kein neues Format |
+| **S0** | Ist die Latte selbst stabil? | Ein vorhandenes cwe-4k-Paar (`int8`, Fenster 256/64, plain) zusätzlich zur heutigen KL unter einer zweiten Definition rescoren (top-256 oder volles Vokabular), **auf denselben Positionen**, Vorzeichen mitberichten. Das Histogramm derselben Positionen ist E4, kein eigener Lauf | Rangfolge oder Vorzeichen drehen → kein Kernel, bis 128K unter derselben Definition neu gelesen ist; K1/K2 sind dann undefiniert | Scorer only, keine GPU |
+| **S1** | Sitzt das fp16-Geld auf Zellen, die der Indexer liest? | C4 (statisch, dieser Branch), dann ein 128K-Prefill-Zähler: Anteil der Indexer-Auswahl in R, in S, in keinem von beiden, je QSA-Layer. Dazu E4: ist der 4K-Restfehler dicht oder dünn? | < ½ der Treffer in R+S → das positionsfeste Overlay ist der falsche Ausgabeort; **B1 läuft nicht**, und E3 (auswahlfolgendes Overlay) wird der Kandidat — unter derselben Regel „eine versprochene exakte Zelle, die den Pool verlassen hat, ist ein Fehler". Dichter Rest → kein GEAR-Kernel | Ein Zählerlauf, kein neues Format |
 | **S2** | Trägt die Kanalachse **vor** der Rotation? | Zweite Momente der K-Kanäle vor und nach FWHT, getrennt für die 64 rotierten und die 192 unrotierten Dimensionen, 12 QSA-Layer. Keine Quantisierung ändern | Vor der Rotation kein schwererer Tail als danach → A1 nicht bauen; KIVIs Achse ist in dieser Pipeline nicht da | Debug-Statistik hinter einem Env-Flag, `int8` unberührt |
-| **S3** | Reicht das billige Bulk-Werkzeug für Latte 1? | cwe-4k, gepaart gegen `int8`, in dieser Reihenfolge: (a) 16/16 gegen 8/8 im vorhandenen Format (A2), (b) alternative 16-Level-Tabelle (A5), (c) nur wenn S2 überlebt: per-channel K vor FWHT (A1). Jeder Arm berichtet die K-Punkte, die er auf 4K erfüllen kann, plus bit/cell | Kein Arm erreicht K1 bei ≤ 6,0 bit/cell (K3) → Latte 1 ist mit dem Bulk-Code nicht erreichbar; **kein 128K**. Dann bleibt der Punkt wie er ist (5,29 bit, Speicher-Kompromiss) und der Branch endet mit einem dokumentierten Negativ-Ergebnis; E3 ist nur dann ein Ausweg, wenn S1 das positionsfeste Overlay verworfen hat. Ein Gleichstand zählt als Kill | (a)/(b) kein neuer Kernel; (c) opt-in Pipeline-Änderung mit SHA-Gate |
-| **S4** | Hält der 4K-Sieger bei 128K? | Nur der Sieger aus S3. Beide Texte, Ganzsegment und p99, Byte-Modell vorher aufschreiben. Tail-Mean ignorieren | K2 verletzt → Forschungsarm, nicht ausliefern. Latte 2 wird auf demselben Lauf mitgelesen | Ein 128K-Paar je Text |
-| **S5** | Ist der Gewinn nicht cwe-spezifisch? | Nur nach einem Latte-1- oder Latte-2-Gewinn: zweiter RULER-Task bei 4K (D1), dieselben Kriterien | Verliert dort → kein Auslieferungs-Claim; der Arm bleibt Forschungsarm | Ein Task, nicht LongBench |
+| **S3** | Reicht das billige Bulk-Werkzeug? | cwe-4k, gepaart gegen `int8`, in dieser Reihenfolge: (a) 16/16 gegen 8/8 im vorhandenen Format (A2), (b) alternative 16-Level-Tabelle (A5), (c) nur wenn S2 überlebt: per-channel K vor FWHT (A1). Jeder Arm berichtet K1, K4 und bit/cell | Kein Arm erreicht K1 bei ≤ 6,0 bit (der weicheren Latte 2, also erst recht nicht bei 5,0) → der Bulk ist nicht der Hebel; **kein 128K**, zurück zu S1 (Overlay-Ort) oder Abbruch. Ein Gleichstand zählt als Kill | (a)/(b) kein neuer Kernel; (c) opt-in Pipeline-Änderung mit SHA-Gate |
+| **S4** | Welche 5,0-Komposition hält? | Nur der S3-Sieger als Bulk, drei Byte-Varianten bei 128K, beide Texte, alle K-Statistiken, Byte-Modell vorher: (a) fp16-Ring, B=3.776; (b) int8-Ring, B=7.943; (c) 12-bit-Ring, B=5.461 | Keine Variante erfüllt K1–K5 → Latte 1 ist nicht erreichbar; dann Latte 2 prüfen (Parität bei 6,0) oder negatives Ergebnis. Prefill unter 90 % von `int8` → Variante tot, auch wenn die Qualität passt | (a) nur Konfiguration; (b)/(c) neuer Ring-Tier im Schreiber/Leser, eigener Härtungspunkt |
+| **S5** | Ist der Gewinn nicht cwe-spezifisch? | Nur nach einem K1–K6-Gewinn: zweiter RULER-Task bei 4K (D1), dieselben Kriterien | Verliert dort → kein Auslieferungs-Claim; der Arm bleibt Forschungsarm | Ein Task, nicht LongBench |
 
-S0 und S1 sind offline bzw. ein Zähler; erst S3 kostet GPU-Zeit in
-nennenswertem Umfang, und S4 nur für einen einzigen Arm. Wenn S3 keinen Sieger
-hat, endet der Branch mit einem dokumentierten Negativ-Ergebnis — das ist ein
-valides Ergebnis und billiger als ein 128K-Sweep.
+S0 und S1 sind offline bzw. ein Zähler; S3 kostet 4K-GPU-Zeit für höchstens drei
+Arme; S4 ist der einzige 128K-Block (drei Varianten × zwei Texte). Wenn S3 keinen
+Sieger hat, endet der Branch mit einem dokumentierten Negativ-Ergebnis — das ist
+ein valides Ergebnis und billiger als ein 128K-Sweep.
 
 ### Nicht auf dieser Leiter
 
 E2 (`q4_0` auf cwe) ist ein Vergleich, keine Hypothese, die gewinnen kann — es
-ordnet den Punkt ein, es bewegt ihn nicht. C1/C2 sind Review-Gates: für Latte 2
-werden sie blockierend, für Latte 1 nicht. D2/D3/D4/D6 begrenzen die Aussage,
-nicht den Punkt. B1 läuft nur, wenn S1 überlebt; B2/B3, A3, A4, E3 und ein
-GEAR-Kernel hängen an ihren Gates (E3 an S1, GEAR an der Restfehler-Form aus
-S1/E4). A4 mischt höchstens `int8` mit etwas Schlechterem und kann `int8` damit
-nicht überholen.
+ordnet den Punkt ein, es bewegt ihn nicht. C1/C2 sind Review-Gates: für Latte 1
+(Default-Anspruch) blockierend, für Latte 2 (opt-in) nicht. D2/D3/D4/D6
+begrenzen die Aussage, nicht den Punkt. B1 läuft nur, wenn S1 überlebt; B2/B3,
+A3, A4, E3 und ein GEAR-Kernel hängen an ihren Gates (E3 an S1, GEAR an der
+Restfehler-Form aus S1/E4). A4 mischt höchstens `int8` mit etwas Schlechterem
+und kann `int8` damit nicht überholen.
 
 ## 8. Was an Qwen3.8-Flash-Next überhaupt ansetzt
 
