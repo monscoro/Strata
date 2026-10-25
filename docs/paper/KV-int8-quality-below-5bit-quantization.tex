@@ -3,6 +3,8 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.2  2026-10-25  renamed to the branch goal (file and title), framed as
+%                     status and work plan; no measured number changes
 %   v0.1  2026-10-25  first version (working paper, no 5.0-bit measurement)
 % ---------------------------------------------------------------------------
 \documentclass[10pt,twocolumn]{article}
@@ -43,18 +45,24 @@
 % pdfTeX writes into the PDF's /CreationDate), so the visible version line cannot
 % drift from the file it is printed on.  Zero-padded by hand because the engine's
 % numbers are not.
-\makeatletter
-\newcommand{\twod}[1]{\ifnum\numexpr#1\relax<10 0\fi\number\numexpr#1\relax}
-\makeatother
-\newcommand{\buildstamp}{\number\year-\twod{\month}-\twod{\day}, \twod{\time/60}:\twod{\time-(\time/60)*60} CET}
+% \numexpr rounds a division, so \time/60 is not the hour (634/60 gives 11,
+% not 10).  Count registers truncate, and computing the two values once in the
+% preamble keeps \buildstamp fully expandable for the PDF metadata.
+\newcount\bsthour
+\newcount\bstminute
+\bsthour=\time \divide\bsthour by 60
+\bstminute=\bsthour \multiply\bstminute by 60
+\bstminute=-\bstminute \advance\bstminute by \time
+\newcommand{\twod}[1]{\ifnum#1<10 0\fi\number#1}
+\newcommand{\buildstamp}{\number\year-\twod{\month}-\twod{\day}, \twod{\bsthour}:\twod{\bstminute} CET}
 
 % ACM link colors.
 \definecolor{ACMPurple}{cmyk}{0.55,1,0,0.15}
 \definecolor{ACMDarkBlue}{cmyk}{1,0.58,0,0.21}
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
-  pdftitle={Five Bits per Cell: What a 4-Bit KV Cache Needs to Match int8},
+  pdftitle={int8-Quality KV Quantization Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.1, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.2, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -63,13 +71,13 @@
 % Full-width ACM conference title block, then the two columns start with the abstract.
 \twocolumn[{%
   \begin{center}
-    {\LARGE\bfseries Five Bits per Cell:\\[0.15em] What a 4-Bit KV Cache Needs to Match \texttt{int8}\par}
+    {\LARGE\bfseries int8-Quality KV Quantization Below 5 bit/cell\par}
     \vspace{0.6em}
-    {\large A falsification plan for the exact-cell window's successor\par}
+    {\large Status and work plan (no new measurements)\par}
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.1 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.2 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
