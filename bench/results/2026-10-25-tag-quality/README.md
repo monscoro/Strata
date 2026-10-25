@@ -1,6 +1,8 @@
 # Tag-Read — Datenerhebung, nicht ausgewertet
 
-**Status: Sammlung läuft. Keine Auswertung.** Die Zahlen stehen in den Rohlogs, nicht hier.
+**Status: gesammelt, nicht ausgewertet.** Vier Arme, 2026-10-25, 15:19–16:49, ein Prozess
+nach dem anderen. Jeder TSV hat 32.746 Zeilen, kein `nonfinite`. Der Tag-Arm hat die Zeile
+`STRATA_KV_WINDOW_TAG=1` in `tag.tsv.stderr.txt`, der Fenster-Arm nicht. Die KL ist nicht gerechnet.
 
 Frage, die diese Läufe später beantworten sollen: ändert `STRATA_KV_WINDOW_TAG=1` die cwe-4k-KL
 gegenüber dem heutigen Fenster und gegenüber `int8`? Das Flag lässt `qsa_win_slot` jede Ringzeile
@@ -28,6 +30,11 @@ ein Build-Unterschied, kein Arm-Unterschied.
 
 Ein Arm nach dem anderen. Rohdaten außerhalb des Repos:
 `C:\Users\krone\git\Strata-data\bench\2026-10-25-tag-quality\`.
+
+Wanduhr aus dem Laufprotokoll, nicht als K5 gelesen (Debug-Build, Syncs des Zählers aus, aber nicht
+der Produktions-Build): fp16 15:19–15:39, int8 15:39–15:58, win256 15:58–16:19, tag 16:19–16:49.
+Die Segmentzeiten des Tag-Arms liegen bei 191–227 s, die von int8 bei 128–140 s. Was das bedeutet,
+steht hier nicht.
 
 ## Reproduktion
 
