@@ -3394,12 +3394,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                  selstats_path);
                                 } else {
                                     std::fprintf(selstats, "layer\tpos\tn_kv\twidth\tblocks\tin_r\tin_s\tin_b\toutside"
+                                                           "\td2\td4\td8\td16\td32\tolder"
+                                                           "\ttag_s\ttag_b\ttag_out"
                                                            "\tmin_sel\tmax_unsel\ts_min\ts_max\n");
                                 }
                             }
                             if (selstats != nullptr) {
                                 const int64_t R = core::qsa_kv_win_r(), S = core::qsa_kv_win_s(),
                                               B = core::qsa_kv_win_b();
+                                // The chunk's window append has already run, so a ring row holds whichever cell wrote
+                                // it last. Read the tags once per batch and count selected cells whose row still names
+                                // them: that is the copy a gather could read exact, as opposed to the geometric range.
+                                const int64_t ring = S + B;
+                                std::vector<int32_t> tags;
+                                if (st.win_tag != nullptr && ring > 0) {
+                                    tags.resize((size_t) ring);
+                                    cudaMemcpyAsync(tags.data(), st.win_tag, (size_t) ring * 4,
+                                                    cudaMemcpyDeviceToHost, m.cs);
+                                    cudaStreamSynchronize(m.cs);
+                                }
                                 std::vector<int64_t> pick;
                                 for (int64_t i = 0; i < nb; i += every) pick.push_back(i);
                                 std::vector<int32_t> h_ids((size_t) pick.size() * (size_t) m.cap);
@@ -3424,31 +3437,55 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     const int32_t* ids = h_ids.data() + k * (size_t) m.cap;
                                     const float* sc = h_sc.data() + k * (size_t) m.max_blocks;
                                     int64_t in_r = 0, in_s = 0, in_b = 0, outside = 0;
+                                    int64_t tag_s = 0, tag_b = 0, tag_out = 0;
+                                    // Where the non-exact hits sit, in multiples of S behind the horizon. d2 is the next
+                                    // window's worth (a larger S would catch it); older is more than 32 S back.
+                                    int64_t d2 = 0, d4 = 0, d8 = 0, d16 = 0, d32 = 0, older = 0;
                                     std::vector<char> sel((size_t) n_bid + 1, 0);
                                     for (int64_t j = 0; j < w; ++j) {
                                         const int64_t c = ids[j];
                                         // qsa_win_slot's predicate: R is the sink rows, S the recent window; the B rows
                                         // past S are overlaid (they pay) but read quantized, the rest is outside.
+                                        const bool tagged = c >= 0 && !tags.empty() &&
+                                                            tags[(size_t) (c % ring)] == (int32_t) c;
                                         if (c < R) ++in_r;
-                                        else if (c >= n_kv - S) ++in_s;
-                                        else if (c >= n_kv - S - B) ++in_b;
-                                        else ++outside;
+                                        else if (c >= n_kv - S) { ++in_s; tag_s += tagged; }
+                                        else {
+                                            if (c >= n_kv - S - B) { ++in_b; tag_b += tagged; }
+                                            else { ++outside; tag_out += tagged; }
+                                            const int64_t dist = n_kv - c;
+                                            if (S > 0 && dist <= 2 * S) ++d2;
+                                            else if (S > 0 && dist <= 4 * S) ++d4;
+                                            else if (S > 0 && dist <= 8 * S) ++d8;
+                                            else if (S > 0 && dist <= 16 * S) ++d16;
+                                            else if (S > 0 && dist <= 32 * S) ++d32;
+                                            else ++older;
+                                        }
                                         const int64_t b = c / s.idx_block;
                                         if (b >= 0 && b <= n_bid) sel[(size_t) b] = 1;
                                     }
+                                    // Block n_bid carries a +1e9 bias whenever the tail is incomplete (qsa_select.hpp), so it
+                                    // is always selected and its score is not a score. The boundary is over the complete
+                                    // blocks only; a sentinel stays when a side has none (the identity selection).
+                                    const int64_t tail = (n_kv % s.idx_block != 0) ? n_bid : -1;
                                     float min_sel = 1e30f, max_unsel = -1e30f, s_min = 1e30f, s_max = -1e30f;
                                     for (int64_t b = 0; b <= n_bid; ++b) {
+                                        if (b == tail) continue;
                                         const float v = sc[b];
                                         s_min = std::min(s_min, v);
                                         s_max = std::max(s_max, v);
                                         if (sel[(size_t) b]) min_sel = std::min(min_sel, v);
                                         else max_unsel = std::max(max_unsel, v);
                                     }
-                                    std::fprintf(selstats, "%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%.9g\t%.9g\t%.9g\t%.9g\n",
+                                    std::fprintf(selstats, "%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld"
+                                                           "\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld"
+                                                           "\t%lld\t%lld\t%lld\t%.9g\t%.9g\t%.9g\t%.9g\n",
                                                  (long long) qsa_index, (long long) step[strata::kernels::kStepPos],
                                                  (long long) n_kv, (long long) w, (long long) n_bid + 1,
                                                  (long long) in_r, (long long) in_s, (long long) in_b,
-                                                 (long long) outside,
+                                                 (long long) outside, (long long) d2, (long long) d4,
+                                                 (long long) d8, (long long) d16, (long long) d32, (long long) older,
+                                                 (long long) tag_s, (long long) tag_b, (long long) tag_out,
                                                  min_sel, max_unsel, s_min, s_max);
                                 }
                                 std::fflush(selstats);

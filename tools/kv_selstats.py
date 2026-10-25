@@ -12,9 +12,9 @@ One instrumented prefill of a long prompt, two debug hooks, no new kernel and no
 
 The buckets follow the kernel's own predicate (include/strata/kernels/qsa_decode_attn.hpp, qsa_win_slot): a cell `c` at
 horizon `n` is read exact when `c < R` (sink) or `c >= n - S` (recent, tag-checked); everything else reads quantized.
-The selection itself is over whole blocks (include/strata/kernels/qsa_select.hpp), so `min_sel - max_unsel` is exactly
-the boundary margin: positive = the selection separates cleanly, zero or negative = a tie the order of the block list
-decides.
+The selection itself is over whole blocks (include/strata/kernels/qsa_select.hpp), so `min_sel - max_unsel` is the
+boundary margin — taken over the complete blocks only, because the incomplete tail block carries a +1e9 bias and is
+always selected. Positive = the selection separates cleanly, zero or negative = a tie the block order decides.
 
   python tools/kv_selstats.py run --out <dir> [--exe <path>] [--env K=V ...]
   python tools/kv_selstats.py report <dir>/selstats.tsv
@@ -180,7 +180,8 @@ def cmd_report(a) -> int:
     print("\nselection boundary: margin = min(score of a selected block) - max(score of an unselected block)")
     print(f"{'horizon':{W}s} {'n':>6s} {'p1':>10s} {'p10':>10s} {'p50':>10s} {'p90':>10s} {'<=0':>6s}")
     for lo, hi, label in buckets:
-        sel = [r for r in rows if lo <= num(r, "n_kv") <= hi and num(r, "max_unsel") > -1e29]
+        sel = [r for r in rows if lo <= num(r, "n_kv") <= hi
+               and -1e29 < num(r, "max_unsel") and num(r, "min_sel") < 1e29]
         if not sel:
             continue
         m = sorted(num(r, "min_sel") - num(r, "max_unsel") for r in sel)
@@ -192,13 +193,53 @@ def cmd_report(a) -> int:
     print("\nmargin relative to the score spread of the query (margin / (s_max - s_min))")
     print(f"{'horizon':{W}s} {'n':>6s} {'p1':>9s} {'p10':>9s} {'p50':>9s} {'p90':>9s}")
     for lo, hi, label in buckets:
-        sel = [r for r in rows if lo <= num(r, "n_kv") <= hi and num(r, "max_unsel") > -1e29
+        sel = [r for r in rows if lo <= num(r, "n_kv") <= hi
+               and -1e29 < num(r, "max_unsel") and num(r, "min_sel") < 1e29
                and num(r, "s_max") > num(r, "s_min")]
         if not sel:
             continue
         m = sorted((num(r, "min_sel") - num(r, "max_unsel")) / (num(r, "s_max") - num(r, "s_min")) for r in sel)
         q = lambda f: m[min(len(m) - 1, int(f * (len(m) - 1) + 0.5))]  # noqa: E731
-        print(f"{label:{W}s} {len(m):6d} {q(0.01):8.1%} {q(0.10):8.1%} {q(0.50):8.1%} {q(0.90):8.1%}")
+        print(f"{label:{W}s} {len(m):6d} {q(0.01):8.2%} {q(0.10):8.2%} {q(0.50):8.2%} {q(0.90):8.2%}")
+
+    # The decision row. Below 2,051 cells the selection is the identity, so those shares are geometry.
+    # The ceiling is arithmetic: width is 2,051 once the selection selects, R+S is 320, so at most 15.6% of the
+    # selected cells can be exact. The catalog's "< 1/2" cannot be met at this geometry; recall is the question.
+    dec = [r for r in rows if num(r, "n_kv") > 2051]
+    if dec:
+        tot = sum(num(r, "in_r") + num(r, "in_s") + num(r, "in_b") + num(r, "outside") for r in dec)
+        exact = sum(num(r, "in_r") + num(r, "in_s") for r in dec)
+        print(f"\ndecision row (n_kv > 2051, where the selection actually selects), R={a.r} S={a.s}")
+        print(f"  {100 * exact / tot:.1f}% of selected cells are read exact (R+S); ceiling is "
+              f"{100 * (a.r + a.s) / 2051:.1f}%")
+        print(f"  {100 * sum(num(r, 'in_b') for r in dec) / tot:.1f}% sit in the paid-but-quantized ring (B), "
+              f"{100 * sum(num(r, 'outside') for r in dec) / tot:.1f}% outside it")
+        print(f"  recall of the sinks:  {sum(num(r, 'in_r') for r in dec) / (a.r * len(dec)):.1%}  "
+              f"(mean selected sink cells {sum(num(r, 'in_r') for r in dec) / len(dec):.1f} of {a.r})")
+        print(f"  recall of the recent: {sum(num(r, 'in_s') for r in dec) / (a.s * len(dec)):.1%}  "
+              f"(mean selected recent cells {sum(num(r, 'in_s') for r in dec) / len(dec):.1f} of {a.s})")
+        if "d2" in dec[0]:
+            rest = tot - exact
+            print("  of the cells that are not read exact, distance behind the horizon in multiples of S:")
+            print("  " + "  ".join(
+                f"{name} {100 * sum(num(r, name) for r in dec) / rest:.1f}%"
+                for name in ("d2", "d4", "d8", "d16", "d32", "older")))
+        if "tag_b" in dec[0]:
+            ts = sum(num(r, "tag_s") for r in dec)
+            tb = sum(num(r, "tag_b") for r in dec)
+            to = sum(num(r, "tag_out") for r in dec)
+            iss = sum(num(r, "in_s") for r in dec)
+            ib = sum(num(r, "in_b") for r in dec)
+            ou = sum(num(r, "outside") for r in dec)
+            print(f"  tag still names the cell: S {100*ts/iss:.1f}%  B {100*tb/ib:.1f}%  outside {100*to/max(ou,1):.1f}%")
+            print(f"  a tag-hit read would make {100*(ts+tb+to+sum(num(r,'in_r') for r in dec))/tot:.1f}% of the "
+                  f"selection exact, against {100*exact/tot:.1f}% today (this row pools every n_kv > 2051)")
+            long = [r for r in dec if num(r, "n_kv") > 16384]
+            if long:
+                lt = sum(num(r, "in_r") + num(r, "in_s") + num(r, "in_b") + num(r, "outside") for r in long)
+                lex = sum(num(r, "in_r") + num(r, "in_s") for r in long)
+                ltag = sum(num(r, "tag_s") + num(r, "tag_b") + num(r, "tag_out") + num(r, "in_r") for r in long)
+                print(f"  the same at n_kv > 16384: tag-hit read {100*ltag/lt:.1f}%, exact today {100*lex/lt:.1f}%")
     return 0
 
 
@@ -221,6 +262,8 @@ def main() -> int:
     r.set_defaults(func=cmd_run)
     q = sub.add_parser("report")
     q.add_argument("tsv")
+    q.add_argument("--r", type=int, default=64, help="sink rows, for the recall line (the product point)")
+    q.add_argument("--s", type=int, default=256, help="recent rows, for the recall line (the product point)")
     q.set_defaults(func=cmd_report)
     a = ap.parse_args()
     return a.func(a)
