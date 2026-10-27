@@ -107,18 +107,101 @@ Tatsache, die vor dem Lauf feststand, und er unterscheidet nicht zwischen „der
 der falsche Hebel" und „der Ring ist zu klein". Was der Lauf **wirklich** sagt, steht
 in A2: die Tabelle ist ein Hebel bei gleichen Bytes.
 
-### Was daraus folgt (Vorschlag, nicht ausgeführt)
+### Nachtrag: die 2x2 und die Skala (vorregistriert 2026-10-27, vor den Läufen)
 
-1. **16/8 und 8/16 nachziehen** (zwei Arme, ~50 min): erst damit ist die 2×2-Tabelle
-   vollständig und die Frage „ist die V-Seite in `q4lm8v` mit 8 Leveln Geld verschenkt?"
-   beantwortet. Null Bytes Unterschied, kein neuer Kernel.
-2. **`q4lm32s`** (Least-Squares-Skala statt `max|x|/87`, gleiche Bytes, schon
-   implementiert) als vierter Arm: die Skala ist die andere Hälfte derselben Frage, und
-   der Blockfehler ist bereits gemessen niedriger (2,551e-02 gegen 2,740e-02).
-3. **A5 (b)** erst danach: eine andere 16-Level-Tabelle muss gegen Max-Lloyd für N(0,1)
-   gewinnen, und S2 hat die Verteilung nach der Rotation als nahezu gaußsch gemessen
-   (Exzess-Kurtosis −0,14). Die Begründung für eine neue Tabelle ist damit schwach; die
-   Begründung für eine andere **Skala** ist stärker.
+A2 hat die Endpunkte gemessen, aber der Punkt selbst ist 16/8. Drei weitere Arme, alle
+bei denselben 576 B/cell und demselben Build, schließen die 2x2-Tabelle und die zweite
+Hälfte der Codebook-Frage:
+
+| Arm | `--kv` | K | V | Skala |
+|---|---|---|---|---|
+| 16/8 (heutiger Punkt, ohne Fenster) | `q4lm8v` | 16 Level | 8 Level | `max\|x\|/87` |
+| 8/16 | `q4lm8k` | 8 Level | 16 Level | `max\|x\|/87` |
+| 16/16 + LS | `q4lm32s` | 16 Level | 16 Level | Least Squares je Block |
+
+**Fragen.** (1) Trägt der 0,0145-Vorsprung von 16/16 die K-Seite, die V-Seite oder
+beide? Das entscheidet, welche Tabelle im Produktpunkt getauscht wird. (2) Ist die
+Least-Squares-Skala bei gleichen Bytes besser als `max|x|/87`? Der Blockfehler ist es
+bereits (2,551e-02 gegen 2,740e-02), die KL auf cwe-4k ist ungemessen.
+
+**Regel.** Ein Arm ersetzt den Bulk des Produktpunkts nur, wenn er bei **gleichen
+Bytes** besser ist als 16/8 mit einem 95-%-Intervall, das die 0 ausschließt, und wenn
+K5 (Prefill nicht mehr als 10 % unter `int8`) haelt. Die Richtung wird nicht
+vorhergesagt: KIVI sagt "K ist empfindlicher" voraus, A2s Vorgeschichte hat "K will
+Bits" auf Swift bereits falsifiziert.
+
+### Die 2x2 und die Skala: Ergebnis
+
+Alle fünf Arme bei 576 B/cell, ein Build, 32.746 Positionen, `max|x|/87` als Skala außer
+beim letzten:
+
+| Arm | K | V | Skala | KL top-64 | KL top-256 |
+|---|---|---|---|---|---|
+| 16/16 + LS (`q4lm32s`) | 16 | 16 | Least Squares | **0,02303** | **0,02457** |
+| 16/16 (`q4lm32`) | 16 | 16 | `max\|x\|/87` | 0,02558 | 0,02734 |
+| 8/16 (`q4lm8k`) | 8 | 16 | `max\|x\|/87` | 0,03051 | 0,03240 |
+| 16/8 (`q4lm8v`, heutiger Bulk) | 16 | 8 | `max\|x\|/87` | 0,03081 | 0,03281 |
+| 8/8 (`q4lm8`) | 8 | 8 | `max\|x\|/87` | 0,03891 | 0,04185 |
+
+Effekte, gepaart je Position, top-256:
+
+| Effekt | Mittel | 95-%-Intervall | t | Urteil |
+|---|---|---|---|---|
+| K 16 -> 8 (16/16 - 8/16) | -0,00506 | [-0,00902, -0,00110] | -2,50 | 16 Level besser |
+| V 16 -> 8 (16/16 - 16/8) | -0,00547 | [-0,00922, -0,00171] | -2,86 | 16 Level besser |
+| beide (16/16 - 8/8) | -0,01451 | [-0,01842, -0,01060] | -7,28 | 16 Level besser |
+| 16/8 - 8/16 | +0,00041 | [-0,00329, +0,00412] | +0,22 | **keine Richtung** |
+| LS - max\|x\|/87 (16/16) | -0,00277 | [-0,00608, +0,00053] | +1,64 | nicht gesichert |
+
+Drei Befunde:
+
+1. **Der Split ist qualitativ beliebig.** 16/8 und 8/16 liegen 0,0004 nats auseinander,
+   das Intervall enthält die 0, und die Segmentbilanz ist 4/8 gegen 4/8. K und V sind
+   **gleich** empfindlich (0,0051 gegen 0,0055); „K braucht die breitere Tabelle" ist in
+   dieser Pipeline nicht messbar. `q4lm8v` gibt der V-Seite also 8 Level, ohne dass
+   irgendetwas das rechtfertigt — und zahlt dafür 0,0055 nats gegen 16/16.
+2. **Die Interaktion ist überadditiv:** 0,0051 + 0,0055 = 0,0106, gemessen 0,0145. Wer
+   beide Seiten auf 8 Level setzt, verliert mehr als die Summe der Einzelverluste.
+3. **Die Least-Squares-Skala ist ein Vielleicht.** Der Mittelwert ist 0,0028 besser, das
+   Intervall enthält aber die 0 (t = 1,64), der Median der Differenz ist 0,000, und nur
+   54,4 % der Positionen werden besser. Der Median-KL fällt von 0,00158 auf 0,00145
+   (−8 %). Ohne Bytes zu kosten ist sie ein Kandidat, aber kein gesicherter Gewinn.
+
+### Die Lese-Seite ist bereits gemessen: Parität, kein Hebel
+
+Aus dem 2026-10-25-Lauf (`bench/results/2026-10-25-tag-quality/`, gleicher Satz, gleiche
+Positionen, 16/8-Bulk, 5,29 bit), hier als gepaarte Differenz nachgerechnet:
+
+| Arm | KL vs fp16 top-256 | gegen `int8` |
+|---|---|---|
+| `int8` | 0,01774 | — |
+| Fenster 256/64 | 0,02223 | +0,00449 [-0,00745, -0,00153] |
+| Tag-Read (gleiche Bytes) | 0,02107 | +0,00332 [-0,00620, -0,00045] |
+| Tag-Read - Fenster | — | +0,00117 [-0,00162, +0,00395], t +0,82 |
+
+Der Tag-Read ist **nicht** signifikant besser als das Fenster (t = 0,82, 3/8 Segmente).
+Der Read ist damit kein Hebel; der Bulk ist einer.
+
+### Was das für das Ziel bedeutet
+
+**Das 5,0-bit/cell-Ziel ist am 2026-10-27 zurückgestellt** (Entscheidung des Nutzers):
+ohne deutlich bessere Rotationsansätze und Fehlerkorrekturen ist es mit diesem Codec
+nicht erreichbar. Die Leiter S0-S5 wird nicht weiter auf 5,0 hin verfolgt; der Branch
+maximiert zuerst **Qualität bei gleichen Bytes**, danach erst Bytes.
+
+Die gemessene Rangfolge der Hebel bei gleichen Bytes:
+
+1. **Bulk-Tabelle: 0,0055 bis 0,0082 nats** (16/8 -> 16/16 -> 16/16+LS). Der heutige
+   Punkt verschenkt davon 0,0055 ohne Gegenleistung.
+2. **Read (Tag statt Fenster): 0,0012 nats, nicht signifikant.** Kein Hebel.
+3. Alles andere (Rotation, per-channel, Level-Tabelle jenseits 16): von S2 und A5
+   her ohne gemessene Grundlage.
+
+Der nächste Arm ist damit der Produktpunkt mit dem besseren Bulk: **16/16 (+LS) + Fenster
+256/64**, gleiche Bytes wie heute (5,29 bit/cell, 1.016 MiB bei 128K). Die Projektion aus
+den Zahlen oben — Bulk −0,0055, Fenster kostet +0,0045 — landet bei oder unter `int8`;
+das ist eine **Projektion, keine Messung**, und der Ring hält die letzten 256 Zellen
+exakt, wo der Bulk nichts beiträgt. Deshalb wird sie gemessen, nicht behauptet.
 
 ## Dateien
 
