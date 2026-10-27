@@ -1381,7 +1381,77 @@ if (st.kv_hybrid) {
     strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream,
                                        mirror ? &hv : nullptr);
 } else {
-if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
+const char* s2path = std::getenv("STRATA_KV_S2_STATS");
+if (st.kv_rot && s2path) {
+    // S2 (debug): second moments of K channels before and after the Hadamard, split into the
+    // 64 rotated (RoPE) and 192 unrotated channels, per QSA layer. Accumulated over tokens,
+    // flushed every 500 tokens. int8 path and default path are unaffected (env unset).
+    static std::vector<double> acc_before[12], acc_after[12];
+    static std::vector<double> acc2_before[12], acc2_after[12];
+    static int64_t cnt[12] = {};
+    static bool init = false;
+    if (!init) {
+        for (int l = 0; l < 12; ++l) {
+            acc_before[l].assign(256, 0.0); acc_after[l].assign(256, 0.0);
+            acc2_before[l].assign(256, 0.0); acc2_after[l].assign(256, 0.0);
+        }
+        init = true;
+    }
+    const int li = (int) layer;
+    if (li >= 0 && li < 12) {
+        const int64_t nchan = g.head_dim;   // 256
+        const int64_t nhead = g.n_head_kv;  // 2
+        std::vector<float> host((size_t) nhead * nchan);
+        cudaMemcpy(host.data(), b.kcur, (size_t) nhead * nchan * 4, cudaMemcpyDeviceToHost);
+        cudaStreamSynchronize((cudaStream_t) stream);
+        // before
+        for (int h = 0; h < nhead; ++h)
+            for (int c = 0; c < nchan; ++c) {
+                const double v = host[(size_t) h * nchan + c];
+                acc_before[li][c] += v;
+                acc2_before[li][c] += v * v;
+            }
+        // FWHT on K and V
+        strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
+        strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+        // after
+        cudaMemcpy(host.data(), b.kcur, (size_t) nhead * nchan * 4, cudaMemcpyDeviceToHost);
+        cudaStreamSynchronize((cudaStream_t) stream);
+        for (int h = 0; h < nhead; ++h)
+            for (int c = 0; c < nchan; ++c) {
+                const double v = host[(size_t) h * nchan + c];
+                acc_after[li][c] += v;
+                acc2_after[li][c] += v * v;
+            }
+        ++cnt[li];
+        int64_t total = 0;
+        for (int l = 0; l < 12; ++l) total += cnt[l];
+        if (total > 0 && total % 500 == 0) {
+            FILE* f = std::fopen(s2path, "w");
+            if (f) {
+                std::fprintf(f, "layer  channel  group  n  mean_before  var_before  mean_after  var_after\n");
+                for (int l = 0; l < 12; ++l) {
+                    if (cnt[l] == 0) continue;
+                    const double n = (double) cnt[l] * nhead;
+                    for (int c = 0; c < nchan; ++c) {
+                        const double mb = acc_before[l][c] / n;
+                        const double vb = acc2_before[l][c] / n - mb * mb;
+                        const double ma = acc_after[l][c] / n;
+                        const double va = acc2_after[l][c] / n - ma * ma;
+                        const char* grp = (c < 64) ? "rot" : "unrot";
+                        std::fprintf(f, "%d  %d  %s  %lld  %.6g  %.6g  %.6g  %.6g\n",
+                                     l, c, grp, (long long) cnt[l], mb, vb, ma, va);
+                    }
+                }
+                std::fclose(f);
+            }
+        }
+    } else {
+        // layer out of range: normal FWHT
+        strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
+        strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+    }
+} else if (st.kv_rot) {
     strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
     strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
 }
