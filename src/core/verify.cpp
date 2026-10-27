@@ -4,6 +4,7 @@
 #include "strata/core/sm120_series.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/s2_probe.hpp"
 #include "strata/core/pin_budget.hpp"
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include "strata/core/host_graph_launch.hpp"
@@ -1664,11 +1665,36 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
                 if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
+                // S2 probe (debug only): the K rows are normed and RoPE'd here; the Hadamard below
+                // is the rotation the plan asks about.  Nothing is copied unless the env names a file.
+                const char* s2path = std::getenv("STRATA_KV_S2_STATS");
+                cudaStreamCaptureStatus s2_cap = cudaStreamCaptureStatusNone;
+                cudaStreamIsCapturing(cs, &s2_cap);
+                const bool s2_on = s2path != nullptr && st.kv_rot && is_qsa_layer(g, l) &&
+                                   s2_cap == cudaStreamCaptureStatusNone;
+                static std::vector<strata::core::s2::Layer> s2_acc;
+                std::vector<float> s2_host;
+                if (s2_on) {
+                    if (s2_acc.empty()) s2_acc.resize((size_t) g.n_layers);
+                    s2_host.resize((size_t) (n * NKV) * HD);
+                    cudaStreamSynchronize(cs);   // the copy must read what the stream wrote
+                    cudaMemcpy(s2_host.data(), kcur_ + tb * NKV * HD, (size_t) (n * NKV) * HD * sizeof(float),
+                               cudaMemcpyDeviceToHost);
+                    strata::core::s2::accumulate(s2_acc[(size_t) l].pre, s2_host.data(), n * NKV, (int) HD);
+                }
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
                     fwht256_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 } else if (st.kv_hybrid) {   // K8V4: only V is rotated
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
+                }
+                if (s2_on) {
+                    cudaStreamSynchronize(cs);   // the copy must read what the stream wrote
+                    cudaMemcpy(s2_host.data(), kcur_ + tb * NKV * HD, (size_t) (n * NKV) * HD * sizeof(float),
+                               cudaMemcpyDeviceToHost);
+                    strata::core::s2::accumulate(s2_acc[(size_t) l].post, s2_host.data(), n * NKV, (int) HD);
+                    s2_acc[(size_t) l].tokens += n;
+                    if (s2_acc[(size_t) l].tokens >= 500) strata::core::s2::flush(s2path, s2_acc);
                 }
                 stamp(l, 8, grp);
                 if (!sidem) idx_snap(cs);

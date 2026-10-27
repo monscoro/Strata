@@ -377,6 +377,16 @@ Qualität auf cwe-4k gegen das heutige Fenster und gegen `int8`. Kein
 Qualitätsanspruch aus dem Zähler. Der Score-Rand (0,01 % der Spreizung) trägt
 keinen Score-Pool.
 
+S2 lief am 2026-10-27 auf cwe-4k (32.746 Token je QSA-Layer, 12 Layer, batched Prefill,
+`bench/results/2026-10-27-s2-channels/`). Die Kanalachse **vor** der Rotation ist nicht schwerer als
+danach: Exzess-Kurtosis im Mittel −0,18 pre gegen −0,14 post, Crest 3,72 gegen 3,93, und die
+Vorzeichenprobe ist ein Münzwurf (52,5 % der 3.072 Kanäle). **Der Kill feuert, A1 wird nicht
+gebaut.** Die Ausnahme sind 70 Kanäle (2,3 %, 49 davon in den 64 rotierten Dimensionen) mit
+Kurtosis > +1 vor der Rotation; der Hadamard flacht alle davon ab (post ≤ +0,46). Die
+Breiten-Spreizung von 16× bis 7.267× ist der Norm-Gewichtvektor (tote Kanäle mit
+`var` = 0,001), also eine bekannte feste Transformation, keine Datenachse. S3 startet damit bei (a)
+16/16 gegen 8/8 und (b) alternative 16-Level-Tabelle; (c) entfällt.
+
 S0 brauchte einen 4K-Lauf je Arm (die Logs liegen jetzt vor), S1 einen
 Zählerlauf (gelaufen, 32K); S3 kostet 4K-GPU-Zeit für höchstens drei
 Arme; S4 ist der einzige 128K-Block (drei Varianten × zwei Texte). Wenn S3 keinen

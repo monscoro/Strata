@@ -31,6 +31,7 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/core/s2_probe.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -125,6 +126,24 @@ bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0, const float* con
 
 namespace strata::prefill {
 namespace {
+// S2 debug (STRATA_KV_S2_DEBUG=1): the orthonormal Hadamard keeps the energy of every row, so the two
+// copies' sums of squares are the probe's own correctness check, not a measurement.
+void s2_row_energy(const float* host, int64_t rows, int nchan, bool pre) {
+    static const bool on = [] { const char* v = std::getenv("STRATA_KV_S2_DEBUG"); return v != nullptr && v[0] == '1'; }();
+    static bool said_pre = false, said_post = false;
+    bool& said = pre ? said_pre : said_post;
+    if (!on || said) return;
+    said = true;
+    double e = 0.0, m = 0.0;
+    for (int64_t r = 0; r < rows; ++r) {
+        double row = 0.0;
+        for (int c = 0; c < nchan; ++c) { const double x = host[(size_t) r * (size_t) nchan + (size_t) c]; row += x * x; }
+        e += row;
+        if (r == 0) m = row;
+    }
+    std::fprintf(stderr, "strata: S2 %s: %lld rows, sum of squares %.6g (row 0 %.6g)\n",
+                 pre ? "before FWHT" : "after FWHT", (long long) rows, e, m);
+}
 
 using Clock = std::chrono::steady_clock;
 constexpr float EPS = 1e-6f;
@@ -145,6 +164,7 @@ inline bool stream_ahead_enabled() {
     }();
     return on;
 }
+
 // Step 3: from this chunk size on, every non-resident expert of every layer streams in a fixed order through a
 // ring_slots()-slot ring (nearly all 512 are routed at such a chunk), so the copy engine keeps working through the
 // attention halves instead of waiting for each layer's routing.
@@ -3310,9 +3330,34 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, p0, T, m.Vc, m.Vc, s, m.cs,
                                                       mirror ? &hv : nullptr, staged ? &sv : nullptr);
                     } else {
+                        // S2 probe (debug only): the K buffer is normed and RoPE'd here, and the
+                        // Hadamard below is the rotation the plan asks about.  Nothing is copied
+                        // unless STRATA_KV_S2_STATS names a file.
+                        const char* s2path = std::getenv("STRATA_KV_S2_STATS");
+                        const bool s2_on = s2path != nullptr && st.kv_rot && core::is_qsa_layer(g, l);
+                        static std::vector<strata::core::s2::Layer> s2_acc;
+                        std::vector<float> s2_host;
+                        if (s2_on) {
+                            if (s2_acc.empty()) s2_acc.resize((size_t) g.n_layers);
+                            s2_host.resize((size_t) (T * 2) * 256);
+                            cudaStreamSynchronize((cudaStream_t) m.cs);   // the copy must read what the stream wrote
+                            cudaMemcpy(s2_host.data(), m.Kc, (size_t) (T * 2) * 256 * sizeof(float),
+                                       cudaMemcpyDeviceToHost);
+                            strata::core::s2::accumulate(s2_acc[(size_t) l].pre, s2_host.data(), T * 2, 256);
+                            s2_row_energy(s2_host.data(), T * 2, 256, true);
+                        }
                         if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
                             strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
                             strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                        }
+                        if (s2_on) {
+                            cudaStreamSynchronize((cudaStream_t) m.cs);   // the copy must read what the stream wrote
+                            cudaMemcpy(s2_host.data(), m.Kc, (size_t) (T * 2) * 256 * sizeof(float),
+                                       cudaMemcpyDeviceToHost);
+                            strata::core::s2::accumulate(s2_acc[(size_t) l].post, s2_host.data(), T * 2, 256);
+                            s2_row_energy(s2_host.data(), T * 2, 256, false);
+                            s2_acc[(size_t) l].tokens += T;
+                            if (s2_acc[(size_t) l].tokens >= 500) strata::core::s2::flush(s2path, s2_acc);
                         }
                         if (st.kv_q4) {
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,

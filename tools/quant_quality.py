@@ -200,7 +200,8 @@ def mem_available_gb() -> float:
     return float("inf")
 
 
-def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16") -> list[str]:
+def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16",
+                short_read: int | None = None) -> list[str]:
     base, out, i = list(cfg["args"]), [], 0
     while i < len(base):
         x = base[i]
@@ -219,6 +220,8 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16") -> li
     # Without the cap a 128K set would ask for 131,584 and the engine would refuse the model's own context.
     max_ctx = min(seg_tokens + 512, 131072)
     short = min(seg_tokens + 64, max_ctx - 1)
+    if short_read is not None:   # --short-read N: 0 forces the batched prompt path (the S2 probe's route)
+        short = min(short_read, max_ctx - 1)
     return [cfg["exe"], "--serve", *out, *fixed, "--kv", kv, "--max-context", str(max_ctx),
             "--short-read", str(short), "--prefill", "512"]
 
@@ -244,7 +247,7 @@ def cmd_run(a) -> int:
     env["STRATA_LOGPOS_TOPK"] = str(a.topk)
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
-    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv)
+    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv, a.short_read)
     if getattr(a, "exe", None):
         args[0] = a.exe
     if a.wrap:
@@ -280,6 +283,9 @@ def cmd_run(a) -> int:
         info.append(f"{s['name']}: {n1 - n0} positions, {time.time() - t0:.1f} s")
         print(info[-1], flush=True)
         if n1 - n0 < len(s["ids"]) // 2:
+            if a.allow_no_positions:   # a probe run (STRATA_KV_S2_STATS): the batched prompt path writes no positions
+                print(f"{s['name']}: {n1 - n0} positions scored, allowed for a probe run", flush=True)
+                continue
             p.kill()
             raise SystemExit(f"{s['name']}: only {n1 - n0} positions were scored (the prompt took the batched path?)")
     p.stdin.write("QUIT\n")
@@ -830,6 +836,13 @@ def main() -> int:
     p.add_argument("--kv", default="fp16", metavar="FMT",
                    help=("the KV cache format for this run: fp16 (default, the reference) | int8 | q4_0 | "
                          "q4lm32 | q4lm32s | q4lm8 | q4lm8k | q4lm8v | q4lm32t | q4lm32nr | q4lm32c | q4lm32w | k8v4"))
+    p.add_argument("--short-read", type=int, default=None, metavar="N",
+                   help=("override the engine's --short-read: 0 sends every prompt through the batched prompt path "
+                         "instead of the verify windows (the S2 channel probe only sees the batched path); "
+                         "default = the segment length + 64, i.e. the verify windows"))
+    p.add_argument("--allow-no-positions", action="store_true",
+                   help=("a probe run (STRATA_KV_S2_STATS): the batched prompt path writes no per-position logits, "
+                         "so a segment with fewer than half its positions is not an error and the run continues"))
     p = sub.add_parser("kvstats", help="per-layer K/V distribution stats for one calibration text "
                                        "(STRATA_KVSTATS tap + aggregation: kurtosis, crest, block-max, channels)")
     p.add_argument("--config", required=True)
