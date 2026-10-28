@@ -1,8 +1,12 @@
 """K1 of the ladder for the S3 arms: the per-position paired test, not the 8-segment one.
 
-KL(arm) per position is KL(int8 || arm) over int8's top-k tokens, and the ladder's K1 asks for the
-mean of that over cwe-4k, its one-sided 95 % upper bound against int8 (+0.001 nats) and how many of
-the 8 segments int8 leads.
+KL(arm) per position is KL(ref || arm) over ref's top-k tokens. The ladder's K1 is defined against
+`int8`: the mean of KL(int8 || arm) over cwe-4k, its one-sided 95 % upper bound (+0.001 nats) and how
+many of the 8 segments int8 leads. Another --ref is useful for the other columns - a `fp16` reference
+is the honest unit for absolute quality, because KL(int8 || arm) also charges the arm for the errors
+int8 makes itself - but `k1` is only evaluated when the reference is int8. With any other reference
+the "segments the reference leads" column is not K1 and is reported as what it is: the segments in
+which the arm is worse than the reference.
 
 Usage: python tools/kv_k1.py --ref int8.tsv --run a.tsv [--run b.tsv ...] [--kl-topk 256]
 """
@@ -25,9 +29,13 @@ def main():
     ap.add_argument("--json")
     a = ap.parse_args()
     ref = qq.read_run(a.ref)
+    is_int8_ref = "int8" in pathlib.Path(a.ref).stem
     out = {"ref": a.ref, "kl_topk": a.kl_topk, "runs": {}, "pairs": {}}
     print(f"reference {a.ref}, KL support: REF's {a.kl_topk} most likely tokens")
-    print(f"{'run':34s} {'pos':>6s} {'mean KL':>9s} {'sd':>8s} {'t':>7s} {'95% up':>9s} {'seg int8 leads':>15s}")
+    if not is_int8_ref:
+        print("K1 is not evaluated: its anchor is int8. The last column counts the segments in which "
+              "the arm is worse than this reference.")
+    print(f"{'run':34s} {'pos':>6s} {'mean KL':>9s} {'sd':>8s} {'t':>7s} {'95% up':>9s} {'seg arm worse':>14s}")
     per_pos = {}
     for run in a.run:
         r = qq.read_run(run)
@@ -54,13 +62,16 @@ def main():
         t = mean / sem
         # one-sided 95 % upper bound (normal approximation; n is 32,746, so t and z agree to 4 decimals)
         up = mean + 1.645 * sem
-        leads = sum(1 for s in seg_mean if seg_mean[s] > 0)
+        worse = sum(1 for s in seg_mean if seg_mean[s] > 0)
         print(f"{pathlib.Path(run).name:34s} {n:6d} {mean:9.5f} {sd:8.4f} {t:7.2f} {up:9.5f} "
-              f"{leads:>10d}/8")
-        out["runs"][pathlib.Path(run).name] = {"n": n, "mean_kl": mean, "sd": sd, "sem": sem, "t": t,
-                                               "upper95": up, "segments_int8_leads": leads,
-                                               "segment_mean_kl": seg_mean,
-                                               "k1": bool(mean <= 0.0 and up < 0.001 and leads <= 4)}
+              f"{worse:>10d}/8")
+        rec = {"n": n, "mean_kl": mean, "sd": sd, "sem": sem, "t": t,
+               "upper95": up, "segments_arm_worse": worse,
+               "segment_mean_kl": seg_mean}
+        if is_int8_ref:
+            # K1: mean <= 0, one-sided 95 % upper bound < +0.001 nats, int8 leads in at most 4 of 8
+            rec["k1"] = bool(mean <= 0.0 and up < 0.001 and worse <= 4)
+        out["runs"][pathlib.Path(run).name] = rec
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps(out, indent=1))
         print(f"\nwrote {a.json}")

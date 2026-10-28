@@ -1,6 +1,6 @@
 # Ansatz-Verbesserungen: KV-Cache-Quantisierung & Exact-Cell-Fenster
 
-Stand: 2026-10-27 (Zielwechsel, s. §7), Literaturabgleich nachgezogen · Autorenkontext: GLM-5.3 (opencode), auf Basis des Papers
+Stand: 2026-10-28 (S3(a) gemessen, s. §7), Literaturabgleich nachgezogen · Autorenkontext: GLM-5.3 (opencode), auf Basis des Papers
 `docs/paper/KV-Window-Hardening.tex` (10 Seiten, 8 Tabellen; Stand 2026-10-25),
 des GLM-Selbst-Reviews (dasselbe Modell — Selbst-Review-Caveat gilt; §8
 dokumentiert die Blindstellen) und des unabhängigen Zweit-Reviews (grok-4.7 via
@@ -387,15 +387,28 @@ Breiten-Spreizung von 16× bis 7.267× ist der Norm-Gewichtvektor (tote Kanäle 
 `var` = 0,001), also eine bekannte feste Transformation, keine Datenachse. S3 startet damit bei (a)
 16/16 gegen 8/8 und (b) alternative 16-Level-Tabelle; (c) entfällt.
 
-S3(a) lief am 2026-10-27 (`bench/results/2026-10-27-s3-level-split/`): fünf Arme bei
-denselben 576 B/cell, gepaart je Position, top-256. **16/16 (`q4lm32`) 0,02734,
-16/16+LS (`q4lm32s`) 0,02457, 8/16 (`q4lm8k`) 0,03240, 16/8 (`q4lm8v`, der heutige
-Bulk) 0,03281, 8/8 (`q4lm8`) 0,04185** (alle vs `int8` = 0). Der Split trägt nicht:
-16/8 gegen 8/16 ist +0,00041 [-0,00329, +0,00412], also **keine Richtung** — K und V
-sind gleich empfindlich (0,0051 gegen 0,0055), und `q4lm8v` verschenkt 0,0055 nats an
-die V-Seite ohne Gegenleistung. Die Least-Squares-Skala ist 0,0028 besser, aber nicht
-gesichert (t = 1,64, Intervall enthält 0, Median-KL 0,00158 -> 0,00145). Der Read ist
-kein Hebel: Tag-Read gegen Fenster +0,00117 [-0,00162, +0,00395], t = 0,82.
+S3(a) lief am 2026-10-27/28 (`bench/results/2026-10-27-s3-level-split/`): neun Arme auf einem
+Build, 32.746 Positionen je Arm, gepaart je Position. Nachgerechnet gegen einen `fp16`-Arm auf
+demselben Build — die Einheit, in der auch der `int8`-Anker 0,01688 und die Fensterzahlen von
+2026-10-25 stehen; `KL(int8‖Arm)` ist eine andere Größe und bestraft Fehler mit, die `int8` selbst
+macht. **`int8` 0,01688 (top-64), `q4lm32`+Fenster 0,01689, `q4lm32s`+Fenster 0,01881,
+`q4lm8v`+Fenster 0,02090, `q4lm32s` 0,02420, `q4lm32` 0,02512, `q4lm8v` 0,03182, `q4lm8k` 0,03212,
+`q4lm8` 0,04127.** Der Build reproduziert den Altbestand auf fünf Stellen (`int8` 0,01688, `q4lm8v`
+0,03182), deshalb ist der Vergleich mit dem Fensterarm von 2026-10-25 zulässig.
+
+Drei Befunde. (1) Der Split trägt nicht: 16/8 gegen 8/16 ist −0,00030 [−0,00357, +0,00297], also
+**keine Richtung** — K und V sind gleich empfindlich (0,0075 gegen 0,0072), und `q4lm8v` verschenkt
+0,0072 nats an die V-Seite ohne Gegenleistung. (2) Die Least-Squares-Skala ist **kein Hebel**:
++0,00033 gegen `max|x|/87` (t 0,21). Die frühere Zahl 0,0028 war ein Artefakt des `int8`-Ankers.
+(3) Der 5,29-bit-Punkt mit 16/16-Bulk ist von `int8` nicht zu unterscheiden (+0,00002 top-64,
++0,00034 top-256, `int8` führt in 4/8 Segmenten) und **0,0040 nats besser als der heutige
+Produktpunkt** bei identischen Bytes ([−0,00663, −0,00138], t −2,99, besser in 7/8 Segmenten). Der
+Read bleibt kein Hebel: Tag-Read gegen Fenster +0,00117 [−0,00162, +0,00395], t = 0,82.
+
+K1 als Regel ist bei diesem Korpus nicht erreichbar: die gepaarte Streuung (0,22 nats) ergibt bei
+32.746 Positionen eine einseitige Grenze von 0,0020 selbst bei echter Parität; die Schwelle
+< 0,001 bräuchte rund 131.000 Positionen, also den 128K-Satz, den es nicht gibt. Der beste Arm
+liegt bei 0,0025 — eine Auflösungsgrenze, kein Urteil über den Arm.
 
 **Zielwechsel 2026-10-27.** Das 5,0-bit/cell-Ziel ist **zurückgestellt**: ohne deutlich
 bessere Rotationsansätze und Fehlerkorrekturen ist es mit diesem Codec nicht
@@ -403,8 +416,8 @@ erreichbar. Der Branch maximiert ab jetzt **Qualität bei gleichen Bytes** und e
 danach Bytes. Die Latte 1 (K1-K6) bleibt als Definition stehen, ist aber keine
 Bedingung mehr für den nächsten Schritt; S4 und S5 (die 128K-Kompositionen auf 5,0)
 laufen nicht, solange das Ziel zurückgestellt ist. Der gemessene Hebel bei gleichen
-Bytes ist die Bulk-Tabelle (0,0055-0,0082 nats), nicht der Read (0,0012, nicht
-signifikant) und nicht die Kanalachse (S2, tot).
+Bytes ist die Bulk-Tabelle (0,0072 bis 0,0175 nats; der Produktpunkt holt davon 0,0040),
+nicht der Read (0,0012, nicht signifikant) und nicht die Kanalachse (S2, tot).
 
 S0 brauchte einen 4K-Lauf je Arm (die Logs liegen jetzt vor), S1 einen
 Zählerlauf (gelaufen, 32K); S3 kostet 4K-GPU-Zeit für höchstens drei
