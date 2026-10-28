@@ -95,15 +95,16 @@ Arm-Tail-Werte; der Top-k-Deckel von 256 ist eine spätere, getaktete Engine-Arb
   extern: `Strata-data\bench\2026-10-25-tag-quality\`; Bericht `bench/results/2026-10-25-tag-quality/`
   („gesammelt, nicht ausgewertet"; das A/B Fenster↔Tag ist inzwischen im S3-Bericht nachgerechnet,
   kein Hebel) |
-| Ring-Geometrie 2026-10-28 (`q4lm32`+Fenster, S/R variiert, vorregistriert) | **in Arbeit**:
-  `Strata-data\bench\2026-10-28-ring\` — 1 von 3 TSVs fertig (Stand 2026-10-28) |
+| Ring-Geometrie 2026-10-28 (`q4lm32`+Fenster, S/R variiert, vorregistriert) | vorhanden, **gemessen**
+  (2026-10-28, drei Arme, derselbe Build wie S3); Bericht `bench/results/2026-10-28-ring-geometry/`,
+  Rohdaten extern `Strata-data\bench\2026-10-28-ring\` |
 | Ältere WP-Logs (2K, 128K, Fenster-Runden) | **nicht im Tree** (D2/D6-Vorbehalt in `Ansatz_Improvements.md`) |
 | Freie Vokabular-Logs pro Position | existieren nicht (Deckel 256) |
 | Per-Position-Logs quant_quality v1 | Gewichts-Set, nicht cwe |
 
 **Konsequenz:** Stufe F1 (Metrik-Entwicklung) braucht **keine GPU** — sie arbeitet auf den
-vorhandenen Arm-Läufen: S0 (4), S3 (9), Tag-Qualität (4) = **17 Läufe, zwölf verschiedene
-Arm-Konfigurationen**; Ring-Geometrie läuft gerade (1/3). Vergleiche paarweise nur **innerhalb**
+vorhandenen Arm-Läufen: S0 (4), S3 (9), Ring-Geometrie (3, derselbe Build wie S3), Tag-Qualität (4)
+= **20 Läufe, fünfzehn verschiedene Arm-Konfigurationen**. Vergleiche paarweise nur **innerhalb**
 eines Build-Clusters; S0↔S3 ist über die Ankerläufe `int8` 0,01688 und `q4lm8v` 0,03182
 gebrückt (S3-Bericht: auf fünf Stellen reproduziert), S3↔Tag nicht (anderes Build, `6F78D941…`).
 Das ist die ökonomische Grundlage des ganzen Plans.
@@ -126,6 +127,7 @@ nicht neu erfunden:
 | M9 | Die Level-Zahl bei 4 Bit ist ein Hebel: 16/16 gegen 8/8, gepaart je Position, −0,01748 nats (95-% [−0,02133, −0,01363], t −8,89, 16/16 in 8/8 Segmenten; gegen den `int8`-Anker −0,01451); die nackten 4,50-bit-Arme verfehlen K1 offensichtlich | `bench/results/2026-10-27-s3-level-split/README.md` |
 | M10 | K1 ist mit dem vorhandenen Korpus für **keinen** Arm erreichbar: gepaarte Streuung 0,22–0,24 nats ⇒ einseitige 95-%-Grenze bei echter Parität 0,0020 > 0,001; eine Grenze unter 0,001 bräuchte n ≈ 131.000 Positionen (128K-Satz, existiert nicht) | S3-Bericht, „K1 und die Auflösung der Regel" |
 | M11 | Die KL ist **ankerabhängig**: gegen den `int8`-Anker sah die LS-Skala +0,0028 „besser" aus (t 1,64); gegen `fp16` bleiben +0,0003 (top-256) — der scheinbare Gewinn war ein Referenzartefakt. Jede spätere Vergleichbarkeit muss den Anker mitliefern | S3-Bericht, „Korrektur zu einer früheren Aussage" |
+| M12 | Der **Sink-Term ist real, die S/R-Geometrie ist am Plateau**: `R` = 0 kostet +0,00394 nats (95-% [+0,00097, +0,00691], 8/8 Segmente) — fast so viel wie der ganze 16/16-Gewinn (0,0040); 128/256 Sinks sind von 64 nicht zu trennen (unter M10-Auflösung). Der Verlust sitzt ab Position 2.048, wächst mit der Distanz und ist kein konstanter Offset — Beleg für Regionsauflösung (§9) | `bench/results/2026-10-28-ring-geometry/README.md` |
 
 Damit ist der Auftragsteil B („Failure Analysis of Existing Metrics") zu einem erheblichen Teil
 **aus vorhandenen Messungen** beantwortbar; F0 schreibt ihn nur zusammen und prüft die noch
@@ -282,7 +284,7 @@ Bereits jetzt ohne einen einzigen Lauf berechenbar, wenn die externen TSVs vorli
 | plain 4-bit (16/8) | `q4lm8v` | da (S0, S3) | nötig |
 | 16/16, 8/8 | `q4lm32`, `q4lm8` | da (S3) | nötig |
 | 16/8, 8/16, 16/16+LS, 16/16+LS+Fenster | `q4lm8v`, `q4lm8k`, `q4lm32s`, `q4lm32s`+Window | **da (S3, 2026-10-27/28 gemessen)** — S3-Bericht: Tabellen-Arme, Anker-Wechsel auf `fp16` dort offengelegt | optional, danach |
-| Ring-Geometrie (320/0, 192/128, 64/256) | `q4lm32`+Window, nur S/R variiert | in Arbeit (`2026-10-28-ring`, 1/3 fertig) | — |
+| Ring-Geometrie (320/0, 192/128, 64/256) | `q4lm32`+Window, nur S/R variiert | **da (S3-Build, 2026-10-28 gemessen)**: kein Arm gewinnt die vorregistrierte Regel, 256/64 bleibt; Sink-Term +0,00394 nats gesichert (M12); nur Prefill (B = 512), Decode ungemessen | — |
 | `q4_0`, `k8v4` auf cwe | existierende Formate | **nein** (Ansatz E2: nie auf cwe gemessen) | nur wenn als Arm benötigt |
 | K8V4-NL | existiert hier nicht | vor Auftrag §5: Research-Branch prüfen | — |
 
@@ -291,7 +293,7 @@ dokumentierte SHA — Vorbild S0-Bericht).
 
 ### 7.2 Zwei Evaluationsarten, strikt getrennt (Auftrag §7.2)
 
-- **Teacher-forced:** liefert alle Kandidatenmerkmale (F1). Existiert für 17 Läufe (12 Arm-Konfigurationen; §1.3).
+- **Teacher-forced:** liefert alle Kandidatenmerkmale (F1). Existiert für 20 Läufe (15 Arm-Konfigurationen; §1.3).
 - **Free-running:** liefert das Ground Truth (F2). Greedy/temperature 0, feste Prompts, dokumentierte
   Engine-SHA. Ergebnis ist **kein** KL, sondern Event-Raten je Task und Arm.
 - Die Brücke ist die Prädiktionsfrage (F3): Vorhersage = Kandidatenwert aus dem teacher-forced-Lauf
@@ -320,7 +322,7 @@ voraus" nicht von „es passierte nichts" unterscheidbar (Analogie: Nadel 18/18)
 - **Resampling-Einheit** = Task bzw. Prompt/Konversation, niemals Position (Auftrag §7.3).
   Zweite Ebene: Segment (n=8) für teacher-forced-Paare.
 - **Paarung:** gleiche Testfälle für alle Kandidaten und Baselines; paarweise Tests wie K1.
-- **Macht:** zwölf Arm-Konfigurationen in drei Build-Clustern ⇒ Spearman-ρ mit breitem CI.
+- **Macht:** fünfzehn Arm-Konfigurationen in drei Build-Clustern ⇒ Spearman-ρ mit breitem CI.
   Erwartung vorab: Aussagen sind Richtungsaussagen mit Konfidenzband, keine Punktschätzungen.
   Leave-one-task-out als Stabilitätsprobe. **Auflösungsgrenze beachten (M10):** bei 32.746
   Positionen und gepaarter Streuung 0,22–0,24 nats liegt die einseitige 95-%-Grenze bei echter
@@ -422,7 +424,7 @@ nicht.
 
 | Stufe | Frage | Arbeit | Kill | Kosten |
 |---|---|---|---|---|
-| **F0** | Was ist belegt, was behauptet? | Taxonomie (§2), Katalog der M1–M11, CB1–CB7 als Determinist-Fixtures spezifizieren, D6/Ansatz E4/D4 aus dem Katalog einordnen (keine Doppelzählung), Branch-Diff `KV_QUANT_research` (§1.5.1), Split Entwicklung/Validierung schreiben | — | Stunden, kein GPU |
+| **F0** | Was ist belegt, was behauptet? | Taxonomie (§2), Katalog der M1–M12, CB1–CB7 als Determinist-Fixtures spezifizieren, D6/Ansatz E4/D4 aus dem Katalog einordnen (keine Doppelzählung), Branch-Diff `KV_QUANT_research` (§1.5.1), Split Entwicklung/Validierung schreiben | — | Stunden, kein GPU |
 | **F1** | Liefert irgendein Offline-Merkmal mehr als die Baselines — **konsistent**? | Rescoring der S0/S3/Tag-TSVs: §6-Liste, Redundanzmatrix E5, Support-Stabilität top-64/256, Bootstrap-CIs (D4) auf Segmentebene, Regionsaufteilung (§9) | kein Merkmal überlebt E5/Support-Drehung → Kurzbericht: Baselines reichen offline | Stunden, kein GPU; braucht `Strata-data`-Logs + Portierung von `kv_error_shape.py` (Pfad) |
 | **F2** | Gibt es ein trennendes Ground Truth? | Free-Running-Suite bauen (§7.3 P1), Sättigungs-Check, Event-Definitionen timestampen, Pilot auf 2 Armen | Sättigung nach einer Verschärfungsrunde → F3 wird verschoben, nicht ergebnislos gestartet | Skripte + wenige GPU-Stunden (Arme × Tasks, greedy) |
 | **F3** | Vorhersagen die Kandidaten besser? | je Arm: Kandidatenwerte (F1) gegen Event-Verluste (F2), E1–E6, Validierungssatz öffnen | E1 und E2 verfehlen → **Empfehlung: Mean KL + P99 bleiben**, QBF nur als Dashboard ohne Prädiktionsanspruch | Free-Running je Arm ~kurz; Analyse offline |
@@ -482,7 +484,7 @@ Später, und nur wenn validiert (Auftrag: „ausführbaren Code nur für tatsäc
 
 ## 15. Grenzen und Risiken
 
-- **Macht:** 8 Segmente, zwölf Arm-Konfigurationen (drei Build-Cluster), ein Modell, eine Karte,
+- **Macht:** 8 Segmente, fünfzehn Arm-Konfigurationen (drei Build-Cluster), ein Modell, eine Karte,
   eine Task-Familie im
   Entwicklungssatz. Aussagen sind Richtungen mit CI; Overfitting auf cwe ist die Hauptgefahr —
   dagegen steht die harte Trennung des Validierungssatzes (§7.4).
@@ -504,8 +506,12 @@ Später, und nur wenn validiert (Auftrag: „ausführbaren Code nur für tatsäc
 
 Kein Code wurde verändert, nichts kompiliert, keine Messung gestartet und keine Zahl erfunden.
 Alle Zahlen sind zitiert (S0, S1, Ansatz E4 = bench-Run `2026-10-25-e4-error-shape`, S3,
-Tag-Qualität, Paper/Reviews); alles aus Code-Folgerungen ist oben als
+Ring-Geometrie, Tag-Qualität, Paper/Reviews); alles aus Code-Folgerungen ist oben als
 statische Analyse markiert und muss vor jedem Claim gegen den dann aktuellen Branch neu verifiziert
 werden. Der Review-Durchgang 2026-10-28 hat nur Bestand gepflegt: Inventar (§1.3/§7.1) auf den
 Neun-Arm-S3-Stand und die Ring-Läufe gebracht, M10/M11 aus dem S3-Bericht ergänzt, CB2/CB5
-präzisiert, §5-Verweis korrigiert — keine dieser Änderungen ist eine neue Messung.
+präzisiert, §5-Verweis korrigiert — keine dieser Änderungen ist eine neue Messung. Ein zweiter
+Durchgang desselben Tages hat dasselbe mit dem inzwischen fertigen Ring-Lauf getan: Inventar und
+Zählungen (§1.3, §7.1, §7.2, §7.4, §15) von „in Arbeit (1/3)" auf „gemessen" gezogen, M12 aus dem
+Ring-Bericht ergänzt, F0 auf M1–M12 erweitert — wieder nur gepflegt, nichts davon ist eine eigene
+Messung dieser Runde.
