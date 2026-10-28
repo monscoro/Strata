@@ -85,6 +85,17 @@ Rauschen und umskalierte KL heraus, bevor GPU-Zeit investiert wird.
 | **G3** | Unterscheiden sich die Arme funktional? | FWE: Prompt = erste `answer_at` Token, greedy, Gold-Wörter zählen; 8 Segmente × Arme; Sättigungsregel vorab | Sättigung nach einer Verschärfungsrunde → G4 verschoben, nicht ergebnislos gestartet | Minuten GPU je Arm |
 | **G4** | Sagt ein Merkmal den Ereignisverlust voraus? | Merkmalswerte aus G1 gegen Ereignisraten aus G3; Rangfolge und Fehlalarme; Konfidenz auf Segmentebene | kein Merkmal schlägt Mean KL → Empfehlung: Baselines bleiben, Dashboard ohne Prädiktionsanspruch | offline |
 
+**Stand (2026-10-28): G0 und G1 sind gelaufen.** Bericht:
+`bench/results/2026-10-28-g1-features/README.md`, Fixture:
+`bench/fixtures/beyond-kl-calibration.json`. Von neun gerechneten Merkmalen besteht keines die
+Prüfregel außer `kl64`/`kl256` selbst; das Dashboard entfällt. Die im Kill genannte Formulierung
+„Mean KL **und P99** reichen" ist damit zu präzisieren: P99 besteht die Regel ebenfalls nicht — es
+sieht den zertifizierten Sink-Verlust nicht —, und die einzige Tail-Zahl, die ihn sieht, ist CVaR99,
+mit ρ 0,982 aber ohne eigene Ranginformation. Zwei Merkmale sind nicht redundant und fallen
+trotzdem: `dnll` (ρ 0,642; beantwortet das Text-Token statt der Verteilung) und `region_excess`
+(ρ −0,707; sein Label trennt nicht, was es soll). Beides ist Ansatzpunkt für G4, nicht für die
+Baseline.
+
 **Reihenfolge ist bindend:** G1 vor G2 vor G3 vor G4. G1 ist gratis und kann sofort laufen; G2 ist
 die Voraussetzung dafür, dass G1 nicht durch die Linse M1/CB5 gemessen wird; G3 entscheidet, ob G4
 überhaupt einen Gegenstand hat.
