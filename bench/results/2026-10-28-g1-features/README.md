@@ -1,4 +1,4 @@
-# G1: drei Merkmale gegen vier Kalibrierungspaare
+# G1: neun Merkmale gegen drei Kalibrierungspaare
 
 **Status: vorregistriert (2026-10-28), Läufe sind Analyse vorhandener Daten, kein GPU-Job.**
 Katalogzeile: `docs/paper/Ansatz_Improvements.md`, Arbeitsplan G1
@@ -108,6 +108,11 @@ in der Vorregistrierung genannte Fall eingetreten: **Mean KL bleibt die Baseline
 entfällt.** Es fällt aber nicht so aus, wie die Vorregistrierung es als wahrscheinlichsten Fall
 beschrieben hat — P99 besteht die Regel ebenfalls nicht (siehe unten), und zwei Merkmale sind
 nicht redundant, obwohl sie fallen.
+
+Der Arbeitsplan nennt drei Merkmale (`dnll`, Margin-Flip, Region); die Definitionstabelle oben listet
+neun, und alle neun standen vor dem Lauf fest: `kl64`/`kl256` als Baseline, `p99`/`cvar99` als die
+bisherigen Tail-Zahlen, `floor`/`flip_m1` als Ratenvarianten. Der Titel dieses Dokuments nannte
+lange nur die drei aus dem Plan; er ist nach dem Lauf berichtigt.
 
 ## Der Lauf
 
@@ -266,6 +271,7 @@ Beides betrifft nur, **über welche Punkte** die Redundanz gerechnet wird, nicht
 2. **P99 bleibt nicht als zweite Zahl stehen.** Die Vorregistrierung hat den Fall „Mean KL und P99
    reichen" genannt; gemessen sieht P99 den einzigen zertifizierten Verlust nicht. Wenn eine
    Tail-Zahl daneben stehen soll, dann **CVaR99** — aber als Beschreibung, nicht als neue Dimension.
+   Warum die beiden so weit auseinanderliegen, steht im Nachtrag unten.
 3. **Kein Dashboard, kein Score.** Das ist das Ergebnis, das der Auftrag selbst als gültig bezeichnet
    (§13.10), und es ist die billigere Lösung.
 4. **Die Prüfregel hat drei Fehlalarme abgefangen**, die eine reine „größerer Unterschied = bessere
@@ -291,3 +297,59 @@ python tools/kv_g1.py --json <out>.json        # 248 s, kein GPU-Job
 
 Fixture: `bench/fixtures/beyond-kl-calibration.json` (18 Läufe, 11 gepinnte Armmittel, drei Paare,
 Leiter, drei Doppelläufe). Die Rohdaten liegen außerhalb des Repos unter `Strata-data/bench/`.
+
+---
+
+## Nachtrag: warum P99 und CVaR99 auseinanderfallen (nachträglich, deskriptiv)
+
+**Dieser Abschnitt ist nach dem Ergebnis geschrieben und entscheidet nichts.** Die Prüfregel ist
+angewandt, `cvar99` ist gefallen; hier steht nur, *warum* die beiden Tail-Zahlen auf denselben
+Positionen so verschiedene Antworten geben. Werkzeug: `tools/kv_tail.py`, 58 s, kein GPU-Job.
+
+| Arm | Mittel | P99 | CVaR99 | CVaR/P99 | Summe im schlechtesten 1 % | Summe im Kopf (q < 64) |
+|---|---|---|---|---|---|---|
+| `int8` | 0,01775 | 0,2772 | 1,4250 | 5,1 | 77,8 % | 3,0 % |
+| `q4lm32w` | 0,01809 | 0,3202 | 1,3715 | 4,3 | 74,0 % | 2,0 % |
+| `s320r0` | 0,02203 | 0,3959 | 1,6859 | 4,3 | 74,4 % | 1,6 % |
+| `q4lm8k` | 0,03418 | 0,7488 | 2,2592 | 3,0 | 64,1 % | 2,7 % |
+| `q4lm8` | 0,04415 | 1,0299 | 2,5970 | 2,5 | 57,1 % | 2,3 % |
+
+Die Mittel weichen in der letzten Stelle von der Tabelle oben ab: hier steht das ungewichtete Mittel
+über die acht Segmente, dort das positionsgewichtete. Die Segmente sind fast gleich lang.
+
+**1. Der Fehler ist extrem kopflastig, und zwar umso mehr, je besser der Arm ist.** Im `int8`-Arm
+tragen die schlechtesten 1 % der Positionen **77,8 %** der gesamten KL-Summe, im schlechtesten Arm
+`q4lm8` noch 57,1 %. Das ist E4 auf Arnebene: ein guter Arm ist *meistens fast fehlerfrei und an
+wenigen Stellen katastrophal*, ein schlechter ist gleichmäßig schlecht. Zwei Arme mit demselben
+Mittel können also zwei verschiedene Verteilungen sein.
+
+**2. P99 liest den Rand des Tails, CVaR den Tail.** P99 ist die 42.-schlechteste von ~4.095
+Positionen je Segment, CVaR99 der Mittelwert der schlechtesten 41. Der Unterschied ist keine
+Feinheit: bei `int8` liegen **81 %** des CVaR-Werts (1,4250 − 0,2772 = 1,1478) **oberhalb** der
+P99-Linie, bei `q4lm8` noch 60 %. Eine Quantilzahl kann per Konstruktion nicht sehen, dass *mehr*
+Positionen über einer alten Linie liegen — sie liest nur, wo die Linie steht.
+
+**3. Genau das ist der zertifizierte Verlust.** `s320r0` gegen `q4lm32w`, an derselben Linie
+gemessen (der P99 des Vergleichsarms, je Segment): **0,86 % → 1,16 %** der Positionen liegen
+darüber, und die Masse darüber steigt von 0,0099 auf 0,0138 nats/Position. Die Zahl der Extremfälle
+wächst also um gut ein Drittel, während der *Rand* nur um 0,0756 nats wandert. P99 sieht den Rand
+(+0,0756, Intervall berührt die 0), CVaR99 sieht Rand **und** Masse (+0,3144, Intervall klar
+darüber).
+
+**4. Es ist nicht einfach Rauschen.** Die gepaarte Streuung ist für CVaR99 mit 0,3073 absolut
+**3,3-mal größer** als für P99 (0,0926) — CVaR ist also nicht die „stabilere" Zahl. Der Effekt ist
+aber 4,2-mal größer, deshalb t 2,89 gegen 2,31 und 8/8 gegen 7/8 Segmente. Der Unterschied liegt in
+der Größe des Signals, nicht in seiner Streuung.
+
+**5. Der Verlust sitzt nicht im Kopf.** Die ersten 64 Positionen tragen nur 1,6–3,0 % der KL-Summe.
+Der Sink-Verlust ist kein Fehler *an* den Sink-Positionen, sondern einer an *jeder* Position, die die
+Sink-Zeilen liest — deshalb hebt er den ganzen Tail leicht an, statt ein paar Positionen zu
+explodieren. Das ist die plausible Erklärung dafür, dass `floor` (Substitutionsmasse) ihn sieht und
+`flip` nicht; der Mechanismus selbst ist hier nicht nachgewiesen.
+
+**Was daraus folgt, und was nicht.** P99 ist als zweite Zahl die falsche Wahl, CVaR99 die richtige —
+aber nur als **Beschreibung der Konzentration**, nicht als Ranginstrument: ρ 0,982 gegen Mean KL, und
+die Leiter besteht es nicht. Ein Merkmal, das die *Form* des Tails beschreibt (Anteil der Summe im
+schlechtesten 1 %, Verhältnis CVaR/P99), wäre als Nächstes prüfbar — aber nur gegen die Prüfregel,
+und die ist dafür noch nicht geschrieben. Über die fünf Arme dieser Tabelle fällt der Summenanteil
+monoton mit Mean KL, also ist eher Redundanz zu erwarten als ein neuer Freiheitsgrad.
