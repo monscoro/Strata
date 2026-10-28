@@ -644,7 +644,10 @@ def compare(ref: dict, run: dict, kl_topk: int = TOPK) -> dict:
 
 def cmd_compare(a) -> int:
     ref = read_run(a.ref)
-    print(f"reference: {a.ref} (KL support: REF's {a.kl_topk} most likely tokens)")
+    anchor = anchor_of(a.ref)
+    print(f"reference: {a.ref} (anchor: {anchor}; KL support: REF's {a.kl_topk} most likely tokens)")
+    if anchor == "other":
+        print("  warning: this reference is neither fp16 nor int8 - name the question these numbers answer")
     print(f"{'run':40s} {'segment':13s} {'pos':>5s} {'top1':>7s} {'KL':>8s} {'KL p99':>8s} {'PPL':>7s} {'PPL ref':>7s}")
     allres = {}
     for path in a.runs:
@@ -656,6 +659,26 @@ def cmd_compare(a) -> int:
             print(f"{pathlib.Path(path).name[:40]:40s} {seg:13s} {v['positions']:5d} {100 * v['top1']:6.2f}% "
                   f"{v['kl']:8.5f} {v.get('kl_p99', float('nan')):8.4f} {v['ppl']:7.3f} {v['ppl_ref']:7.3f}")
     paired_out = paired_tables(a, ref, allres) if a.paired else None
+    if a.paired and len(a.runs) > 1:
+        series = {pathlib.Path(p).name: kl_series(ref, read_run(p), a.kl_topk) for p in a.runs}
+        names = list(series)
+        print("\nper-position paired differences between arms (a pair against the anchor is not a paired "
+              "difference: the anchor's own KL is 0 by construction):")
+        print(f"  {'pair':54s} {'n':>6s} {'delta':>9s} {'95% interval':>23s} {'t':>6s} {'bound':>7s} {'worse':>8s}")
+        pos_out = {}
+        for i, na in enumerate(names):
+            for nb in names[i + 1:]:
+                p = paired_positions(series[na], series[nb])
+                if p is None:
+                    continue
+                pos_out[f"{na} - {nb}"] = p
+                print(f"  {na[:26]:26s} - {nb[:26]:26s} {p['n']:6d} {p['mean']:+9.5f} "
+                      f"[{p['ci95_low']:+.5f}, {p['ci95_high']:+.5f}] {p['t']:+6.2f} "
+                      f"{p['parity_bound']:7.5f} {p['segments_a_worse']:>4d}/{p['segments']}")
+        print("  'bound' is the one-sided 95 % resolution at true parity (1.645*sd/sqrt(n)); a difference below "
+              "it is not a result about the arm, it is a property of the corpus.")
+        if paired_out is not None:
+            paired_out["positions"] = pos_out
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps(allres, indent=1))
     if a.paired_json and paired_out is not None:
@@ -677,6 +700,53 @@ def paired_stats(sa: dict, sb: dict) -> dict:
     sem = sd / math.sqrt(len(d))
     return {"n": len(d), "mean": m, "sd": sd, "sem": sem, "t": m / sem if sem else float("nan"),
             "up": sum(1 for x in d if x > 0), "down": sum(1 for x in d if x < 0)}
+
+
+def anchor_of(path: str) -> str:
+    """Which reference a KL number is against.  The two anchors answer different questions and are not
+    interchangeable: fp16 is the honest absolute unit, int8 is K1's anchor (and charges the arm for int8's own
+    errors as well).  A KL number without its anchor is not comparable to another one."""
+    stem = pathlib.Path(path).stem.lower()
+    if "fp16" in stem:
+        return "fp16"
+    if "int8" in stem:
+        return "int8"
+    return "other"
+
+
+def kl_series(ref: dict, run: dict, kl_topk: int = TOPK) -> dict:
+    """{(segment, pos): KL(ref || run)} - the per-position series a paired test needs."""
+    out = {}
+    for name, rr in ref.items():
+        ra = run.get(name, {})
+        for q in sorted(set(rr) & set(ra)):
+            out[(name, q)] = kl_between(rr[q][4], ra[q][4], kl_topk)
+    return out
+
+
+def paired_positions(ka: dict, kb: dict) -> dict:
+    """The paired per-position difference A - B, with the one-sided bound at true parity.
+
+    The bound is the number that makes a KL difference readable: with a paired spread `sd` over `n` positions,
+    a difference of zero is still measured as up to `1.645 * sd / sqrt(n)` (one-sided 95 %).  Anything below that
+    is not a result about the arm, it is a property of the corpus.  On cwe-4k with 32,746 positions and a paired
+    spread of 0.22 that is 0.0020 nats, which is why a 0.001 effect is not decidable here."""
+    keys = [k for k in ka if k in kb]
+    n = len(keys)
+    if n < 2:
+        return None
+    d = [ka[k] - kb[k] for k in keys]
+    m = sum(d) / n
+    sd = math.sqrt(sum((x - m) ** 2 for x in d) / (n - 1))
+    sem = sd / math.sqrt(n)
+    seg = {}
+    for k in keys:
+        seg.setdefault(k[0], []).append(ka[k] - kb[k])
+    return {"n": n, "mean": m, "sd": sd, "sem": sem, "t": m / sem if sem else float("nan"),
+            "ci95_low": m - 1.96 * sem, "ci95_high": m + 1.96 * sem,
+            "parity_bound": 1.645 * sem,
+            "segments": len(seg),
+            "segments_a_worse": sum(1 for s in seg if sum(seg[s]) / len(seg[s]) > 0)}
 
 
 def answer_kl_by_segment(run: dict, ref: dict, answer_at: dict, kl_topk: int = TOPK) -> dict:
