@@ -1,6 +1,6 @@
 # Ansatz-Verbesserungen: KV-Cache-Quantisierung & Exact-Cell-Fenster
 
-Stand: 2026-10-28 (S3(a) gemessen, s. §7), Literaturabgleich nachgezogen · Autorenkontext: GLM-5.3 (opencode), auf Basis des Papers
+Stand: 2026-10-28 (S3(a) und Ring-Geometrie gemessen, s. §7), Literaturabgleich nachgezogen · Autorenkontext: GLM-5.3 (opencode), auf Basis des Papers
 `docs/paper/KV-Window-Hardening.tex` (10 Seiten, 8 Tabellen; Stand 2026-10-25),
 des GLM-Selbst-Reviews (dasselbe Modell — Selbst-Review-Caveat gilt; §8
 dokumentiert die Blindstellen) und des unabhängigen Zweit-Reviews (grok-4.7 via
@@ -412,6 +412,19 @@ sind der 128K-Produktpunkt mit B = 6.144 und hier **nicht** gemessen. Am Messpun
 10,4 % gegen `int8` (7,39 gegen 8,25), nicht 36 %. Die gepaarten Aussagen bleiben unberührt, weil
 alle verglichenen Arme dasselbe S/R/B haben; die Sparangabe nicht.
 
+**Die Ring-Geometrie ist an ihrem Plateau (2026-10-28).** `bench/results/2026-10-28-ring-geometry/`
+verschiebt bei festen 832 Ringzeilen und B = 512 nur die Aufteilung zwischen Sinks (`R`) und recent
+(`S`): 256/64 (Referenz) gegen 320/0, 192/128 und 64/256, `KL(fp16‖Arm)` 0,01689 / 0,02053 / 0,01757 /
+0,01882 (top-64). **Kein Arm gewinnt** (Regel: Intervall schließt 0 in beiden Stützen aus **und**
+besser in ≥ 6/8 Segmenten), 256/64 bleibt. Zwei Aussagen sind trotzdem gesichert: **Sinks tragen** —
+`R = 0` kostet +0,00394 [+0,00097, +0,00691], 8/8 Segmente, etwa so viel wie der ganze Gewinn der
+16/16-Tabelle — und **mehr Sinks helfen nicht** (128: +0,00063, 256: +0,00186, beide unter der
+Auflösung). Ein Distanzprofil zeigt die erwartete Form: der Verlust ist in den ersten 1.536
+Positionen null und sitzt ab 2.048, also erst nach der Verdrängung aus dem Ring. Bei festem
+`R + S + B` nimmt jedes Sink eine recent-Zelle weg; bei 4.608 Zellen ist der Ring der knappe Teil.
+Die Qualitätsseite bei gleichen Bytes ist damit geschlossen — übrig bleibt die Byte-Seite (Zeilenzahl,
+nicht Aufteilung).
+
 K1 als Regel ist bei diesem Korpus nicht erreichbar: die gepaarte Streuung (0,22 nats) ergibt bei
 32.746 Positionen eine einseitige Grenze von 0,0020 selbst bei echter Parität; die Schwelle
 < 0,001 bräuchte rund 131.000 Positionen, also den 128K-Satz, den es nicht gibt. Der beste Arm
@@ -424,7 +437,9 @@ danach Bytes. Die Latte 1 (K1-K6) bleibt als Definition stehen, ist aber keine
 Bedingung mehr für den nächsten Schritt; S4 und S5 (die 128K-Kompositionen auf 5,0)
 laufen nicht, solange das Ziel zurückgestellt ist. Der gemessene Hebel bei gleichen
 Bytes ist die Bulk-Tabelle (0,0072 bis 0,0175 nats; der Produktpunkt holt davon 0,0040),
-nicht der Read (0,0012, nicht signifikant) und nicht die Kanalachse (S2, tot).
+nicht der Read (0,0012, nicht signifikant), nicht die Kanalachse (S2, tot) und nicht
+die Ring-Geometrie (Sinks tragen 0,0039, aber 0, 128 und 256 Sinks sind schlechter
+oder gleich; 256/64 bleibt).
 
 S0 brauchte einen 4K-Lauf je Arm (die Logs liegen jetzt vor), S1 einen
 Zählerlauf (gelaufen, 32K); S3 kostet 4K-GPU-Zeit für höchstens drei
