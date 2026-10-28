@@ -423,7 +423,10 @@ Auflösung). Ein Distanzprofil zeigt die erwartete Form: der Verlust ist in den 
 Positionen null und sitzt ab 2.048, also erst nach der Verdrängung aus dem Ring. Bei festem
 `R + S + B` nimmt jedes Sink eine recent-Zelle weg; bei 4.608 Zellen ist der Ring der knappe Teil.
 Die Qualitätsseite bei gleichen Bytes ist damit geschlossen — übrig bleibt die Byte-Seite (Zeilenzahl,
-nicht Aufteilung).
+nicht Aufteilung). **Der Lauf ist Prefill, nicht Decode:** im Chunk liest jede Abfrage `S + B` exakte
+Zellen, beim Decode nur `S + R` (die `B`-Zeilen sind dann allokiert, aber außerhalb des Lesefensters;
+bei 128K sind das 151 MB). Die `S`-Achse ist damit hier fast wirkungslos, und die Decode-Qualität
+dieser Geometrie ist ungemessen.
 
 K1 als Regel ist bei diesem Korpus nicht erreichbar: die gepaarte Streuung (0,22 nats) ergibt bei
 32.746 Positionen eine einseitige Grenze von 0,0020 selbst bei echter Parität; die Schwelle

@@ -195,6 +195,28 @@ schnellsten Phase des Tages. Das ist **keine** K5-Messung — die Geometrie änd
 Zeilenzahl, nicht die geschriebene Byte-Menge, und ein sauberer Laufzeitvergleich bräuchte einen
 eigenen Durchgang.
 
+## Was dieser Lauf nicht sagt: Decode
+
+**Alle vier Arme sind teacher-forced Prefill mit Chunk 512.** Der Ring hält laut `layer.cpp` die
+Zeilen `[R Sinks][S + B recent]`, und die gelesene Spanne ist `[pos0 − S, pos0 + B)` — bei einem
+Prefill-Chunk deckt `B` den ganzen Chunk ab, also liest jede Abfrage `S + B` exakte Zellen. **Beim
+Decode ist die Spanne ein Token**, `[pos0 − S, pos0 + 1)`: dann werden `R + S` exakte Zellen gelesen
+und die `B`-Zeilen liegen zwar im Speicher, aber außerhalb des Lesefensters.
+
+Daraus folgen zwei Dinge, die diese Messung **nicht** beantwortet:
+
+1. **Die `S`-Achse ist im Prefill fast wirkungslos**, weil `B` die recent-Seite dominiert. Das ist
+   der Grund, warum die drei Arme so nah beieinander liegen: sie unterscheiden sich im Prefill
+   vor allem in `R`, nicht in `S`. Über die Decode-Qualität bei `S = 64` gegen `S = 320` sagt der
+   Lauf nichts, und beim Decode ist genau das der Unterschied zwischen 128 und 384 exakten Zellen.
+2. **`B` ist Decode-Speicher, der nicht gelesen wird.** Bei 128K mit `B = 6.144` sind das
+   6.144 · 2.048 · 12 = 151 MB, die nur während des Prefills eine Rolle spielen. Das ist Katalogzeile
+   B4 (kleineres `B`, dafür langsamerer Prefill) — und der Grund, warum die Byte-Frage nach diesem
+   Lauf interessanter ist als die Geometrie-Frage.
+
+Wer die Decode-Seite messen will, braucht einen anderen Lauf: `quant_quality.py prompt` bzw. ein
+Generate-Lauf mit echten Antworten, nicht die teacher-forced KL über einen 4K-Text.
+
 ## Was das für den Kandidaten heißt
 
 **Die Qualitätsseite bei gleichen Bytes ist damit geschlossen.** Drei Hebel waren offen, alle drei
