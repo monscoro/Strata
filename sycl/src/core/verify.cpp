@@ -2613,12 +2613,48 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
                      (double) row[tgt] - lse, (long long) top, maxv - lse, (int) (top == (int64_t) tgt), extra,
                      without);
         // STRATA_LOGPOS_TOPK=K: the K most likely tokens and their log-probabilities too (`id:logprob`), for a
-        // top-k comparison with another engine on the same tokens (docs/UNSLOTH_Q4.md)
+        // top-k comparison with another engine on the same tokens (docs/UNSLOTH_Q4.md).  4096 is the ceiling: a
+        // full-support KL needs the reference's top-4096 (bench/results/2026-10-28-g2-full-vocab).
         static const int topk = [] {
             const char* v = std::getenv("STRATA_LOGPOS_TOPK");
-            return v != nullptr ? std::max(0, std::min(256, std::atoi(v))) : 0;
+            return v != nullptr ? std::max(0, std::min(4096, std::atoi(v))) : 0;
         }();
-        if (topk > 0) {
+        // STRATA_LOGPOS_IDS=<file>: one line per position, `pos id id id ...` - write exactly those tokens instead of
+        // the top-k, so that another arm can be scored on the same support (KL needs p and q on the same v).  Loaded
+        // once, sorted by (pos, id); a position not in the file falls through to the top-k, which is 0 unless asked,
+        // so an arm run writes its eight fixed columns for every position and the id pairs only where requested.
+        static const std::vector<std::pair<long long, int32_t>> lp_ids = [] {
+            std::vector<std::pair<long long, int32_t>> v;
+            const char* p = std::getenv("STRATA_LOGPOS_IDS");
+            if (p == nullptr) return v;
+            std::FILE* f = std::fopen(p, "rb");
+            if (f == nullptr) return v;
+            std::vector<char> line((size_t) 4 << 20);
+            while (std::fgets(line.data(), (int) line.size(), f) != nullptr) {
+                const char* q = line.data();
+                char* end = nullptr;
+                const long long pos = std::strtoll(q, &end, 10);
+                if (end == q) continue;
+                q = end;
+                for (;;) {
+                    const long long id = std::strtoll(q, &end, 10);
+                    if (end == q) break;
+                    v.emplace_back(pos, (int32_t) id);
+                    q = end;
+                }
+            }
+            std::fclose(f);
+            std::sort(v.begin(), v.end());
+            return v;
+        }();
+        const long long lp_pos = (long long) (pos0 + t);
+        const auto lp_lo = std::lower_bound(lp_ids.begin(), lp_ids.end(),
+                                           std::pair<long long, int32_t>(lp_pos, -1));
+        if (lp_lo != lp_ids.end() && lp_lo->first == lp_pos) {
+            for (auto it = lp_lo; it != lp_ids.end() && it->first == lp_pos; ++it)
+                if (it->second >= 0 && (int64_t) it->second < n_vocab_)
+                    std::fprintf(out, "\t%d:%.6f", it->second, (double) row[it->second] - lse);
+        } else if (topk > 0) {
             std::vector<int32_t> order((size_t) n_vocab_);
             for (int64_t v = 0; v < n_vocab_; ++v) order[(size_t) v] = (int32_t) v;
             std::partial_sort(order.begin(), order.begin() + topk, order.end(),
