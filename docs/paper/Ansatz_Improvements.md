@@ -400,10 +400,17 @@ Drei Befunde. (1) Der Split trägt nicht: 16/8 gegen 8/16 ist −0,00030 [−0,0
 **keine Richtung** — K und V sind gleich empfindlich (0,0075 gegen 0,0072), und `q4lm8v` verschenkt
 0,0072 nats an die V-Seite ohne Gegenleistung. (2) Die Least-Squares-Skala ist **kein Hebel**:
 +0,00033 gegen `max|x|/87` (t 0,21). Die frühere Zahl 0,0028 war ein Artefakt des `int8`-Ankers.
-(3) Der 5,29-bit-Punkt mit 16/16-Bulk ist von `int8` nicht zu unterscheiden (+0,00002 top-64,
+(3) Der Fensterpunkt mit 16/16-Bulk ist von `int8` nicht zu unterscheiden (+0,00002 top-64,
 +0,00034 top-256, `int8` führt in 4/8 Segmenten) und **0,0040 nats besser als der heutige
 Produktpunkt** bei identischen Bytes ([−0,00663, −0,00138], t −2,99, besser in 7/8 Segmenten). Der
 Read bleibt kein Hebel: Tag-Read gegen Fenster +0,00117 [−0,00162, +0,00395], t = 0,82.
+
+**Die Bytes dieses Laufs sind 7,39 bit/value, nicht 5,29.** `B` ist der Prefill-Chunk
+(`qsa_set_kv_win_batch`, Deckel 6.144), und alle Arme liefen mit `--prefill 512`; bei 4.608 Zellen
+verteilt sich der Ring über zehnmal weniger Zellen als bei 128K. Die 5,29 bit/cell und 1.016 MiB
+sind der 128K-Produktpunkt mit B = 6.144 und hier **nicht** gemessen. Am Messpunkt spart der Arm
+10,4 % gegen `int8` (7,39 gegen 8,25), nicht 36 %. Die gepaarten Aussagen bleiben unberührt, weil
+alle verglichenen Arme dasselbe S/R/B haben; die Sparangabe nicht.
 
 K1 als Regel ist bei diesem Korpus nicht erreichbar: die gepaarte Streuung (0,22 nats) ergibt bei
 32.746 Positionen eine einseitige Grenze von 0,0020 selbst bei echter Parität; die Schwelle

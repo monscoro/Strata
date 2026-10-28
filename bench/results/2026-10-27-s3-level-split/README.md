@@ -11,17 +11,20 @@ ist eine Byte-/Codebook-Wahl, keine gemessene Sensitivität — die *Bit*-Varian
 auf Swift bereits falsifiziert (t +0,05, McNemar p = 1,000). A2 fragt die andere Richtung: **zählt
 die Level-Zahl bei 4 Bit überhaupt?**
 
-| Arm | `--kv` | Tabelle K | Tabelle V | Skala | bit/cell |
+| Arm | `--kv` | Tabelle K | Tabelle V | Skala | bit/value |
 |---|---|---|---|---|---|
 | 16/16 | `q4lm32` | Max-Lloyd 16 | Max-Lloyd 16 | `max\|x\|/87` | 4,50 |
 | 16/16 + LS | `q4lm32s` | Max-Lloyd 16 | Max-Lloyd 16 | Least Squares je Block | 4,50 |
 | 8/16 | `q4lm8k` | Max-Lloyd 8 | Max-Lloyd 16 | `max\|x\|/87` | 4,50 |
 | 16/8 | `q4lm8v` | Max-Lloyd 16 | Max-Lloyd 8 | `max\|x\|/87` | 4,50 |
 | 8/8 | `q4lm8` | Max-Lloyd 8 | Max-Lloyd 8 | `max\|x\|/87` | 4,50 |
-| 16/16 + Fenster | `q4lm32` + `STRATA_KV_WINDOW=1` (256/64) | 16 | 16 | `max\|x\|/87` | 5,29 |
-| 16/16 + LS + Fenster | `q4lm32s` + dito | 16 | 16 | Least Squares | 5,29 |
+| 16/16 + Fenster | `q4lm32` + `STRATA_KV_WINDOW=1` (256/64) | 16 | 16 | `max\|x\|/87` | **7,39** |
+| 16/16 + LS + Fenster | `q4lm32s` + dito | 16 | 16 | Least Squares | **7,39** |
 | Referenz | `fp16` | — | — | — | 16,50 |
 | Referenz | `int8` | 8 Bit | 8 Bit | 8 Bit + Skala | 8,25 |
+
+Die 7,39 sind die Rate **dieses** Laufs: 4.608 Zellen, B = 512. Die 5,29 des Produktpunkts gehören zu
+128K mit B = 6.144 und sind hier nicht gemessen — siehe „Die Bytes: B folgt dem Prefill-Chunk".
 
 Die Richtung wurde **nicht** vorhergesagt. KIVI sagt sie voraus; das darf die Lesung nicht vorwegnehmen.
 
@@ -33,7 +36,8 @@ Die Richtung wurde **nicht** vorhergesagt. KIVI sagt sie voraus; das darf die Le
 | Modell | swift-1.5-iq3_xxs (`Strata-data\models\swift-IQ3_XXS`), `--prefill 512`, `--prompt-cache 0` |
 | Passage | cwe-4k, alle 8 Segmente, 32.746 Positionen je Arm, teacher-forced |
 | Logs | `STRATA_LOGPOS_TOPK=256` je Position |
-| Fenster | nur bei den beiden `…w`-Armen; `STRATA_KV_WINDOW_S=256 _R=64` |
+| Fenster | nur bei den beiden `…w`-Armen; `STRATA_KV_WINDOW_S=256 _R=64`, B aus dem Prefill-Chunk = 512 |
+| Bytes | 4.608 Zellen, S = 256, R = 64, B = 512 → 832 Ringzeilen → **7,39 bit/value, 49,9 MiB** |
 | Auswertung | `tools/kv_k1.py` (gepaart je Position), `tools/quant_quality.py compare --paired` |
 | Config | `bench/configs/cwe4k-swift-iq3_xxs.json` (festgeschrieben, `env: {}`) |
 
@@ -47,6 +51,41 @@ fremdes Modell, dessen KL mit den acht Armen nicht vergleichbar ist, und ein Fen
 `seg.json` nicht auftaucht, weil dort nur die `--env`-Flags vom Kommandozeilenaufruf stehen. Der
 erste fp16-Versuch lief deshalb gegen den falschen Modellpfad und lieferte keine Positionen; die
 Messung liegt jetzt auf einer eigenen, eingefrorenen Config.
+
+## Die Bytes: B folgt dem Prefill-Chunk
+
+Das Byte-Modell ist `qsa_win_bytes` in `src/core/layer.cpp`: je Layer zwei fp16-Seitenpools über
+`R + S + B` Zeilen à `n_head_kv · head_dim` Werte, plus ein `int32`-Zelltag für die `S + B`
+Ringzeilen. Mit `n_head_kv` 2, `head_dim` 256 (Pack-Index: `blk.*.attn_k.weight` 2560 → 512,
+`attn_k_norm` 256) und 12 QSA-Layern:
+
+    Bytes = Zellen · 576 · 12                    (Bulk, 4,50 bit/value)
+          + (R + S + B) · 2.048 · 12             (Ring, exakte Zellen)
+          + (S + B) · 4 · 12                     (Zelltags)
+
+**`B` ist nicht 6.144, sondern der Prefill-Chunk.** `generate.cpp` setzt ihn über
+`qsa_set_kv_win_batch(g, chunk)` auf die Chunk-Größe des Laufs (Deckel 6.144); die 6.144 im
+Byte-Modell von `docs/DETAILS.md` sind der Windows-HIP-Auto-Chunk bei 128K, nicht eine Konstante.
+Alle Arme hier liefen mit `--prefill 512`, also **B = 512**:
+
+| Punkt | Zellen | S/R/B | bit/value | MiB |
+|---|---|---|---|---|
+| dieser Lauf | 4.608 | 256/64/512 | **7,39** | 49,9 |
+| 128K, gleiches S/R/B | 131.072 | 256/64/512 | 4,60 | 883,5 |
+| 128K-Produktpunkt | 131.072 | 256/64/6.144 | 5,29 | 1.015,8 |
+| `int8`, kein Ring | 4.608 | — | 8,25 | 55,7 |
+| `int8`, kein Ring | 131.072 | — | 8,25 | 1.584,0 |
+
+Die `int8`-Zeilen sind aus der dokumentierten Rate 8,25 bit/value gerechnet, nicht gemessen; die
+drei Fensterzeilen folgen aus dem Byte-Modell oben.
+
+**Korrektur.** Der erste Entwurf dieses Reports hat den Fensterarmen 5,29 bit/cell zugeschrieben.
+Das war der 128K-Produktpunkt, auf einen 4K-Lauf übertragen: bei 4.608 Zellen ist derselbe Ring
+über zehnmal weniger Zellen verteilt und kostet 7,39. Die Aussagen des Laufs ändern sich dadurch
+nicht — die gepaarten Differenzen vergleichen Arme mit **identischem** S/R/B und identischem Bulk,
+also identischen Bytes —, aber die Sparangabe gegen `int8` ist am Messpunkt **10,4 %**, nicht 36 %.
+Die 36 % gelten am 128K-Produktpunkt und sind hier nicht gemessen. Wer bei 4K Bytes sparen will,
+muss B senken oder den Ring verkleinern; beides ist ein neuer Arm, kein Ergebnis dieses Laufs.
 
 ## Entscheidungsregeln (vor dem Lauf festgelegt)
 
@@ -71,12 +110,12 @@ nach Sicht der ersten Zahlen passierte.
 
 ### Der Anker: neun Arme in `KL(fp16‖Arm)`
 
-| Arm | bit/cell | KL top-64 | KL top-256 |
+| Arm | bit/value | KL top-64 | KL top-256 |
 |---|---|---|---|
 | `int8` | 8,25 | **0,01688** | 0,01774 |
-| `q4lm32` + Fenster 256/64 | 5,29 | **0,01689** | 0,01809 |
-| `q4lm32s` + Fenster 256/64 | 5,29 | 0,01881 | 0,02017 |
-| `q4lm8v` + Fenster 256/64 (heutiger Produktpunkt, 2026-10-25) | 5,29 | 0,02090 | 0,02223 |
+| `q4lm32` + Fenster 256/64 | 7,39 | **0,01689** | 0,01809 |
+| `q4lm32s` + Fenster 256/64 | 7,39 | 0,01881 | 0,02017 |
+| `q4lm8v` + Fenster 256/64 (heutiger Produktpunkt, 2026-10-25) | 7,39 | 0,02090 | 0,02223 |
 | `q4lm32s` (16/16 + LS) | 4,50 | 0,02420 | 0,02634 |
 | `q4lm32` (16/16) | 4,50 | 0,02512 | 0,02667 |
 | `q4lm8v` (16/8, heutiger Bulk) | 4,50 | 0,03182 | 0,03387 |
@@ -135,7 +174,8 @@ Gewinn war zum größten Teil ein Artefakt der Referenz: `KL(int8‖Arm)` enthä
 
 ### Das Fenster: der Punkt erreicht `int8`
 
-Der Arm `q4lm32` + Fenster 256/64 (5,29 bit/cell) gegen `int8` (8,25 bit/cell), gepaart je Position:
+Der Arm `q4lm32` + Fenster 256/64 (7,39 bit/value bei 4.608 Zellen, B = 512) gegen `int8`
+(8,25 bit/value), gepaart je Position:
 
 | Vergleich | top-64 | top-256 |
 |---|---|---|
@@ -143,7 +183,8 @@ Der Arm `q4lm32` + Fenster 256/64 (5,29 bit/cell) gegen `int8` (8,25 bit/cell), 
 | `q4lm32sw` − `int8` | +0,00194, [−0,00457, +0,00070], t +1,44 | +0,00243, [−0,00527, +0,00041], t +1,68 |
 
 `int8` führt in 4 von 8 Segmenten (top-256) beziehungsweise 5 von 8 (top-64) — ein Münzwurf.
-**Der 5,29-bit-Punkt ist von `int8` nicht zu unterscheiden**, bei 36 % weniger Bytes pro Zelle.
+**Der Fensterpunkt ist von `int8` nicht zu unterscheiden**, bei 10,4 % weniger Bytes pro Zelle an
+diesem Messpunkt (7,39 gegen 8,25 bit/value).
 
 Und gegen den **heutigen Produktpunkt** (dasselbe Fenster, aber 16/8-Bulk), gepaart je Position über
 die beiden Messverzeichnisse:
@@ -153,8 +194,10 @@ die beiden Messverzeichnisse:
 | top-64 | **−0,00400** | [−0,00663, −0,00138] | −2,99 | besser in 7/8 |
 | top-256 | **−0,00414** | [−0,00702, −0,00127] | −2,82 | besser in 7/8 |
 
-**0,004 nats besser bei identischen Bytes** (5,29 bit/cell, 1.016 MiB bei 128K). Das ist der
-Austausch der V-Tabelle von 8 auf 16 Level, sonst nichts.
+**0,004 nats besser bei identischen Bytes** — beide Arme 4.608 Zellen, 256/64/512, 16/16-Bulk gegen
+16/8-Bulk, also 7,39 bit/value und dieselben 49,9 MiB. Am 128K-Produktpunkt mit B = 6.144 wären
+dieselben Arme bei 5,29 bit/cell und 1.016 MiB; gemessen ist der 4K-Punkt. Das ist der Austausch der
+V-Tabelle von 8 auf 16 Level, sonst nichts.
 
 **Die LS-Skala kippt mit dem Fenster, aber nicht gesichert.** Im Bulk ist sie neutral (+0,0003), mit
 Fenster liegt `q4lm32sw` um 0,0021 hinter `q4lm32w` (top-256: [−0,00467, +0,00050], t −1,58;
@@ -190,7 +233,8 @@ erreichbar, auch nicht für einen, der exakt auf `int8` liegt. Die Regel gehört
 ### Die Lese-Seite ist bereits gemessen: Parität, kein Hebel
 
 Aus dem 2026-10-25-Lauf (`bench/results/2026-10-25-tag-quality/`, gleicher Satz, gleiche Positionen,
-16/8-Bulk, 5,29 bit), hier als gepaarte Differenz nachgerechnet:
+gleiches S/R/B = 256/64/512, 16/8-Bulk, also 7,39 bit/value), hier als gepaarte Differenz
+nachgerechnet:
 
 | Arm | KL vs fp16 top-256 | gegen `int8` |
 |---|---|---|
@@ -218,21 +262,25 @@ Der gemessene Stand bei gleichen Bytes:
 
 | Hebel | Wirkung | Status |
 |---|---|---|
-| V-Tabelle 8 → 16 Level (16/8 → 16/16), gleiche Bytes | −0,0040 nats am 5,29-bit-Punkt | **gesichert**, 7/8 Segmente |
+| V-Tabelle 8 → 16 Level (16/8 → 16/16), gleiche Bytes | −0,0040 nats am Fensterpunkt (7,39 bit/value bei 4.608 Zellen) | **gesichert**, 7/8 Segmente |
 | K-Tabelle 8 → 16 Level | −0,0075 nats (Bulk) | gesichert, aber im Produktpunkt schon 16 |
 | Level-Tabelle 16 → 8 auf beiden Seiten | +0,0175 nats | gesichert, schlechter |
 | Least-Squares-Skala | ±0,0003 bis −0,0021 | **kein Hebel** |
 | Tag-Read statt Fenster | +0,0012 nats | nicht signifikant |
 | Kanalachse (S2) | — | tot |
 
-Der Produktkandidat ist damit **`--kv q4lm32` + `STRATA_KV_WINDOW=1` (S=256, R=64)**: 5,29 bit/cell,
-`KL(fp16‖Arm)` 0,01689 (top-64) gegen `int8`s 0,01688, und 0,0040 besser als der heutige Punkt bei
-identischen Bytes. `int8` bleibt der Qualitäts-Default, das Fenster bleibt opt-in — der Kandidat
-ändert nur, welche Tabelle der Bulk schreibt.
+Der Produktkandidat ist damit **`--kv q4lm32` + `STRATA_KV_WINDOW=1` (S=256, R=64)**: am
+128K-Produktpunkt 5,29 bit/cell und 1.016 MiB (B = 6.144, so wie `docs/DETAILS.md` rechnet), am
+hier gemessenen 4K-Punkt 7,39 bit/value. `KL(fp16‖Arm)` 0,01689 (top-64) gegen `int8`s 0,01688, und
+0,0040 besser als der heutige Punkt bei identischen Bytes. `int8` bleibt der Qualitäts-Default, das
+Fenster bleibt opt-in — der Kandidat ändert nur, welche Tabelle der Bulk schreibt.
 
 **Was dieser Lauf nicht sagt.** Er sagt nichts über den Ring selbst: 256/64 war gesetzt, nicht
 variiert. Nach dem Tausch der Tabelle ist die naheliegende nächste Frage, ob dieselben Bytes besser
-im Ring (S) oder in der Tabelle liegen — das ist ein neuer Arm, kein Ergebnis dieses Laufs.
+im Ring (S) oder in der Tabelle liegen — das ist ein neuer Arm, kein Ergebnis dieses Laufs. Und er
+sagt nichts über 128K: bei 4.608 Zellen ist der Ring teuer (7,39 statt 5,29), bei 131.072 Zellen mit
+demselben B wäre er billiger (4,60 statt 5,29, dafür ~5× langsamerer Prefill bei B = 512). Beides
+ist eine Byte-Frage, die dieser Lauf nicht beantwortet.
 
 ## Dateien
 
