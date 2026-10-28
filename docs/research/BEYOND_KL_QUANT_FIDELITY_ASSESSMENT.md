@@ -1,10 +1,12 @@
 # Bewertung: „Beyond KL" – Eignung für unseren Vergleichsmaßstab
 
 **Status: Bewertung (2026-10-28). Keine neue Messung außer der Decode-Sonde vom selben Tag; jede
-Zahl ist zitiert oder als Rechnung markiert.** Gegenstand:
-`docs/research/BEYOND_KL_QUANT_FIDELITY_ASSIGNMENT.md` (der Auftrag, wörtlich) und
-`docs/research/BEYOND_KL_QUANT_FIDELITY_PLAN.md` (der Begleitplan). Ergebnis dieser Bewertung ist
-der überarbeitete Arbeitsplan in `docs/research/BEYOND_KL_QUANT_FIDELITY.md`.
+Zahl ist zitiert oder als Rechnung markiert.** Gegenstand war der Arbeitsauftrag
+(`docs/research/BEYOND_KL_QUANT_FIDELITY_ASSIGNMENT.md`, wörtlich) und der Begleitplan, dessen
+Arbeitsteil (F0–F6, QBF-Score, Zehn-Suiten-Matrix) dieses Dokument verwirft. Der Plan wurde am selben
+Tag geteilt: sein Sachteil steht als `docs/research/BEYOND_KL_QUANT_FIDELITY_INVENTORY.md`, sein
+Arbeitsteil ist durch den überarbeiteten Arbeitsplan `docs/research/BEYOND_KL_QUANT_FIDELITY.md`
+ersetzt und im Baum nicht mehr vorhanden. Die Kritik unten bleibt als Begründung stehen.
 
 ## 0. Kurzurteil
 
@@ -162,7 +164,7 @@ Artefakt harmoniert.
 | Dokument | Rolle |
 |---|---|
 | `BEYOND_KL_QUANT_FIDELITY_ASSIGNMENT.md` | der Auftrag, wörtlich und unverändert. Bleibt so. |
-| `BEYOND_KL_QUANT_FIDELITY_PLAN.md` | Begleitplan und **Inventar** (M1–M12, CB1–CB7, Rohdatenlage, Build-Cluster). Bleibt als Herkunftsnachweis stehen. |
+| `BEYOND_KL_QUANT_FIDELITY_INVENTORY.md` | das **Inventar** (M1–M13, CB1–CB7, Rohdatenlage, Build-Cluster): der Herkunftsnachweis für jeden Befund oben. |
 | `BEYOND_KL_QUANT_FIDELITY_ASSESSMENT.md` | dieses Dokument: warum der Plan nicht eins zu eins der Arbeitsplan ist. |
 | `BEYOND_KL_QUANT_FIDELITY.md` | der überarbeitete Arbeitsplan: was wir tatsächlich tun, in welcher Reihenfolge, mit welchen Kills. |
 
@@ -174,4 +176,4 @@ Artefakt harmoniert.
 - `bench/results/2026-10-25-e4-error-shape/README.md` — Fehlerform, Kopf/Tail
 - `bench/results/2026-10-25-s0-kl-support/README.md` — Supportbreite, top-64/256
 - `docs/paper/Ansatz_Improvements.md` §7 — K1–K6, PPL-Inversion, Ziel-Zurückstellung
-- `docs/research/BEYOND_KL_QUANT_FIDELITY_PLAN.md` §1.4 — M1–M12 mit Fundstellen
+- `docs/research/BEYOND_KL_QUANT_FIDELITY_INVENTORY.md` §1.4 — M1–M13 mit Fundstellen

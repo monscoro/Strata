@@ -1,7 +1,8 @@
 # Research Assignment: Beyond KL Divergence – A Predictive Quantization Fidelity Framework for Strata
 
-> Eingereichter Arbeitsauftrag (wörtlich, unverändert). Zugehöriger Forschungsansatz:
-> `docs/research/BEYOND_KL_QUANT_FIDELITY_PLAN.md`.
+> Eingereichter Arbeitsauftrag (wörtlich, unverändert). Zugehörige Dokumente:
+> `docs/research/BEYOND_KL_QUANT_FIDELITY_INVENTORY.md` (Inventar) und
+> `docs/research/BEYOND_KL_QUANT_FIDELITY.md` (Arbeitsplan).
 
 ## 0. Rolle und Forschungsauftrag
 

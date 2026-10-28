@@ -1,38 +1,32 @@
-# Forschungsansatz: Predictive Quantization Fidelity für KV-Cache-Quantisierung („Beyond KL")
+# Inventar: was über die Metrikfrage gemessen und geprüft ist
 
-Stand: 2026-10-27; Review-Durchgänge 2026-10-27/28 (diese Fassung bringt nur Klarstellungen und
-das Inventar auf den aktuellen Stand — S3 ist inzwischen ein Neun-Arm-Lauf geworden; **keine
-neuen Messungen, kein Code** durch diesen Plan) · Begleitdokument zu
-`docs/research/BEYOND_KL_QUANT_FIDELITY_ASSIGNMENT.md`
-(dort der wörtliche Arbeitsauftrag). **Diese Fassung enthält keine neuen Messungen und keinen
-geänderten Code.** Jede Zahl stammt aus einem zitierten Bericht oder aus `bench/results/`; alles,
-was aus Code-Lektüre folgt, ist als **statische Analyse** markiert. Kein Engine-Build, keine Kompilierung.
+**Status: Inventar (2026-10-28). Keine eigene Messung; jede Zahl ist zitiert oder als statische
+Analyse markiert.** Dieses Dokument ist die Belegbasis der Metrikfrage: wie heute gemessen wird, was
+die Messungen gezeigt haben (M1–M13), welche Gegenbeispiele tragen, welche Merkmale in Frage kommen
+und welche Prämissen des Auftrags der Code nicht hergibt.
 
-## 0. Zweck und Abgrenzung
+Es ist **kein Arbeitsplan**. Der Arbeitsplan ist `BEYOND_KL_QUANT_FIDELITY.md` (Stufen G0–G4); die
+Begründung, warum er kürzer ist als der ursprüngliche Plan, steht in
+`BEYOND_KL_QUANT_FIDELITY_ASSESSMENT.md`. Der Auftrag selbst steht wörtlich in
+`BEYOND_KL_QUANT_FIDELITY_ASSIGNMENT.md`.
 
-Das übergeordnete Arbeitspaket zielte auf `int8`-Qualität unter 5,0 bit/cell (Ziel K1–K6 in
-`docs/paper/Ansatz_Improvements.md` §7 und `docs/paper/KV-int8-quality-below-5bit-quantization.tex`).
-**Update 2026-10-27/28:** das 5,0-bit-Ziel ist laut S3-Bericht („Was das für das Ziel bedeutet")
-**zurückgestellt** — ohne neue Rotations-/Korrekturansätze nicht erreichbar; der Branch maximiert
-zuerst Qualität bei gleichen Bytes. Das ändert an diesem Plan nichts: die Metrikfrage („sagen die
-heutigen Statistiken etwas über reale Aufgaben voraus?") hängt am Default `int8` und an den
-4,50-bit-Armen, nicht am Zurückstellungsdatum. Die Entscheidungskriterien K1–K3 sind heute
-teacher-forced-KL-Statistiken (Mean KL, p99, Ganzsegment) — wobei K1 selbst nach M10 (§1.4) mit
-dem vorhandenen Korpus nicht auflösbar ist.
-Dieser Ansatz prüft, ob diese Statistiken vorhersagen, was auf realen Aufgaben passiert — und
-welche kleinen Zusatzgrößen die Vorhersage verbessern, falls nicht.
+**Herkunft.** Dieses Inventar ist der Sachteil des früheren `…_PLAN.md`, der am 2026-10-28 geteilt
+wurde: der Arbeitsteil (F0–F6, Experimentdesign, QBF, Deliverables) ist in den Arbeitsplan
+übergegangen und dort ersetzt; der Sachteil steht hier unverändert. Die **Abschnittsnummern sind die
+des alten Plans** (1–5, 8, 9) und bleiben stehen, damit die Querverweise (§1.5, §9) gültig bleiben.
+Wo im Text noch von „F0“, „F1“ usw. die Rede ist, sind das die Stufen des alten Plans; die Zuordnung
+zum heutigen Plan:
 
-Bindende Regeln aus dem Auftrag (§13) und aus `Ansatz_Improvements.md` §0:
+| alter Plan | heutiger Plan |
+|---|---|
+| F0 Katalog, F1 Offline-Merkmale | G1 |
+| F2 Ground Truth | G3 |
+| F3 Prädiktion | G4 |
+| F4 QSA-Dimension | gestrichen bis zur Instrumentierung |
+| F5 Fast Mode, F6 Bericht | offen, erst nach G4 |
 
-1. Kein Ersatz von Mean KL/P99 ohne gemessenen Zusatznutzen. Eine Kombination bestehender
-   Metriken ist dem Formelneuland vorzuziehen.
-2. K1–K6 der laufenden Leiter werden **nicht** mitten in der Messung umdefiniert (Pre-Registration
-   gilt). Neue Metriken können höchstens ergänzend berichten und erst für künftig neu
-   vorregistrierte Vergleiche verbindlich werden.
-3. Der `int8`-Default bleibt byte-identisch (SHA-Gate); K8V4/Fenster-Code wird in dieser
-   Metrikforschung nicht verändert (Auftrag §13, Nr. 8).
-4. Negative Ergebnisse sind Ergebnisse: darf Mean KL + P99 für die Frage „wird es schlechter?"
-   bereits ausreichen, ist das die Empfehlung.
+Der Vollvokabular-Anker (alter Plan: Engine-Arbeit, später) ist im heutigen Plan **G2** und damit
+Voraussetzung statt Nacharbeit.
 
 ## 1. Ist-Zustand: womit heute gemessen wird (statische Analyse)
 
@@ -98,13 +92,14 @@ Arm-Tail-Werte; der Top-k-Deckel von 256 ist eine spätere, getaktete Engine-Arb
 | Ring-Geometrie 2026-10-28 (`q4lm32`+Fenster, S/R variiert, vorregistriert) | vorhanden, **gemessen**
   (2026-10-28, drei Arme, derselbe Build wie S3); Bericht `bench/results/2026-10-28-ring-geometry/`,
   Rohdaten extern `Strata-data\bench\2026-10-28-ring\` |
+| Decode-Sonde 2026-10-28 (fp16, int8, `q4lm32`+Fenster 256/64, 64/64, 256/0, `q4lm8v`+Fenster; volles Vokabular, 32 Prompts, ein Decode-Schritt) | vorhanden, extern `Strata-data\bench\2026-10-28-decode\`; Bericht `bench/results/2026-10-28-decode-probe/`. Anderer Pfad und andere Metrik — zählt **nicht** in die Teacher-forced-Cluster |
 | Ältere WP-Logs (2K, 128K, Fenster-Runden) | **nicht im Tree** (D2/D6-Vorbehalt in `Ansatz_Improvements.md`) |
 | Freie Vokabular-Logs pro Position | existieren nicht (Deckel 256) |
 | Per-Position-Logs quant_quality v1 | Gewichts-Set, nicht cwe |
 
 **Konsequenz:** Stufe F1 (Metrik-Entwicklung) braucht **keine GPU** — sie arbeitet auf den
 vorhandenen Arm-Läufen: S0 (4), S3 (9), Ring-Geometrie (3, derselbe Build wie S3), Tag-Qualität (4)
-= **20 Läufe, fünfzehn verschiedene Arm-Konfigurationen**. Vergleiche paarweise nur **innerhalb**
+= **20 Läufe, fünfzehn verschiedene Arm-Konfigurationen** (die Decode-Sonde steht daneben und wird nicht mitgezählt: anderer Pfad, andere Metrik). Vergleiche paarweise nur **innerhalb**
 eines Build-Clusters; S0↔S3 ist über die Ankerläufe `int8` 0,01688 und `q4lm8v` 0,03182
 gebrückt (S3-Bericht: auf fünf Stellen reproduziert), S3↔Tag nicht (anderes Build, `6F78D941…`).
 Das ist die ökonomische Grundlage des ganzen Plans.
@@ -128,6 +123,7 @@ nicht neu erfunden:
 | M10 | K1 ist mit dem vorhandenen Korpus für **keinen** Arm erreichbar: gepaarte Streuung 0,22–0,24 nats ⇒ einseitige 95-%-Grenze bei echter Parität 0,0020 > 0,001; eine Grenze unter 0,001 bräuchte n ≈ 131.000 Positionen (128K-Satz, existiert nicht) | S3-Bericht, „K1 und die Auflösung der Regel" |
 | M11 | Die KL ist **ankerabhängig**: gegen den `int8`-Anker sah die LS-Skala +0,0028 „besser" aus (t 1,64); gegen `fp16` bleiben +0,0003 (top-256) — der scheinbare Gewinn war ein Referenzartefakt. Jede spätere Vergleichbarkeit muss den Anker mitliefern | S3-Bericht, „Korrektur zu einer früheren Aussage" |
 | M12 | Der **Sink-Term ist real, die S/R-Geometrie ist am Plateau**: `R` = 0 kostet +0,00394 nats (95-% [+0,00097, +0,00691], 8/8 Segmente) — fast so viel wie der ganze 16/16-Gewinn (0,0040); 128/256 Sinks sind von 64 nicht zu trennen (unter M10-Auflösung). Der Verlust sitzt ab Position 2.048, wächst mit der Distanz und ist kein konstanter Offset — Beleg für Regionsauflösung (§9) | `bench/results/2026-10-28-ring-geometry/README.md` |
+| M13 | Die **Decode-Sonde reproduziert die Prefill-Rangfolge nicht**: volles Vokabular, 32 Prompts, `int8` 0,00055, Fensterkandidat 0,00225; Parität **nicht bestätigt, nur nicht ausgeschlossen** (+0,0017, Intervall berührt die 0, 6/8 Segmente schlechter). `S`-Achse (+0,00175 < 0,0027) und Sinks (+0,00100 < 0,0016) liegen unter der Auflösung. 16/8 ist nominell besser als 16/16 (−0,00074, n. s.). Prompts ≤ 1.000 Token, also Decode-Pfad **ohne** Ring-Verdrängung | `bench/results/2026-10-28-decode-probe/README.md` |
 
 Damit ist der Auftragsteil B („Failure Analysis of Existing Metrics") zu einem erheblichen Teil
 **aus vorhandenen Messungen** beantwortbar; F0 schreibt ihn nur zusammen und prüft die noch
@@ -250,111 +246,12 @@ S0/S3/Tag-TSVs **ohne GPU und ohne Engine-Änderung**.
 | 3 | Reverse-KL, JS, TV, Hellinger (trunkiert) | auf demselben Support wie `kl_between`, plus Massen-Ausreißer `r` getrennt | ja, mit Vorbehalt | testet Definitions-Abhängigkeit (D6-Teil) | mehrfach untereinander — Doppelzählung vermeiden |
 | 3 | Vollvokabular-KL, Reverse über volles Vokabular | Engine-Schreibung erweitern | **nein** — Engine-Änderung, Top-k-Deckel, ~32 GB/Arm Rohdump (8,1·10⁹ Werte ×4 B, Arithmetik) → nur Stichprobenpositionen | beendet die M1-Debatte endgültig | — |
 | 4 | QSA-Selektionsmetriken | Jaccard/Recall der Selektionen Ref gegen Arm, Score-Rand, Attention-Mass-Verlust | **nein** — Instrumentierung nötig (S1 liefert nur Aggregate, ein Arm) | Auftrag §4 | — |
-| — | **Free-Running-Events** | Ground Truth (kein Metrik-Kandidat): siehe §7.3 | nein (Suite zu bauen) | **Voraussetzung für jede Prädiktionsaussage** | — |
+| — | **Free-Running-Events** | Ground Truth (kein Metrik-Kandidat): siehe `BEYOND_KL_QUANT_FIDELITY.md` §4 (G3) | nein (Suite zu bauen) | **Voraussetzung für jede Prädiktionsaussage** | — |
 
 Der Screening-Regel in F1: ein Merkmal fällt, wenn es über alle Läufe eines Build-Clusters (S0: 4,
 S3: 9, Tag: 4) mit einer Baseline |ρ| ≥ 0,9 korreliert **und** in der Restbetrachtung (partial)
-nichts hinzufügt (Setzung, §7.5 E5); `int8` läuft in allen drei Clustern und ist der natürliche
+nichts hinzufügt (Setzung, `BEYOND_KL_QUANT_FIDELITY.md` §3); `int8` läuft in allen drei Clustern und ist der natürliche
 Paaranker, cross-cluster nur wo gebrückt (§1.3).
-
-## 6. Was F1 offline liefern kann — ein konkretes Beispiel
-
-Bereits jetzt ohne einen einzigen Lauf berechenbar, wenn die externen TSVs vorliegen:
-
-1. Pro Position und Arm: ΔNLL, Margin, Flip-Flag, CVaR-Beiträge, Run-Struktur, Regionslabel.
-2. Differenzielle Tabelle je Paar (gepaart wie K1): Kandidat(Arm − `int8`) für jede Kennzahl —
-   **Anker vor F1 festlegen und mitliefern** (S3 zeigt: Ankerwahl `int8`↔`fp16` ändert die
-   Aussage, M11); S3 hat beide Ankerläufe, S0 nur `fp16`.
-3. Redundanzmatrix (Spearman) über die Kennzahlen und gegen die Baselines.
-4. Stabilitätsprüfung top-64 gegen top-256 (Wiederholung von S0 für **alle** Kandidaten, nicht
-   nur KL) — Kennzahlen, die unter Supportwechsel die Rangfolge drehen, fallen (CB5-Regel).
-5. Vorzeichen-/Bootstrap-CIs auf **Segment**ebene (n=8; nie auf Positionenebene — Korrelation
-   benachbarter Positionen, Auftrag §7.3).
-
-## 7. Experimentdesign (Auftrag §6, §7, §10)
-
-### 7.1 Arme und deren Verfügbarkeit
-
-| Arm | `--kv` | Teacher-forced-Logs | Free-Running |
-|---|---|---|---|
-| fp16 (Referenz) | `fp16` | da (S0, S3, Tag) | nötig (Referenzlauf) |
-| int8 (Default) | `int8` | da (S0, S3, Tag) | nötig |
-| Fenster 256/64 auf 16/8-Bulk | `q4lm8v`+Window | da (S0, Tag) | nötig |
-| Fenster 256/64 auf 16/16-Bulk | `q4lm32`+Window | da (S3; **von `int8` nicht zu unterscheiden**, 7,39 bit/value am 4K-Punkt: S3-Bericht, „Das Fenster") | nötig |
-| plain 4-bit (16/8) | `q4lm8v` | da (S0, S3) | nötig |
-| 16/16, 8/8 | `q4lm32`, `q4lm8` | da (S3) | nötig |
-| 16/8, 8/16, 16/16+LS, 16/16+LS+Fenster | `q4lm8v`, `q4lm8k`, `q4lm32s`, `q4lm32s`+Window | **da (S3, 2026-10-27/28 gemessen)** — S3-Bericht: Tabellen-Arme, Anker-Wechsel auf `fp16` dort offengelegt | optional, danach |
-| Ring-Geometrie (320/0, 192/128, 64/256) | `q4lm32`+Window, nur S/R variiert | **da (S3-Build, 2026-10-28 gemessen)**: kein Arm gewinnt die vorregistrierte Regel, 256/64 bleibt; Sink-Term +0,00394 nats gesichert (M12); nur Prefill (B = 512), Decode ungemessen | — |
-| `q4_0`, `k8v4` auf cwe | existierende Formate | **nein** (Ansatz E2: nie auf cwe gemessen) | nur wenn als Arm benötigt |
-| K8V4-NL | existiert hier nicht | vor Auftrag §5: Research-Branch prüfen | — |
-
-Jeder zusätzliche Arm muss **beide** Seiten bekommen (gleiche Konfiguration, gleicher Build,
-dokumentierte SHA — Vorbild S0-Bericht).
-
-### 7.2 Zwei Evaluationsarten, strikt getrennt (Auftrag §7.2)
-
-- **Teacher-forced:** liefert alle Kandidatenmerkmale (F1). Existiert für 20 Läufe (15 Arm-Konfigurationen; §1.3).
-- **Free-running:** liefert das Ground Truth (F2). Greedy/temperature 0, feste Prompts, dokumentierte
-  Engine-SHA. Ergebnis ist **kein** KL, sondern Event-Raten je Task und Arm.
-- Die Brücke ist die Prädiktionsfrage (F3): Vorhersage = Kandidatenwert aus dem teacher-forced-Lauf
-  gegen den gemessenen Event-Verlust desselben Arms auf demselben Task.
-
-### 7.3 Aufgaben und Fehler-Events (müssen **vor** der Auswertung feststehen)
-
-Vorrang nach automatisierbarer Bewertung und vorhandener Infrastruktur:
-
-| P | Task | Event-Definition (Vorschlag, wird vor F2 eingefroren) | Vorhandene Infrastruktur |
-|---|---|---|---|
-| 1 | Needle-in-a-Haystack | „gepflanztes Wort nicht reproduziert" | `needle_bench.py`; **gesättigt** → erst härtere Variante (Multi-Key, Distraktoren, mehr Tiefen) |
-| 1 | Strukturierte JSON-Ausgabe | Parse-Fehler oder Schema-Verletzung | keine → kleine Suite nötig (nur Skript) |
-| 1 | Code mit Tests | Unit-Tests bestanden/nicht (HumanEval-Subset) | Community-Skript vorhanden (`bench/results/2026-10-09-…/scripts/strata_eval_subset.py`) |
-| 2 | Tool Calling | Argumentfehler gegen feste Schema-Fixtures | keine → kleine Suite nötig |
-| 2 | Längen-/EOS-/Repetition-Ereignisse | vorzeitiger Abbruch, Wiederholungsrate über Fenster | automatisch aus Transkripten ableitbar |
-| 2 | Long-Document-Q&A / Multi-Hop | Antwortgold falsch/richtig | RULER-cwe hat `gold.json` (`data/quant_quality/cwe-4k/gold.json`, vom Harness geschrieben: `quant_quality.py:187`) — Antworten liegen da, auch **free-running** einsetzbar (Prompt ohne Answer-Append, Gold per Index) |
-| 3 | Agenten-/Chat-Läufe | definierte Pflichtaktion ausgeführt/nicht | aufwändig; erst wenn P1–P2 trennen |
-
-**Sättigungsregel:** zeigt die Pilot-Suite in keiner Arm×Task-Zelle eine Differenz, ist sie erst
-zu verschärfen (mehr Tiefen/Distraktoren), bevor F3 startet — sonst ist „Metrik X sagt nichts
-voraus" nicht von „es passierte nichts" unterscheidbar (Analogie: Nadel 18/18).
-
-### 7.4 Statistik
-
-- **Resampling-Einheit** = Task bzw. Prompt/Konversation, niemals Position (Auftrag §7.3).
-  Zweite Ebene: Segment (n=8) für teacher-forced-Paare.
-- **Paarung:** gleiche Testfälle für alle Kandidaten und Baselines; paarweise Tests wie K1.
-- **Macht:** fünfzehn Arm-Konfigurationen in drei Build-Clustern ⇒ Spearman-ρ mit breitem CI.
-  Erwartung vorab: Aussagen sind Richtungsaussagen mit Konfidenzband, keine Punktschätzungen.
-  Leave-one-task-out als Stabilitätsprobe. **Auflösungsgrenze beachten (M10):** bei 32.746
-  Positionen und gepaarter Streuung 0,22–0,24 nats liegt die einseitige 95-%-Grenze bei echter
-  Parität bei 0,0020 nats — Effekte darunter sind mit cwe-4k grundsätzlich nicht auflösbar, das
-  ist eine Eigenschaft des Satzes, nicht der Metrik.
-- **Entwicklung/Validierung trennen (Auftrag §13, Nr. 3):**
-  - Entwicklungssatz: cwe-4k-Logs (S0/S3/Tag; Paarung nur innerhalb eines Clusters, §1.3) + P1-Tasks.
-  - Validierungssatz: **nie** in F1 angesprochen — P2-Tasks (JSON/Tool-Events) und ein zweiter
-    RULER-Task (D1), erst in F3 geöffnet.
-  - Alle Schwellen und E5/§7.5-Regeln werden vor F3 timestamped in die Ergebnis-README geschrieben
-    (Vorbild: „Entscheidungsregeln (vor dem Lauf festgelegt)" in den S1/S3-READMEs).
-
-### 7.5 Erfolgskriterien E1–E6 (Vorschlag, konkret; **Setzungen**, vor F3 einzufrieren)
-
-**Namenskonvention (Disambiguierung):** Die Bezeichnungen E1–E6 unten sind die
-Erfolgskriterien **dieses Plans**. Sie sind **nicht** identisch mit den Katalogeinträgen
-E1–E4 in `docs/paper/Ansatz_Improvements.md` §2.E (E1 = Indexer-Auswahl↔Overlay,
-E2 = q4_0 auf cwe, E3 = Heavy-Hitter-Overlay, E4 = GEAR-Diagnose) und **nicht**
-identisch mit dem Bench-Run `2026-10-25-e4-error-shape` (= Ansatz E4). Wo der Plan
-Ansatz-Katalogeinträge meint, steht explizit „Ansatz E2/E4" (in §1.2, §5, §7.1, §11 F0, §16).
-**F0** bezeichnet die Katalogstufe des Plans (§11), nicht einen Ansatz-Eintrag.
-| ID | Regel |
-|---|---|
-| E1 Prädiktion | Spearman-ρ(Kandidat, Free-Running-Verlust) übersteigt die beste Baseline (min(Mean KL, P99)) im Validierungssatz um **≥ 0,15** und das Vorzeichen hält in ≥ 75 % der Leave-one-task-out-Wiederholungen |
-| E2 Frühwarnung | Bei vordefinierten kritischen Events (P1-Tasks) Sensitivität ≥ 0,80 und Spezifität ≥ 0,80 auf Arm×Task-Zellen; mehr als **1 zusätzlicher Fehlalarm pro 10 Zellen** gegenüber der Baseline ist zu viel |
-| E3 Rangfolge | Kendall-τ der Arm-Rangfolge gegen die gemessene Qualitätsrangfolge ≥ τ der Baselines, auf beiden Testfällen |
-| E4 Kosten | Fast-Mode (§12) ohne zweiten Engine-Lauf und ohne neue Rohdaten; Score-Zeit ≤ 2× der heutigen `compare`-Zeit |
-| E5 Redundanz | kein aufgenommenes Merkmal mit \|ρ\| ≥ 0,9 zu einem bereits aufgenommenen |
-| E6 Ehrlichkeit | Jede Kennzahl behält ihre Unsicherheit (Bootstrap-CI); „kein Nachweis" ist zulässiges Ergebnis |
-
-Kein Kandidat „gewinnt" durch stärkere Unterschiede allein (Auftrag §7, fettgedruckter Satz) —
-erst E1/E2/E3 zusammen zählen.
 
 ## 8. QSA-spezifische Dimension (Auftrag §4) — ehrlich abgestuft
 
@@ -395,123 +292,3 @@ Sofort offline möglich, sobald die S0/S3/Tag-TSVs vorliegen:
   verboten), also im Report als „nicht zutreffend" benennen, nicht vermischen.
 - K8V4-NL-Teil des Auftrags: erst nach dem Branch-Diff (§1.5.1). Keine Architektur aus dem
   Auftragstext ableiten.
-
-## 10. QBF — Vorschlag zur Fidelity-Bewertung (Auftrag §6)
-
-**QBF bleibt ein Dashboard, keine Zahl**, solange E1–E3 nicht zugunsten einer Aggregation
-entscheiden. Vier Dimensionen zuerst (QSA optional bis F4):
-
-| Dimension | Zusammensetzung aus §5 | Satz |
-|---|---|---|
-| Distribution | Mean KL (top-256), ΔNLL summiert | Baseline behalten |
-| Decision | Flip bei Margin ≥ 1 nat, Top-k-Overlap | ergänzend, nicht ersetzend |
-| Tail | CVaR99 + Floor-Event-Rate (getrennt ausgewiesen) | P99 bleibt publizierte Baseline |
-| Temporal | längster Run, Bursts/1k, Drift je Segment | neu, weil konstruktiv unsichtbar sonst |
-| Functional | Free-Running-Event-Raten | Ground Truth, keine Metrik |
-| QSA (optional) | Overlap/Margin nach F4b | Gate F4 |
-
-Aggregationsstufen (Reihenfolge wie Auftrag §6, Forschungsauftrag B): (1) Dashboard, (2) **regelbasierte** Schwellen
-aus den K1-Prinzipien, (3) gewichteter Score nur mit gelernten statt gesetzten Gewichten,
-(4) datengetriebenes Vorhersagemodell nur mit Train/Val-Trennung und nur wenn Stufe 3 scheitert,
-(5) Pareto (Qualität, Bits/cell, t/s) als Berichtsansicht für die 5-Bit-Frage. Keine Stufe darf
-übersprungen werden, nur weil sie „einfacher" klingt — die einfachste wirksame Stufe ist das Ziel.
-
-## 11. Stufenplan F0–F6 mit Kills und Kosten
-
-Benennung bewusst **F***, um nicht mit der bestehenden Leiter S0–S5 zu kollidieren. Die
-bestehende Leiter läuft unverändert weiter; F-Track ist offline-first wie WP-3b und blockiert sie
-nicht.
-
-| Stufe | Frage | Arbeit | Kill | Kosten |
-|---|---|---|---|---|
-| **F0** | Was ist belegt, was behauptet? | Taxonomie (§2), Katalog der M1–M12, CB1–CB7 als Determinist-Fixtures spezifizieren, D6/Ansatz E4/D4 aus dem Katalog einordnen (keine Doppelzählung), Branch-Diff `KV_QUANT_research` (§1.5.1), Split Entwicklung/Validierung schreiben | — | Stunden, kein GPU |
-| **F1** | Liefert irgendein Offline-Merkmal mehr als die Baselines — **konsistent**? | Rescoring der S0/S3/Tag-TSVs: §6-Liste, Redundanzmatrix E5, Support-Stabilität top-64/256, Bootstrap-CIs (D4) auf Segmentebene, Regionsaufteilung (§9) | kein Merkmal überlebt E5/Support-Drehung → Kurzbericht: Baselines reichen offline | Stunden, kein GPU; braucht `Strata-data`-Logs + Portierung von `kv_error_shape.py` (Pfad) |
-| **F2** | Gibt es ein trennendes Ground Truth? | Free-Running-Suite bauen (§7.3 P1), Sättigungs-Check, Event-Definitionen timestampen, Pilot auf 2 Armen | Sättigung nach einer Verschärfungsrunde → F3 wird verschoben, nicht ergebnislos gestartet | Skripte + wenige GPU-Stunden (Arme × Tasks, greedy) |
-| **F3** | Vorhersagen die Kandidaten besser? | je Arm: Kandidatenwerte (F1) gegen Event-Verluste (F2), E1–E6, Validierungssatz öffnen | E1 und E2 verfehlen → **Empfehlung: Mean KL + P99 bleiben**, QBF nur als Dashboard ohne Prädiktionsanspruch | Free-Running je Arm ~kurz; Analyse offline |
-| **F4** | Trägt die QSA-Dimension? | F4a statisch → F4b Instrumentierung → ggf. Overlap/Mass | kein messbarer Selektionsunterschied oder kein Zusatznutzen über E1 → Fall D als „im aktuellen Architekturpfad nicht relevant" dokumentieren | Debug-Build + Runden; nur wenn F3 zeigt, dass T5 überhaupt reagiert |
-| **F5** | Fast Mode + Integration | §12; Approximationsfehler quantifizieren; Anbindung an `quant_quality.py` (erweitern, keinen zweiten Stack) | Kosten > E4 → nur Research-Mode behalten | Skriptarbeit, Tests |
-| **F6** | Bericht | `docs/research/BEYOND_KL_QUANT_FIDELITY.md`, `FIDELITY_METRIC_DESIGN.md`, `VALIDATION_RESULTS.md` | — | Schreiben |
-
-Engine-Änderungen (Vollvokabular-Stichprobe, Selektions-Capture, `STRATA_LOGPOS_TOPK` > 256) sind
-**eigene, später vorregistrierte Arbeiten** mit Build, Parität und int8-SHA-Gate — sie sind nicht
-Voraussetzung für F0–F3.
-
-## 12. Fast Mode (Auftrag §8)
-
-- **Umfang (Vorschlag):** Mean KL(top-256), CVaR99, ΔNLL(positiv getrennt), Flip bei Margin ≥ 1 nat,
-  Floor-Event-Rate, längster Run. Alles aus einem bestehenden TSV, ohne zweiten Engine-Lauf.
-- **Approximationsfehler:** KL(top-256) gegen KL(top-64) ist für KL gemessen (S0: +5,1 bis +6,4 % Niveau,
-  Rangfolge/Vorzeichen stabil); für jedes neue Merkmal derselbe Support-Test als Pflicht.
-  Vollvokabular bleibt die spätere Referenz.
-- **Dateigröße:** heutiger TSV ≈ 131 MB/Arm (S0); Vollvokabular-Dump wären ≈ 32 GB/Arm (Arithmetik:
-  32.746 × 248.320 × 4 B) — daher Research-Mode nur mit **Stichprobenpositionen** (z. B. alle
-  Flip-Positionen plus jede n-te), nie pauschal voll.
-- **Messzeit:** Scoring heute im Sekunden- bis Minutenbereich (offline); zu messen in F5, Ziel E4.
-
-## 13. Deliverables und Reihenfolge (Auftrag §12)
-
-Diese Runde geliefert:
-
-- `docs/research/BEYOND_KL_QUANT_FIDELITY_ASSIGNMENT.md` — der Auftrag, wörtlich.
-- `docs/research/BEYOND_KL_QUANT_FIDELITY_PLAN.md` — dieses Dokument.
-
-Später, und nur wenn validiert (Auftrag: „ausführbaren Code nur für tatsächlich validierte Teile"):
-
-- `docs/research/BEYOND_KL_QUANT_FIDELITY.md` (F6-Bericht, Kapitel A–I des Auftrags),
-  `FIDELITY_METRIC_DESIGN.md` (nach F1), `VALIDATION_RESULTS.md` (nach F3).
-- `tools/quant_fidelity.py`, `tools/quant_fidelity_compare.py` als **Erweiterung** der
-  `quant_quality`-Familie (Gleiche Eingabeformate, TSV/JSON-Export, keine zweite Pipeline).
-- `tests/test_quant_fidelity.py` mit den zehn Testklassen des Auftrags §9 (identische
-  Verteilungen, nahezu identische und veränderte Top-1-Entscheidungen, seltene Token, kleine
-  Wahrscheinlichkeiten, isolierte Ausreißer, korrelierte Bursts, QSA-Selektionsfehler,
-  Window-Grenzen, Sequenzlängen; dazu als eigene Sätze `log_softmax`-Pfad und NaN/Inf-Stabilität).
-
-## 14. Offene Messungen und benötigte Zugänge (Auftrag §12, Punkt 5 der Fallback-Liste: „eine präzise Liste der noch benötigten Messungen")
-
-1. Free-Running-Event-Raten für die entscheidenden Arme (fp16, int8, 16/16+Fenster = Produktkandidat,
-   plain 16/8, 16/16, 8/8; F2) —
-   die eigentliche Lücke.
-2. Rohdaten-Zugang: `Strata-data\bench\2026-10-25-s0\`, `…\2026-10-27-s3\` und
-   `…\2026-10-25-tag-quality\` müssen bei der
-   Ausführung vorliegen (SHAs im README); sonst Re-Run je Arm ~19–21 min.
-3. Vollvokabular-KL (Engine-Deckel 256) — später, getaktet, mit SHA-Gate.
-4. Selektionsaufzeichnung paarweise (F4b) — Instrumentierung, kein Postulat.
-5. 128K-per-Position-Logs: nicht im Tree; ein 128K-Rescore ist ein eigener Lauf.
-6. Härtere Nadel-/JSON-/Tool-Fixtures (Sättigungsvermeidung).
-7. Zweite Task-Familie (D1) für den Validierungssatz.
-8. K8V4-NL-Ist-Stand: Branch `KV_QUANT_research` laden und diffen, bevor §5 des Auftrags
-   irgendetwas behauptet.
-
-## 15. Grenzen und Risiken
-
-- **Macht:** 8 Segmente, fünfzehn Arm-Konfigurationen (drei Build-Cluster), ein Modell, eine Karte,
-  eine Task-Familie im
-  Entwicklungssatz. Aussagen sind Richtungen mit CI; Overfitting auf cwe ist die Hauptgefahr —
-  dagegen steht die harte Trennung des Validierungssatzes (§7.4).
-- **Sättigung:** Needle bereits 18/18. Ohne trennendes Ground Truth ist keine Metrikforschung
-  möglich; das ist der kritische Pfad von F2.
-- **Bestehende Metriken sind nicht zu unterschätzen:** S0 zeigt Definitions-Stabilität, und die
-  Baselines haben ihre Rollen bereits abgedeckt (PPL als nicht-Entscheidungsgröße, Tail-Mean als
-  unbrauchbar, P99 als Tail-Indikator). Der realistischste Ausgang ist: **eine kleine Erweiterung
-  (ΔNLL + Margin-Flip + CVaR + Run) um die Baselines herum, kein Ersatz.**
-- **Rohlogs können verschwinden** (externes Verzeichnis); nur dokumentierte SHAs schützen die
-  Reproduzierbarkeit.
-- **Bestehende Metrik-Code-Lücken:** kein Test deckt `kl_between`/`compare`/p99/PPL ab (statisch);
-  `kv_error_shape.py` hat hartcodierten Pfad. Beides erst bei F5 anfassen (Code-Änderung dann mit
-  Tests).
-- **K8V4-NL-Nennung im Auftrag** ist in diesem Tree unbelegt; Werbung dafür wäre genau die
-  Architekturannahme, die §13, Nr. 7 verbietet.
-
-## 16. Was diese Runde nicht getan hat
-
-Kein Code wurde verändert, nichts kompiliert, keine Messung gestartet und keine Zahl erfunden.
-Alle Zahlen sind zitiert (S0, S1, Ansatz E4 = bench-Run `2026-10-25-e4-error-shape`, S3,
-Ring-Geometrie, Tag-Qualität, Paper/Reviews); alles aus Code-Folgerungen ist oben als
-statische Analyse markiert und muss vor jedem Claim gegen den dann aktuellen Branch neu verifiziert
-werden. Der Review-Durchgang 2026-10-28 hat nur Bestand gepflegt: Inventar (§1.3/§7.1) auf den
-Neun-Arm-S3-Stand und die Ring-Läufe gebracht, M10/M11 aus dem S3-Bericht ergänzt, CB2/CB5
-präzisiert, §5-Verweis korrigiert — keine dieser Änderungen ist eine neue Messung. Ein zweiter
-Durchgang desselben Tages hat dasselbe mit dem inzwischen fertigen Ring-Lauf getan: Inventar und
-Zählungen (§1.3, §7.1, §7.2, §7.4, §15) von „in Arbeit (1/3)" auf „gemessen" gezogen, M12 aus dem
-Ring-Bericht ergänzt, F0 auf M1–M12 erweitert — wieder nur gepflegt, nichts davon ist eine eigene
-Messung dieser Runde.

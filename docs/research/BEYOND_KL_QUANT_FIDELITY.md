@@ -1,9 +1,9 @@
 # Fidelity-Bewertung für KV-Quantisierung: der überarbeitete Arbeitsplan
 
 **Status: Arbeitsplan (2026-10-28). Keine eigene Messung; jede Zahl ist zitiert.** Dieses Dokument
-ersetzt den Stufenplan F0–F6 aus `BEYOND_KL_QUANT_FIDELITY_PLAN.md` als **Arbeitsplan**. Der Plan
-bleibt als Inventar und Herkunftsnachweis stehen (M1–M12, CB1–CB7, Rohdatenlage, Build-Cluster), der
-Auftrag bleibt wörtlich. Warum gekürzt wird, steht in
+ersetzt den Stufenplan F0–F6 des früheren `…_PLAN.md` als **Arbeitsplan**. Der Sachteil dieses Plans
+steht als Inventar und Herkunftsnachweis in `BEYOND_KL_QUANT_FIDELITY_INVENTORY.md` (M1–M13, CB1–CB7,
+Rohdatenlage, Build-Cluster), der Auftrag bleibt wörtlich. Warum gekürzt wird, steht in
 `BEYOND_KL_QUANT_FIDELITY_ASSESSMENT.md`.
 
 **Was dieses Dokument nicht ist:** der F6-Bericht des Auftrags. Die Kapitel A–I (Literature Review,
@@ -23,8 +23,8 @@ diese Läufe wäre eine Behauptung.
 
 ## 1. Der gemessene Ist-Zustand
 
-Die zwölf Befunde M1–M12 stehen mit Fundstellen in `BEYOND_KL_QUANT_FIDELITY_PLAN.md` §1.4. Für den
-Maßstab zählen fünf:
+Die dreizehn Befunde M1–M13 stehen mit Fundstellen in `BEYOND_KL_QUANT_FIDELITY_INVENTORY.md` §1.4.
+Für den Maßstab zählen fünf:
 
 1. **Mittelwertverdünnung ist real.** Die schlimmsten 1 % der Positionen tragen 85,5 / 81,6 / 70,9 %
    der KL (`int8` / Fenster / plain), die Ränge 1–8 tragen 88–90 %.
@@ -151,7 +151,7 @@ Korpus, nicht eine andere Metrik.
 | Dokument | Rolle |
 |---|---|
 | `BEYOND_KL_QUANT_FIDELITY_ASSIGNMENT.md` | der Auftrag, wörtlich und unverändert |
-| `BEYOND_KL_QUANT_FIDELITY_PLAN.md` | Inventar und Herkunftsnachweis (M1–M12, CB1–CB7, Rohdaten, Cluster) |
+| `BEYOND_KL_QUANT_FIDELITY_INVENTORY.md` | Inventar und Herkunftsnachweis (M1–M13, CB1–CB7, Rohdaten, Cluster) |
 | `BEYOND_KL_QUANT_FIDELITY_ASSESSMENT.md` | warum der Plan nicht eins zu eins der Arbeitsplan ist |
 | `BEYOND_KL_QUANT_FIDELITY.md` | dieses Dokument: was wir tun, in welcher Reihenfolge, mit welchen Kills |
 
