@@ -63,6 +63,8 @@ def main() -> int:
     ap.add_argument("--min-free-gb", type=float, default=16)
     ap.add_argument("--allow-few-positions", action="store_true",
                     help="pass --allow-no-positions: the exact-row reference run scores only a few rows")
+    ap.add_argument("--reuse", action="store_true",
+                    help="keep a segment whose part and .seg.json already exist (a run that failed later)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
@@ -109,24 +111,30 @@ def main() -> int:
             if a.dry_run:
                 print(" ".join(cmd), flush=True)
                 continue
-            r = subprocess.run(cmd)
-            if r.returncode != 0:
-                raise SystemExit(f"{name}: quant_quality.py exited {r.returncode}")
+            if a.reuse and part.exists() and pathlib.Path(str(part) + ".seg.json").exists():
+                print(f"[{name}] reusing {part}", flush=True)
+            else:
+                r = subprocess.run(cmd)
+                if r.returncode != 0:
+                    raise SystemExit(f"{name}: quant_quality.py exited {r.returncode}")
 
             meta = json.load(open(str(part) + ".seg.json", encoding="utf-8"))
             pm = meta["segments"][0]
-            if pm["end_line"] - pm["first_line"] != len(pos):
-                raise SystemExit(f"{name}: {pm['end_line'] - pm['first_line']} rows dumped, {len(pos)} positions "
-                                 f"asked for")
             with open(part, encoding="utf-8") as src:
-                n = 0
+                n = scored = 0
                 for line in src:
                     dst.write(line)
                     n += 1
-            if n != len(pos):
-                raise SystemExit(f"{name}: part holds {n} lines, expected {len(pos)}")
+                    if line.count("\t") > 7:      # the eight fixed columns and then at least one id:logprob pair
+                        scored += 1
+            if scored != len(pos):
+                raise SystemExit(f"{name}: {scored} rows carry pairs, {len(pos)} positions asked for")
+            if n != pm["end_line"] - pm["first_line"]:
+                raise SystemExit(f"{name}: part holds {n} lines, its .seg.json says "
+                                 f"{pm['end_line'] - pm['first_line']}")
             merged.append({"name": name, "first_line": first, "end_line": first + n,
-                           "ids_file": str(ids_file), "ids_sha256": sha256(ids_file), "positions": len(pos)})
+                           "ids_file": str(ids_file), "ids_sha256": sha256(ids_file), "positions": len(pos),
+                           "rows_with_pairs": scored})
             parts.append({"segment": name, "part": str(part), "part_sha256": sha256(part),
                           "args": meta["args"], "env": meta["env"], "expert_cache_lines":
                           meta.get("expert_cache_lines", [])})
