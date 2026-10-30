@@ -196,6 +196,8 @@ def main() -> int:
                     help="an S3 run outside --s3-dir")
     ap.add_argument("--out", required=True)
     ap.add_argument("--topk", type=int, default=4096)
+    ap.add_argument("--population", action="store_true",
+                    help="also the published kl256 over every position of the existing runs (a full read of each)")
     a = ap.parse_args()
 
     support = json.load(open(a.support, encoding="utf-8"))
@@ -232,6 +234,9 @@ def main() -> int:
                     arm["__all__"]["kl256"] = v
                 else:
                     arm[seg]["kl256"] = v
+            if a.population:
+                arm["__all__"]["kl256_population"] = score_s3(
+                    pathlib.Path(a.s3_dir) / "fp16.tsv", s3[name], None)["__all__"]
         res["arms"][name] = arm
 
     # --- the exact rows
@@ -290,6 +295,13 @@ def main() -> int:
         for name, d in res["exact"].items():
             x = d["__all__"]
             print(f"{'':12s}{name:10s} {x['kl4096']:9.5f} {x['klfull']:9.5f} {x['rows']:5d}")
+    if a.population:
+        print(f"\nsample against the population: {'arm':10s} {'sample':>9s} {'all':>9s} {'ratio':>6s}")
+        for name in arms:
+            d = res["arms"][name]["__all__"]
+            if d.get("kl256") is not None and d.get("kl256_population"):
+                print(f"{'':30s}{name:10s} {d['kl256']:9.5f} {d['kl256_population']:9.5f} "
+                      f"{d['kl256'] / d['kl256_population']:6.2f}")
     print("\nladder (kl256 -> kl4096):")
     for s in res["rule"]["steps"]:
         if "kl256" in s:
