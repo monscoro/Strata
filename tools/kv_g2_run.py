@@ -53,6 +53,9 @@ def main() -> int:
     ap.add_argument("--ids", default=str(HERE.parent / "data" / "quant_quality" / "cwe-4k" / "set.ids.json"))
     ap.add_argument("--support", required=True, help="support.json written by kv_g2_support.py")
     ap.add_argument("--kv", default="fp16")
+    ap.add_argument("--env", action="append", metavar="K=V",
+                    help="an environment variable for the engine, e.g. the window arm's "
+                         "STRATA_KV_WINDOW=1 (repeatable; the id file is added separately)")
     ap.add_argument("--topk", type=int, default=0,
                     help="the fall-through top-k for positions the id file does not name; 0 by default, because "
                          "the id file is the support and a top-k there would only add 4,096 pairs to every other "
@@ -104,9 +107,10 @@ def main() -> int:
                            encoding="utf-8")
             part = parts_dir / f"{name}.tsv"
             cmd = [sys.executable, str(HERE / "quant_quality.py"), "run", "--config", a.config,
-                   "--ids", str(one), "--out", str(part), "--kv", a.kv, "--topk", str(a.topk),
-                   "--env", f"STRATA_LOGPOS_IDS={ids_file}",
-                   "--min-free-gb", str(a.min_free_gb)]
+                   "--ids", str(one), "--out", str(part), "--kv", a.kv, "--topk", str(a.topk)]
+            for e in a.env or []:
+                cmd += ["--env", e]
+            cmd += ["--env", f"STRATA_LOGPOS_IDS={ids_file}", "--min-free-gb", str(a.min_free_gb)]
             if a.exe:
                 cmd += ["--exe", a.exe]
             if a.allow_few_positions:
