@@ -30,6 +30,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -65,6 +66,9 @@ def main() -> int:
                     help="pass --allow-no-positions: the exact-row reference run scores only a few rows")
     ap.add_argument("--reuse", action="store_true",
                     help="keep a segment whose part and .seg.json already exist (a run that failed later)")
+    ap.add_argument("--gap", type=float, default=15.0,
+                    help="seconds to wait between engine starts, so the last one's arena is back before the next "
+                         "allocates (default 15; the engine holds a ~40 GiB arena)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
@@ -114,6 +118,8 @@ def main() -> int:
             if a.reuse and part.exists() and pathlib.Path(str(part) + ".seg.json").exists():
                 print(f"[{name}] reusing {part}", flush=True)
             else:
+                if first:
+                    time.sleep(a.gap)
                 r = subprocess.run(cmd)
                 if r.returncode != 0:
                     raise SystemExit(f"{name}: quant_quality.py exited {r.returncode}")
