@@ -250,3 +250,8 @@ Prüfung vergleicht deshalb die Zuordnung Id → Logprob; die Reihenfolge sieht 
 Damit bleibt der Satz bei **rund 6,5 GB** statt 18–29 GB für die Vereinigungsstütze, bei gleicher
 Aussagekraft für die gestellte Frage.
 
+Eine Falle, die der erste Arm-Lauf gezeigt hat (gemessen, abgebrochen und neu gestartet): der
+Durchfall-Top-k muss **0** sein. Mit `--topk 4096` schreibt jede Position, die die Ids-Datei nicht nennt,
+trotzdem ihre 4.096 Paare — 2,3 GB je Arm statt 0,77 GB, für Paare, die niemand liest. Die Ids-Datei
+ersetzt den Top-k an den genannten Positionen unabhängig davon; der Wert gilt nur für die anderen.
+

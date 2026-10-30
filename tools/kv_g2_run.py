@@ -7,7 +7,7 @@ engine start per segment.  Eight starts cost about two minutes of loading on top
 into one TSV and one `.seg.json` afterwards.
 
     python tools/kv_g2_run.py --config bench/configs/cwe4k-swift-iq3_xxs.json \\
-        --support C:\\...\\2026-10-28-g2\\support.json --kv int8 --topk 4096 --out C:\\...\\int8.tsv
+        --support C:\\...\\2026-10-28-g2\\support.json --kv int8 --out C:\\...\\int8.tsv
 
     python tools/kv_g2_run.py ... --ids-template '{seg}-full.txt' --allow-few-positions --out ...\\ref-exact.tsv
 
@@ -15,6 +15,10 @@ into one TSV and one `.seg.json` afterwards.
 (the segment's own top-4,096, the whole vocabulary at the exact rows), `{seg}-full.txt` is the reference side of the
 exact rows (those positions only, so the run scores a handful of rows per segment and `--allow-few-positions` is
 needed to let it pass the "fewer than half the positions" check).
+
+The fall-through top-k defaults to 0: with an id file the top-k only fills the positions the file does not name,
+and at 4,096 that is 4,096 pairs on each of the other ~3,000 rows per segment - measured 2.3 GB per arm instead of
+0.77 GB, for pairs nothing reads.
 
 The merged `.seg.json` keeps the parts' own args, so a run can be reproduced segment by segment.
 """
@@ -48,7 +52,10 @@ def main() -> int:
     ap.add_argument("--ids", default=str(HERE.parent / "data" / "quant_quality" / "cwe-4k" / "set.ids.json"))
     ap.add_argument("--support", required=True, help="support.json written by kv_g2_support.py")
     ap.add_argument("--kv", default="fp16")
-    ap.add_argument("--topk", type=int, default=4096)
+    ap.add_argument("--topk", type=int, default=0,
+                    help="the fall-through top-k for positions the id file does not name; 0 by default, because "
+                         "the id file is the support and a top-k there would only add 4,096 pairs to every other "
+                         "position (measured: 2.3 GB per arm instead of 0.77 GB)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--ids-template", default="{seg}.txt")
     ap.add_argument("--segments", help="comma-separated subset (default: every segment in --ids)")
