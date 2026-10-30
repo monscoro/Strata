@@ -94,7 +94,8 @@ def mean(xs: list) -> float:
 
 
 def paired(a: dict, b: dict, key: str) -> dict | None:
-    segs = [s for s in a if s in b and a[s].get(key) is not None and b[s].get(key) is not None]
+    segs = [s for s in a if s != "__all__" and s in b and a[s].get(key) is not None
+            and b[s].get(key) is not None]
     if len(segs) < 2:
         return None
     d = [a[s][key] - b[s][key] for s in segs]
