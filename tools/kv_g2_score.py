@@ -185,6 +185,25 @@ def score_exact(ref: pathlib.Path, arm: pathlib.Path, exact: dict) -> dict:
     return out
 
 
+def paired_shift(a: dict, b: dict, k1: str, k2: str) -> dict | None:
+    """Per segment, the change in the gap between two arms when the support grows: (k1_a - k1_b) - (k2_a - k2_b).
+
+    Descriptive, and the number that decides whether a ranking can move: the gap between the two arms on the
+    truncated metric differs from the gap on the full support by this, so a bound below the gap means the order
+    stands however the support is chosen.
+    """
+    segs = [s for s in a if s != "__all__" and s in b and a[s].get(k1) is not None and b[s].get(k1) is not None
+            and a[s].get(k2) is not None and b[s].get(k2) is not None]
+    if len(segs) < 2:
+        return None
+    d = [(a[s][k1] - b[s][k1]) - (a[s][k2] - b[s][k2]) for s in segs]
+    n = len(d)
+    m = mean(d)
+    sd = math.sqrt(math.fsum((x - m) ** 2 for x in d) / (n - 1))
+    sem = sd / math.sqrt(n)
+    return {"n": n, "mean": m, "bound": T7_95 * sem, "sd": sd}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ref", required=True, help="ref-top4096.tsv on the 1,024 sample positions")
@@ -269,9 +288,12 @@ def main() -> int:
             continue
         same_sign = (p256["mean"] > 0) == (p4096["mean"] > 0)
         same_decision = decide(p256) == decide(p4096)
+        sh = paired_shift(ax, ay, "kl256", "kl4096")
         rule.append({"a": x, "b": y, "kl256": p256["mean"], "kl4096": p4096["mean"],
                      "kl256_decision": decide(p256), "kl4096_decision": decide(p4096),
                      "same_sign": same_sign, "same_decision": same_decision,
+                     "gap_shift": sh["mean"] if sh else None,
+                     "gap_shift_bound": sh["bound"] if sh else None,
                      "pass": same_sign and same_decision})
         ok = ok and same_sign and same_decision
     res["rule"] = {"steps": rule, "passes": ok}
@@ -305,9 +327,11 @@ def main() -> int:
     print("\nladder (kl256 -> kl4096):")
     for s in res["rule"]["steps"]:
         if "kl256" in s:
+            shift = (f"   gap shifts {s['gap_shift']:+.5f} (bound {s['gap_shift_bound']:.5f})"
+                     if s.get("gap_shift") is not None else "")
             print(f"  {s['a']:8s} {s['b']:8s}  kl256 {s['kl256']:+.5f} {s['kl256_decision']}   "
                   f"kl4096 {s['kl4096']:+.5f} {s['kl4096_decision']}   "
-                  f"{'pass' if s['pass'] else 'FAIL'}")
+                  f"{'pass' if s['pass'] else 'FAIL'}{shift}")
         else:
             print(f"  {s['a']:8s} {s['b']:8s}  {s['why']}")
     print(f"\nrule: {'PASSES' if res['rule']['passes'] else 'FAILS'}")
