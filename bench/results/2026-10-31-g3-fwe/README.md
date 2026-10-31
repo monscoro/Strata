@@ -40,16 +40,17 @@ Token, ein seltenes Detail.
 
 | Punkt | Festlegung |
 |---|---|
-| Prompt | `ids[:answer_at]` aus `data/quant_quality/cwe-4k/set.ids.json` — 4.054–4.064 Token |
+| Prompt | `ids[:answer_at]` aus `data/quant_quality/cwe-4k/set.ids.json` (4.054–4.064 Token) plus der Assistenten-Turn mit geschlossenem Denkblock, `<|im_start|>assistant\n thinking\n\n</think>\n\n` (7 Token) — der Pfad, den die App im Nicht-Denken-Modus bedient |
 | Dekodierung | **greedy** (`GEN` ohne Sampling-Schlüssel; der Engine-Default ist argmax, keine Strafterme), `ckpt=0` je Segment |
 | Budget | **64 neue Token** oder das Ende-Token des Modells, was zuerst kommt |
 | Engine | `bench/configs/cwe4k-swift-iq3_xxs.json`, ein Engine-Start je Lauf, alle acht Segmente darin |
 | Prompt-Pfad | `--short-read 64` (Engine- und App-Default), `--prefill 512` (Chunk des gepinnten Configs) |
 | Build | `build-hip-port\strata.exe`, HIP, ROCm 7.1, gfx1200 — derselbe Build wie G2 |
 
-**Warum 64 Token:** die Gold-Antwort ist 32–36 Token lang, 64 ist die Antwort plus Luft. Ein falsches
-Wort trifft ein Gold-Wort mit 10/2.000 Wahrscheinlichkeit (2.000 gezogene Wörter, 10 davon Gold), also
-erwartet 0,15 Fehltreffer je Segment über die rund 30 Token Luft — dieselbe Größenordnung für jeden Arm.
+**Warum 64 Token:** mit geschlossenem Denkblock antwortet das Modell direkt; die gemessene Antwort ist 42–46
+Token lang (Pilot, siehe Nachtrag 2). 64 ist die Antwort plus Luft. Ein falsches Wort trifft ein Gold-Wort mit
+10/2.000 Wahrscheinlichkeit (2.000 gezogene Wörter, 10 davon Gold), also erwartet 0,15 Fehltreffer je Segment
+über die rund 20 Token Luft — dieselbe Größenordnung für jeden Arm.
 
 **Die Arme** (dieselben sieben wie G2, plus der Anker):
 
@@ -105,20 +106,23 @@ Die zweite Prüfung ist keine Formsache: spekulative Dekodierung ist nur dann ve
 Verifikation das greedy-Ergebnis exakt reproduziert. Weicht sie ab, ist das eine Eigenschaft des
 Produkts, die in den Bericht gehört.
 
-## Sättigungs- und Bodenregel (vorab)
+## Sättigungs- und Bodenregel (geändert in Nachtrag 2)
 
-Der Anker entscheidet, ob das Instrument überhaupt etwas sieht. Beides wird **einmal** verschärft:
+Der Anker entscheidet, ob das Instrument überhaupt etwas sieht.
 
-| Befund am Anker `fp16` | Lesart | eine Verschärfung |
+| Befund am Anker `fp16` | Lesart | Folge |
 |---|---|---|
-| Mittel `recall` ≥ 9,5/10 | Decke: die Aufgabe ist zu leicht | neu bauen mit `--seq-tokens 8192` (gleicher Seed, gleiche Alpha), dann nur `fp16` + `int8` |
-| Mittel `recall` ≤ 2,5/10 | Boden: die Aufgabe ist zu schwer | neu bauen mit `--seq-tokens 2048`, dann nur `fp16` + `int8` |
+| Mittel `recall` ≤ 2,5/10 | Boden: der Anker kann die Aufgabe nicht | einmal neu bauen mit `--seq-tokens 2048` (gleicher Seed, gleiche Alpha), dann nur `fp16` + `int8`; bleibt es beim Boden, hat G3 keinen Gegenstand und G4 wird verschoben |
+| Mittel `recall` ≥ 9,5/10 | Decke | **kein Abbruch**: eine Decke ist der Ausgangspunkt, den man zum Messen von Verlusten will; die sieben Arme laufen trotzdem |
 | dazwischen | das Instrument hat Auflösung | alle sieben Arme werden berichtet |
 
-Bleibt es nach der Verschärfung bei Decke oder Boden, hat G3 **keinen Gegenstand**; dann wird G4
-verschoben und nicht ergebnislos gestartet — so steht es im Kill der Stufe. Die Verschärfung läuft nur
-mit `fp16` und `int8`, weil sie nur die Frage „sieht das Instrument etwas?" beantwortet; die sieben
-Arme laufen dort, wo die Antwort ja ist.
+Verliert bei einer Decke **kein** Arm ein Wort, ist die 8K-Fassung (`--seq-tokens 8192`, gleicher Seed, gleiche
+Alpha) die vorregistrierte Fortsetzung, nicht der erste Schritt.
+
+Warum die Decke nicht mehr blockiert (Nachtrag 2): G3 fragt nach **Verlusten**. Ein Anker bei 10/10 ist dafür
+der beste Ausgangspunkt — jedes verlorene Wort ist sichtbar. Die ursprüngliche Fassung hätte bei einer Decke
+zuerst 8K gebaut, ohne dass ein Arm gemessen wäre; das wäre GPU-Zeit für eine Frage, die die Armläufe selbst
+beantworten.
 
 ## Was „unterscheiden" heißt
 
@@ -142,12 +146,14 @@ Gegenprobe: ein Merkmal, das dort einen Verlust meldet, ist ein Fehlalarm.
   funktionaler Verlust und wird nicht durch eine Umschreibung des Budgets repariert.
 - **Nur HIP gebaut.** CUDA, SYCL und Metal sind hier nicht gemessen.
 - **Der Fenster-Arm ist nicht der S3-Arm**, siehe oben: `S + R + 512` statt `S + R + 1`.
+- **Gemessen wird der Nicht-Denken-Pfad.** Mit offenem Denkblock zählt das Modell den Text auf und antwortet
+  nicht (Nachtrag 2); ein Denk-Modus ist mit diesem Instrument nicht gemessen.
 
 ## Kosten
 
-Gemessen an einem 4.060-Token-Prompt mit 64 neuen Token auf `fp16`, HIP, gfx1200: **32,3 s** je
-Segment. Acht Segmente und ein Engine-Start (rund 14 s) sind also **rund 4,5 min je Lauf**; acht Läufe
-plus die beiden Gate-Läufe rund **45 min GPU**. Die Auswertung ist offline.
+Gemessen an einem 4.067-Token-Prompt mit geschlossenem Denkblock auf `fp16`, HIP, gfx1200: **25 s** je
+Segment (Pilot 3). Acht Segmente und ein Engine-Start (rund 14 s) sind also **rund 3,5 min je Lauf**; acht
+Läufe rund **30 min GPU**. Die Auswertung ist offline.
 
 ## Dateien
 
@@ -172,3 +178,36 @@ dass die Verifikation das greedy-Ergebnis eines ungedrafteten Laufs reproduziert
 
 **Gate 1 besteht:** `int8` zweimal in zwei getrennten Engine-Starts, 8 von 8 Segmenten mit denselben
 Token-Ids und demselben Text.
+
+**Das Ersatz-Gate fällt auf Token-Ebene und besteht auf der Metrik.** `int8` mit `--spec 2` gegen `--spec 4`:
+2 von 8 Segmenten haben andere Token (s04: zwei Gold-Wörter vertauscht; s05: eine Abweichung im Denkblock),
+aber **denselben `recall`** in allen acht Segmenten. Das ist eine Grenze, kein Fehler: greedy ist für eine
+feste Konfiguration deterministisch, aber nicht invariant gegen die Fenstergröße der Verifikation. Für die
+Armvergleiche ist das unschädlich, weil alle Arme dieselbe Konfiguration benutzen; es heißt aber, dass ein
+Unterschied von einem Wort zwischen zwei Armen auch ein Gleichstand-Flip sein kann.
+
+## Nachtrag 2 (2026-10-31, vor dem ersten Arm-Lauf): der Prompt und das Budget
+
+Drei Pilotläufe am Anker `fp16`, alle **vor** dem ersten Arm:
+
+| Pilot | Prompt | Budget | Ergebnis |
+|---|---|---|---|
+| 1 | roh, `ids[:answer_at]` | 64 | `recall` 0,325; 6 von 8 Segmenten öffnen ` thinking`, das Budget endet darin; 2 von 8 antworten direkt, 10/10 |
+| 2 | roh | 2.048 | 10/10 auf allen acht — **aber die Zahl ist falsch**: auf 6 von 8 Segmenten zählt das Modell den Text Wort für Wort auf („83. gywwje - 1", 381 Wörter, 2.048 Token) und antwortet nie; die Gold-Wörter stehen in der Aufzählung, nicht als Antwort. Nur s06/s07 antworten (47 Token, 10/10) |
+| 3 | roh + Assistenten-Turn mit geschlossenem Denkblock | 128 | s00 46 Token, **9/10** (sagt `lywgne` statt `atiyuw`); s02 42 Token, **10/10**. Die Chat-Umhüllung (`<|im_start|>user … <|im_end|>`) ist schlechter: auf s00 erklärt das Modell die Methode, statt zu antworten |
+
+Daraus drei Änderungen, alle vor dem ersten Arm festgelegt:
+
+1. **Der Prompt bekommt den Assistenten-Turn mit geschlossenem Denkblock**
+   (`<|im_start|>assistant\n thinking\n\n</think>\n\n`, 7 Token). Das ist der Pfad, den die App im
+   Nicht-Denken-Modus bedient. Ohne ihn ist die Aufgabe für dieses Modell nicht messbar: es zählt lieber
+   den ganzen Text auf, und keine Budgetgröße macht daraus eine Antwort.
+2. **Budget 64** statt 2.048: mit geschlossenem Denkblock ist die Antwort 42–46 Token lang.
+3. **Die Decke blockiert die Arme nicht mehr** (siehe oben): sie ist der Ausgangspunkt zum Messen von
+   Verlusten.
+
+Was der Pilot **nicht** zeigt: er lief nur auf `fp16` und nur auf zwei bzw. acht Segmenten; er begründet
+Prompt-Form und Budget, nicht das Ergebnis. Die `recall`-Zahl über die ganze Ausgabe bleibt anfällig für
+eine Aufzählung — deshalb steht in jeder Tabelle die Spalte `distinct6`; ein Lauf, der den Text aufzählt,
+zeigt dort mehr als 20 verschiedene sechsbuchstabige Wörter statt der 10 einer Antwort.
+

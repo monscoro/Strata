@@ -32,6 +32,10 @@ sys.path.insert(0, str(HERE))
 import quant_quality as QQ  # noqa: E402
 
 DROP_SPEC_VALUE = {"--spec", "--spec-min-p"}
+# The assistant turn with the thinking block already closed: the product's non-thinking path. Without it the model
+# opens a ` thinking` block, and on this task it then enumerates the whole coded text word by word instead of answering
+# (measured on the anchor: 6 of 8 segments at 2,048 tokens).
+CLOSE_THINKING = "<|im_start|>assistant\n thinking\n\n</think>\n\n"
 
 
 def drop_spec(args: list[str]) -> list[str]:
@@ -70,6 +74,8 @@ def main() -> int:
     ap.add_argument("--segments", help="comma list of segment names (default: all)")
     ap.add_argument("--drop-spec", action="store_true", help="drop --spec/--spec-min-p (the greedy cross-check)")
     ap.add_argument("--spec", type=int, help="replace the config's --spec window (a native IQ pack needs >= 2)")
+    ap.add_argument("--close-thinking", action="store_true",
+                    help="append the assistant turn with the thinking block closed (the product's non-thinking path)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -83,7 +89,9 @@ def main() -> int:
     base = drop_spec(list(cfg["args"])) if a.drop_spec else list(cfg["args"])
     if a.spec is not None:
         base = set_spec(base, a.spec)
-    args = QQ.engine_args({**cfg, "args": base}, None, st["seg_tokens"], a.kv, a.short_read)
+    # The context must hold the prompt *and* the generated tokens: engine_args sizes it from the segment length
+    # alone, which was enough for scoring (one token per row) but not for a 1,024-token generation.
+    args = QQ.engine_args({**cfg, "args": base}, None, st["seg_tokens"] + a.new, a.kv, a.short_read)
     env = dict(os.environ)
     env.update(cfg.get("env", {}))
     if cfg.get("lib_dirs"):
@@ -107,8 +115,9 @@ def main() -> int:
         raise SystemExit(f"the engine ended before READY (exit {p.wait()}); see {out}.stderr.txt")
 
     rows = []
+    suffix = tok.encode(CLOSE_THINKING, parse_special=True) if a.close_thinking else []
     for s in segs:
-        prompt = s["ids"][:s.get("answer_at", len(s["ids"]))]
+        prompt = s["ids"][:s.get("answer_at", len(s["ids"]))] + suffix
         t0 = time.time()
         p.stdin.write(f"GEN {a.new} ckpt=0 " + ",".join(map(str, prompt)) + "\n")
         p.stdin.flush()
@@ -137,7 +146,8 @@ def main() -> int:
         p.kill()
     errf.close()
     out.write_text(json.dumps({"kv": a.kv, "env": a.env or [], "new": a.new, "short_read": a.short_read,
-                               "drop_spec": a.drop_spec, "spec": a.spec, "ids": str(ids_path), "config": a.config,
+                               "drop_spec": a.drop_spec, "spec": a.spec,
+                               "close_thinking": a.close_thinking, "ids": str(ids_path), "config": a.config,
                                "args": args, "segments": rows}, indent=1))
     print(f"wrote {out}")
     return 0
