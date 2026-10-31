@@ -1,12 +1,106 @@
 # G3: unterscheiden sich die Arme funktional?
 
-**Status: vorregistriert (2026-10-31), Läufe stehen aus.** Katalogzeile:
+**Status: fertig (2026-10-31).** Neun Läufe bei Budget 256. Gate 1 besteht, das Ersatz-Gate fällt und
+liefert damit die Rauschgrenze von einem Wort. **Kein Arm liegt jenseits der Grenze.** Der Befund: die
+Unterschiede zwischen den Armen sitzen im zehnten Platz, nicht in der Antwort — das Modell selbst irrt
+sich auf vier Segmenten, für alle Arme mit demselben Wort. Katalogzeile:
 `docs/paper/Ansatz_Improvements.md`, Arbeitsplan G3 (`docs/research/BEYOND_KL_QUANT_FIDELITY.md` §4).
 Vorläufer: G1 (`bench/results/2026-10-28-g1-features/README.md`), G2
 (`bench/results/2026-10-28-g2-full-vocab/README.md`).
 
 Dieses Dokument legt **vor** dem ersten Lauf fest, was gemessen wird, wie gezählt wird und wann das
-Ergebnis „der Maßstab hat keine Auflösung" heißt.
+Ergebnis „der Maßstab hat keine Auflösung" heißt. Drei Nachträge (unten) halten fest, was die Pilotläufe
+am Anker davor geändert haben.
+
+## Ergebnis
+
+### Die Zahlen
+
+Neun Läufe, je ein Engine-Start, je acht Segmente, Budget 256, Denkblock geschlossen
+(`bench/configs/cwe4k-swift-iq3_xxs.json`, HIP, gfx1200, 4,0–4,8 min je Lauf):
+
+| Lauf | `recall` | je Segment (Treffer von 10) |
+|---|---|---|
+| `fp16` (Anker) | 0,950 | 9 9 10 10 9 9 10 10 |
+| `int8` | 0,938 | 9 9 10 10 9 9 10 9 |
+| `q4lm32w` | 0,963 | 10 9 10 10 9 9 10 10 |
+| `s320r0` | 0,950 | 9 9 10 10 9 9 10 10 |
+| `q4lm32` | 0,938 | 9 9 10 9 9 9 10 10 |
+| `q4lm8v` | 0,875 | 9 9 10 9 9 9 **6** 9 |
+| `q4lm8k` | 0,950 | 9 10 10 9 9 9 10 10 |
+| `q4lm8` | 0,950 | 9 9 10 10 9 9 10 10 |
+
+Gepaart gegen `int8` (Grenze 1,895·sd/√8) liegt **kein** Arm jenseits der Grenze. Der größte Abstand ist
+`q4lm8v` mit −0,062 (Grenze 0,094, in 2 von 8 Segmenten schlechter, in keinem besser); die anderen liegen
+zwischen 0,000 und +0,025 mit Grenzen von 0,024 bis 0,043. `q4lm8v` gegen `fp16` ist −0,075 (Grenze 0,093).
+Die zweite Fassung (`recall_first10`, die ersten zehn genannten Wörter) ändert keine Zahl außer bei
+`q4lm8k` (0,925 statt 0,950) — die Gold-Wörter stehen in beiden Antwortformen vorn.
+
+Über alle 8 × 8 = 64 Arm-Segment-Zellen: **28 nennen alle zehn Gold-Wörter, 35 nennen neun, eine nennt
+sechs.** Kein Segment hat in allen acht Armen dieselben zehn Wörter — die Unterschiede sitzen im zehnten
+Platz.
+
+### Was die Verluste sind
+
+Der größte Teil der fehlenden Wörter ist **das Modell, nicht das KV**, und zwar für alle Arme gleich:
+
+| Segment | alle Arme nennen | Gold wäre | Ausnahme |
+|---|---|---|---|
+| s00 | `lywgne` | `atiyuw` | nur `q4lm32w` nennt `atiyuw` |
+| s01 | `bmvgdb` | `clldqg` | nur `q4lm8k` nennt `clldqg` |
+| s03 | `vmnarn` | `vszdcd` | nur `q4lm32`, `q4lm8v`, `q4lm8k`; die anderen nennen `vszdcd` |
+| s04 | `iwwqby` | `hlczmi` | — |
+| s05 | `benmuv` | `bkacgz` | — |
+
+Diese fünf Wörter sind Häufigkeitsfehler des Modells auf dieser Aufgabe — `fp16` macht sie genauso. Sie
+sind der Grund, warum der Anker bei 9,50/10 steht und nicht bei 10/10.
+
+Der Arm mit dem größten Abstand, `q4lm8v`, verliert fünf Wörter auf zwei Segmenten:
+
+- **s03, ein Wort:** `vmnarn` statt `vszdcd` — derselbe Fehler wie `q4lm32` und `q4lm8k`.
+- **s06, vier Wörter:** `q4lm8v` antwortet dort nicht als Liste, sondern schreibt die Häufigkeiten aus
+  („**bzqjcf**: This word appears moderately. A manual count reveals it appears **21** times"), und in
+  256 Token stehen dann nur sechs der zehn Wörter. Es kennt die anderen; das Budget schneidet sie ab.
+  Die nachträgliche Form-Analyse (`tools/kv_g3_forms.py`) zeigt es: im ganzen Text nennt `q4lm8v` auf s06
+  sechs verschiedene Kunstwörter, die anderen Arme zehn.
+
+Die Antwortform ist überhaupt nicht stabil: `fp16` und `int8` antworten auf 6 von 8 Segmenten als
+Kommaliste (41–46 Token, endet mit dem Ende-Token) und auf 2 als Fließtext mit Nummerierung (256 Token,
+ins Budget geschnitten); `q4lm8k` wechselt auf 4 Segmenten in den Fließtext, `q4lm8` auf 3, die übrigen
+auf 1–2. Das ist eine Eigenschaft des Modells und für alle Arme dieselbe Größenordnung — aber es heißt,
+dass jede Metrik über ein festes Token-Budget die Verbosität mitmisst. Deshalb steht die Form in der
+Tabelle der Form-Analyse und nicht im Urteil.
+
+### Das Urteil
+
+Die vorregistrierte Bedingung —
+
+> mindestens ein Arm liegt in `recall` gepaart über die acht Segmente jenseits der Grenze von `int8`
+
+— ist **nicht erfüllt**. Auf dieser Aufgabe und dieser Länge (4.096 Token, acht Segmente) unterscheiden
+sich die Arme funktional nicht messbar; was sich unterscheidet, sind einzelne Wörter im zehnten Platz
+und die Antwortform.
+
+Die Decke blockiert nicht (Nachtrag 2), und die 8K-Fassung greift, wenn **kein** Arm ein Wort verliert:
+`q4lm8v` verliert fünf und `q4lm32` eins, also greift sie nicht. Dass diese Verluste unter der Grenze
+liegen, ist eine Aussage über n = 8 und 10 Wörter je Segment, nicht über die Arme.
+
+### Was daraus für G4 folgt
+
+G4 sollte Merkmale aus G1 mit den Ereignisraten aus G3 korrelieren. Die Ereignisraten sind hier 0 bis 5
+Wörter je 80, davon die meisten das Modell selbst, und kein Arm ist entscheidbar. Eine Korrelation
+zwischen einem Merkmal und einer Rate, die sich nicht von null unterscheidet, ist keine Messung. G4 hat
+auf diesem Instrument **keinen Gegenstand**; das ist das Kill-Kriterium der Stufe, und es wird nicht
+weggerechnet.
+
+Drei Wege, alle außerhalb dieser Vorregistrierung und deshalb eine Entscheidung, keine Fortsetzung:
+
+1. **Härter messen, gleiche Aufgabe:** 8K-Fassung (`--seq-tokens 8192`). Mehr Wörter zu zählen heißt
+   mehr Gelegenheit zu verlieren — aber auch ein schwererer Anker.
+2. **Andere Aufgabe:** die Dreiwort-Fassung (`data/quant_quality/fwe-2k`) ist leichter, nicht schwerer;
+   sie wäre die Gegenprobe „verliert ein Arm überhaupt je ein Wort", nicht die härtere Fassung.
+3. **Annehmen, was gemessen ist:** bei 4K sind die 4-Bit-Arme von `int8` funktional nicht zu trennen. Das
+   ist ein Ergebnis und passt zu G2 (die KL-Rangfolge ist auf dieser Stichprobe nicht entscheidbar).
 
 ## Frage
 
@@ -101,8 +195,11 @@ Zwei Prüfungen **vor** jeder Armaussage:
 
 | Prüfung | Erwartung | Wenn sie fällt |
 |---|---|---|
-| `int8` zweimal, zwei getrennte Engine-Starts | dieselben 8 × 64 Token-Ids | die Armvergleiche warten, bis die Ursache benannt ist; die Nichtdeterminismus-Breite wird berichtet |
-| `int8` ohne `--spec`/`--spec-min-p` | dieselben Ids wie mit (der gepinnte Config dekodiert spekulativ) | siehe Nachtrag: für dieses Modell nicht durchführbar, ersetzt durch `--spec 2` gegen `--spec 4` |
+| `int8` zweimal, zwei getrennte Engine-Starts | dieselben 8 × 256 Token-Ids | die Armvergleiche warten, bis die Ursache benannt ist; die Nichtdeterminismus-Breite wird berichtet |
+| `int8` ohne `--spec`/`--spec-min-p` | dieselben Ids wie mit (der gepinnte Config dekodiert spekulativ) | siehe Nachtrag 1: für dieses Modell nicht durchführbar, ersetzt durch `--spec 2` gegen `--spec 4` |
+
+**Beide Prüfungen sind gelaufen.** Die erste besteht bei 256 Token: zwei Engine-Starts, 8 von 8 Segmenten
+mit denselben Ids und demselben Text. Die zweite fällt — siehe Nachtrag 1 und die Grenze unten.
 
 Die zweite Prüfung ist keine Formsache: spekulative Dekodierung ist nur dann verlustfrei, wenn die
 Verifikation das greedy-Ergebnis exakt reproduziert. Weicht sie ab, ist das eine Eigenschaft des
@@ -141,7 +238,14 @@ Gegenprobe: ein Merkmal, das dort einen Verlust meldet, ist ein Fehlalarm.
 
 - **Acht Segmente, ein Korpus, eine Aufgabe.** Die Auflösung ist rund 0,1 im Mittel; ein Unterschied von
   einem Wort je Segment ist nicht messbar.
+- **Die Rauschgrenze ist ein Wort.** Zwei Konfigurationen derselben KV-Form (`--spec 2` gegen `--spec 4`)
+  unterscheiden sich um ein Wort auf einem Segment (Nachtrag 1). Ein Unterschied von einem Wort zwischen
+  zwei Armen ist deshalb keine Aussage.
 - **`recall` ist grob.** Es zählt Wörter, nicht Reihenfolge, nicht Sicherheit, nicht Begründung.
+- **Die Antwortform mischt mit.** Eine feste Token-Zahl misst auch, wie viel das Modell schreibt; auf s06
+  kostet das `q4lm8v` vier Wörter, die es kennt (Ergebnis-Abschnitt). Die wörterbuchbeschränkte
+  Nachauswertung (`tools/kv_g3_forms.py`) ändert an keiner Armzahl etwas, aber sie ist **nach** den Läufen
+  entstanden und nicht vorregistriert.
 - **Greedy ist eine Stichprobe der Größe eins** aus der Antwortverteilung des Modells. Deterministisch
   heißt nicht repräsentativ.
 - **Ein entarteter Lauf zählt wie er ist.** Wiederholt sich ein Arm in eine Schleife, ist das ein
@@ -153,10 +257,9 @@ Gegenprobe: ein Merkmal, das dort einen Verlust meldet, ist ein Fehlalarm.
 
 ## Kosten
 
-Gemessen an einem 4.067-Token-Prompt mit geschlossenem Denkblock auf `fp16`, HIP, gfx1200: **25 s** je
-Segment bei 46 erzeugten Token (Pilot 3); mit dem Budget von 256 Token sind es rund **33 s**. Acht
-Segmente und ein Engine-Start (rund 14 s) sind also **rund 4,5 min je Lauf**; neun Läufe (Anker, `int8`
-zweimal, sechs Arme) rund **45 min GPU**. Die Auswertung ist offline.
+Gemessen bei den neun Läufen (4.067-Token-Prompt, geschlossener Denkblock, Budget 256, HIP, gfx1200):
+**4,0 bis 4,8 min je Lauf** (schnellster `q4lm8` 4:03, langsamster `q4lm32w` 4:47), zusammen **41 min
+GPU** für neun Läufe; der `--spec 2`-Lauf kam mit 4:02 dazu. Die Auswertung ist offline.
 
 ## Dateien
 
@@ -164,8 +267,15 @@ zweimal, sechs Arme) rund **45 min GPU**. Die Auswertung ist offline.
 |---|---|
 | `tools/kv_g3_run.py` | ein Engine je Lauf, `GEN` je Segment, schreibt Ids und Text |
 | `tools/kv_g3_score.py` | `recall`, `recall_first10`, gepaarte Differenzen, Sättigungs-/Bodenurteil |
+| `tools/kv_g3_forms.py` | nachträglich: Antwortform, wörterbuchbeschränkte Zählung, gepaart |
+| `score.json` | die vorregistrierte Auswertung der acht Läufe |
+| `forms.json` | die nachträgliche Form-Analyse |
 | `data/quant_quality/cwe-4k/gold.json` | die zehn Gold-Wörter je Segment |
 | `data/quant_quality/cwe-4k/set.ids.json` | Prompt-Ids und `answer_at` |
+
+Die Rohläufe (Ids und Text je Segment, je Lauf eine JSON) liegen in
+`C:\Users\krone\git\Strata-data\bench\2026-10-31-g3\`; die 64-Token- und Pilotläufe in dessen
+Unterordner `pilot\`.
 
 ## Nachtrag (2026-10-31, vor dem Anker-Lauf)
 
@@ -179,15 +289,28 @@ Ersetzt wird sie durch **`int8` mit `--spec 2` gegen den gepinnten `--spec 4`**,
 ist schwächer als geplant: es zeigt, dass die Fenstergröße der Verifikation die Token nicht ändert, nicht,
 dass die Verifikation das greedy-Ergebnis eines ungedrafteten Laufs reproduziert. Der Bericht nennt es so.
 
-**Gate 1 besteht:** `int8` zweimal in zwei getrennten Engine-Starts, 8 von 8 Segmenten mit denselben
-Token-Ids und demselben Text.
+**Das Ersatz-Gate fällt, auch auf der Metrik.** Mit dem endgültigen Prompt und Budget 256 (`--spec 2`
+gegen `--spec 4`, je ein Engine-Start, acht Segmente):
 
-**Das Ersatz-Gate fällt auf Token-Ebene und besteht auf der Metrik.** `int8` mit `--spec 2` gegen `--spec 4`:
-2 von 8 Segmenten haben andere Token (s04: zwei Gold-Wörter vertauscht; s05: eine Abweichung im Denkblock),
-aber **denselben `recall`** in allen acht Segmenten. Das ist eine Grenze, kein Fehler: greedy ist für eine
-feste Konfiguration deterministisch, aber nicht invariant gegen die Fenstergröße der Verifikation. Für die
-Armvergleiche ist das unschädlich, weil alle Arme dieselbe Konfiguration benutzen; es heißt aber, dass ein
-Unterschied von einem Wort zwischen zwei Armen auch ein Gleichstand-Flip sein kann.
+| Segment | `--spec 4` (der Default) | `--spec 2` |
+|---|---|---|
+| s03 | Fließtext, 256 Token | Fließtext, 256 Token, anderer Wortlaut |
+| s05 | `… xppqmo, njyajr, awnpwh …` | `… njyajr, xppqmo, awnpwh …` (vertauscht) |
+| s07 | `… ydfaud, bilnka` | `… ydfaud, lnnjgo` |
+
+3 von 8 Segmenten haben andere Token, und auf s07 ändert sich die Metrik: `--spec 2` nennt `lnnjgo`
+(das Gold-Wort) statt `bilnka`, also 10/10 statt 9/10. Mittel: `--spec 2` 0,950, `--spec 4` 0,938,
+Differenz +0,012 (Grenze 0,024) — **nicht jenseits der Grenze, aber in derselben Größenordnung wie die
+Armunterschiede.**
+
+Das ist die gemessene **Rauschgrenze des Instruments**: zwei Konfigurationen derselben KV-Form
+unterscheiden sich um ein Wort auf einem Segment. Ein Unterschied von einem Wort zwischen zwei Armen ist
+damit nicht von einem Konfigurationseffekt zu trennen; erst mehrere Wörter über mehrere Segmente sind
+eine Aussage. Für die Armvergleiche ist es unschädlich, weil alle Arme dieselbe Konfiguration benutzen —
+es begrenzt aber die Auflösung, und der Bericht nennt es so.
+
+**Gate 1 besteht:** `int8` zweimal in zwei getrennten Engine-Starts, 8 von 8 Segmenten mit denselben
+Token-Ids und demselben Text — bei 64 und bei 256 Token.
 
 ## Nachtrag 2 (2026-10-31, vor dem ersten Arm-Lauf): der Prompt und das Budget
 
@@ -230,7 +353,11 @@ also ist der Fehler für den gepaarten Vergleich unschädlich — aber er kostet
 Auflösung.
 
 **Deshalb: Budget 256.** Das trägt die nummerierte Form (rund 170 Token) mit Luft und ändert an der
-Kommaliste nichts, weil sie mit dem Ende-Token endet. Der Anker bleibt damit bei `recall` 0,738 über die
-acht Segmente (9 9 10 1 9 9 2 10) — zwischen Boden und Decke, das Instrument hat Auflösung.
+Kommaliste nichts, weil sie mit dem Ende-Token endet.
+
+**Gemessen bei 256** (die Vorhersage an dieser Stelle war der 64-Token-Wert 0,738 und damit zu
+pessimistisch): der Anker steht bei **0,950** (9 9 10 10 9 9 10 10). Die nummerierte Form nennt die
+Gold-Wörter, wenn sie Platz hat — sie braucht ihn nur, um sie auszuschreiben. Damit ist der Anker an der
+Decke (9,50 von 10, Schwelle 9,5), nicht zwischen Boden und Decke.
 
 

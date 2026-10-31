@@ -96,6 +96,19 @@ trotzdem: `dnll` (ρ 0,642; beantwortet das Text-Token statt der Verteilung) und
 (ρ −0,707; sein Label trennt nicht, was es soll). Beides ist Ansatzpunkt für G4, nicht für die
 Baseline.
 
+**Stand (2026-10-31): G2 und G3 sind gelaufen.** G2
+(`bench/results/2026-10-28-g2-full-vocab/README.md`): beide Gate-Stufen bestehen, die vorregistrierte
+Regel besteht alle fünf Leiterstufen (keine Vorzeichenumkehr, Abstandsverschiebungen ≤ 0,0025 nats); auf
+der Stichprobe von 1.024 Positionen ist aber keine Stufe entscheidbar, es trägt nur die Vorzeichenprüfung.
+G3 (`bench/results/2026-10-31-g3-fwe/README.md`): neun Läufe auf der Zehn-Wort-Fassung bei 4.096 Token,
+Gate 1 besteht (zwei `int8`-Läufe token-identisch), das Ersatz-Gate `--spec 2` gegen `--spec 4` fällt —
+3 von 8 Segmenten andere Token, auf einem auch ein Wort der Antwort —, das ist die gemessene
+Rauschgrenze von einem Wort. **Kein Arm liegt jenseits der Grenze** (größter Abstand `q4lm8v` −0,062,
+Grenze 0,094); die fehlenden Wörter sind fast alle Fehler des Modells selbst, die `fp16` genauso macht.
+Damit hat **G4 auf diesem Instrument keinen Gegenstand** — die Ereignisraten sind 0 bis 5 Wörter je 80
+und nicht entscheidbar. Die 8K-Fassung greift nach der vorregistrierten Regel nicht, weil ein Arm Wörter
+verliert; sie bleibt der nächste Schritt, wenn G4 einen Gegenstand braucht.
+
 **Reihenfolge ist bindend:** G1 vor G2 vor G3 vor G4. G1 ist gratis und kann sofort laufen; G2 ist
 die Voraussetzung dafür, dass G1 nicht durch die Linse M1/CB5 gemessen wird; G3 entscheidet, ob G4
 überhaupt einen Gegenstand hat.

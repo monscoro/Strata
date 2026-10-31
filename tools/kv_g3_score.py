@@ -110,16 +110,19 @@ def main() -> int:
                       f"{p['a_worse']}/{p['a_better']}")
 
     if a.anchor in runs:
+        # `recall` is a fraction (0..1) and SATURATED/FLOOR are on the 0..10 scale: compare the hits, not the share.
+        # Before 2026-10-31 this compared 0.950 against 9.5 and called a ceiling a floor.
         m = res["runs"][a.anchor]["mean"]
-        if m >= SATURATED:
+        hits = 10.0 * m
+        if hits >= SATURATED:
             v = "saturated"
-        elif m <= FLOOR:
+        elif hits <= FLOOR:
             v = "floor"
         else:
             v = "resolution"
-        res["verdict"] = {"anchor": a.anchor, "anchor_mean": m, "verdict": v,
+        res["verdict"] = {"anchor": a.anchor, "anchor_mean": m, "anchor_hits_of_10": hits, "verdict": v,
                           "saturated_at": SATURATED, "floor_at": FLOOR}
-        print(f"\nanchor {a.anchor}: mean recall {m:.3f} of 10 -> {v} "
+        print(f"\nanchor {a.anchor}: mean recall {m:.3f} = {hits:.2f} of 10 -> {v} "
               f"(ceiling {SATURATED}, floor {FLOOR})")
 
     if a.out:
