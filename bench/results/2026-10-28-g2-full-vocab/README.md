@@ -1,8 +1,8 @@
 # G2: ist die trunkierte KL die KL?
 
-**Status: vorregistriert (2026-10-28), Referenzlauf gelaufen (2026-10-28), Arm-Läufe stehen aus.**
-Build (HIP) und der Referenzlauf mit `STRATA_LOGPOS_TOPK=4096` sind fertig; der Nachtrag am Ende dieses
-Dokuments (2026-10-30) korrigiert drei Punkte der Messung **vor** dem ersten Arm-Lauf. Katalogzeile:
+**Status: fertig (2026-10-31).** Acht Läufe, beide Gate-Stufen bestanden, die vorregistrierte Regel besteht
+alle fünf Stufen — mit einer Einschränkung, die im Ergebnis-Abschnitt steht: auf dieser Stichprobe ist keine
+Stufe entscheidbar, es trägt nur die Vorzeichenprüfung. Katalogzeile:
 `docs/paper/Ansatz_Improvements.md`, Arbeitsplan G2
 (`docs/research/BEYOND_KL_QUANT_FIDELITY.md` §4). Vorläufer: G1
 (`bench/results/2026-10-28-g1-features/README.md`).
@@ -254,4 +254,142 @@ Eine Falle, die der erste Arm-Lauf gezeigt hat (gemessen, abgebrochen und neu ge
 Durchfall-Top-k muss **0** sein. Mit `--topk 4096` schreibt jede Position, die die Ids-Datei nicht nennt,
 trotzdem ihre 4.096 Paare — 2,3 GB je Arm statt 0,77 GB, für Paare, die niemand liest. Die Ids-Datei
 ersetzt den Top-k an den genannten Positionen unabhängig davon; der Wert gilt nur für die anderen.
+
+## Ergebnis (2026-10-31)
+
+**Die vorregistrierte Regel besteht alle fünf Leiterstufen: das Vorzeichen kehrt auf der vollen Stütze
+nirgends um, und die Abstände zwischen zwei Armen ändern sich um höchstens 0,0025 nats.** Beide
+Gate-Stufen bestehen. Was das Urteil **nicht** sagt, steht in „Was das Urteil nicht sagt": auf dieser
+Stichprobe ist keine Stufe entscheidbar, der Entscheidungsteil der Regel ist dort leer.
+
+### Die acht Läufe
+
+| Lauf | KV | Umgebung | Dauer | Datei |
+|---|---|---|---|---|
+| `ref-exact` | `fp16` | Ids-Datei = ganzes Vokabular an 53 Zeilen | 22 min | 233 MB |
+| `int8` | `int8` | — | 25 min | 790 MB |
+| `q4lm32` | `q4lm32` | — | 25 min | 790 MB |
+| `q4lm32w` | `q4lm32` | `STRATA_KV_WINDOW=1 S=256 R=64` | 32 min | 790 MB |
+| `q4lm8v` | `q4lm8v` | — | 29 min | 790 MB |
+| `q4lm8k` | `q4lm8k` | — | 27 min | 790 MB |
+| `q4lm8` | `q4lm8` | — | 25 min | 790 MB |
+| `s320r0` | `q4lm32` | `STRATA_KV_WINDOW=1 S=320 R=0` | 3 Segmente nach der Pause | 790 MB |
+
+Je Lauf acht Engine-Starts (einer je Segment), 30 s Pause dazwischen. Zusammen 6,6 GB auf der Platte
+(7 × 790 MB, reduzierte Referenz 561 MB, Ids-Dateien 277 MB, `ref-exact` 233 MB), rund 3,5 h GPU. Der
+Rohlauf der Referenz mit top-4096 über alle Positionen (2,2 GB) liegt noch da; die reduzierte Fassung
+enthält alles, was die Auswertung braucht, er ist also löschbar.
+
+Gerechnet mit `tools/kv_g2_support.py` (Stützen und Ids-Dateien), `tools/kv_g2_run.py` (ein Segment je
+Engine-Start, Zusammenführen) und `tools/kv_g2_score.py` (Streaming-Auswertung, Gate im Bericht). Die
+vollständigen Zahlen je Segment stehen in `score.json` in diesem Verzeichnis.
+
+### Beide Gate-Stufen bestehen
+
+| Prüfung | Ergebnis |
+|---|---|
+| acht feste Spalten, alle 32.746 Zeilen, je Arm gegen die S3-TSV des **gleichen** Arms | 0 Abweichungen in 7 von 7 Armen |
+| `int8` ohne `STRATA_LOGPOS_IDS`, `--topk 256`, ganze Datei gegen die S3-`int8`-TSV | **byte-identisch**, SHA-256 `4FB65E55…A863BD9`, 137.633.397 B |
+
+Die zweite Stufe ist die eigentliche Identitätsprüfung des Builds: der neue Text ändert die Rechnung
+nicht, solange die beiden Variablen nicht gesetzt sind.
+
+**Das Gate hat einen echten Fehler gefunden.** Der erste `q4lm32w`-Lauf übergab `--kv q4lm32w`; das ist
+zwar ein gültiger Formatname der Engine, aber nicht der Arm aus S3 — der ist `q4lm32` **plus**
+`STRATA_KV_WINDOW=1 S=256 R=64`. Ergebnis: 31.658 von 32.746 Zeilen wichen ab, 1.088 stimmten zufällig.
+Ohne das Gate wäre ein falsch konfigurierter Arm als Messung durchgegangen.
+
+### Die Zahlen je Arm
+
+Mittel über die 1.024 Positionen, gepaart über die acht Segmente. `kl256` ist der veröffentlichte
+Yardstick (S3-Läufe, dieselben Positionen, Floor-Substitution), `kl256sup` dieselben 256 Token mit dem
+echten Logprob des Arms, `kl4096` die volle Stütze ohne Substitution und ohne Renormierung.
+
+| Arm | `kl256` | `kl256sup` | `kl4096` | Bias `kl256 − kl4096` |
+|---|---|---|---|---|
+| `int8` | 0,02948 | 0,02724 | 0,02976 | −0,00028 |
+| `q4lm32w` | 0,03075 | 0,02973 | 0,03151 | −0,00076 |
+| `s320r0` | 0,03723 | 0,03536 | 0,03785 | −0,00062 |
+| `q4lm32` | 0,04057 | 0,03992 | 0,04227 | −0,00170 |
+| `q4lm8v` | 0,04478 | 0,04393 | 0,04656 | −0,00178 |
+| `q4lm8k` | 0,04630 | 0,04503 | 0,04747 | −0,00117 |
+| `q4lm8` | 0,05857 | 0,05916 | 0,06222 | −0,00365 |
+
+Der Bias ist **überall negativ**: die trunkierte KL liegt 0,0003 bis 0,0037 nats **unter** der vollen
+Stütze, also 1–6 % des Niveaus. Die Rangfolge der sieben Arme ist auf beiden Metriken dieselbe wie in S3.
+
+### Die fünf Leiterstufen
+
+`>`, `~` nach der vorregistrierten Grenze (1,895 · sd/√8). „Abstandsänderung" ist
+`(kl256_A − kl256_B) − (kl4096_A − kl4096_B)`, also wie weit sich der Abstand zweier Arme verschiebt,
+wenn die Stütze wächst; ihre Grenze ist dieselbe.
+
+| Stufe | `kl256` | `kl4096` | Abstandsänderung | Grenze | Vorzeichen |
+|---|---|---|---|---|---|
+| `q4lm8` − `q4lm8k` | +0,01228 | +0,01475 | −0,00248 | 0,00250 | gleich |
+| `q4lm8k` − `q4lm8v` | +0,00152 | +0,00090 | +0,00061 | 0,00087 | gleich |
+| `q4lm8v` − `q4lm32` | +0,00421 | +0,00429 | −0,00008 | 0,00058 | gleich |
+| `q4lm32` − `q4lm32w` | +0,00982 | +0,01076 | −0,00094 | 0,00068 | gleich |
+| `q4lm32w` − `int8` | +0,00127 | +0,00175 | −0,00048 | 0,00142 | gleich |
+
+Kein Vorzeichen kippt. Die größte Stufe wird auf der vollen Stütze **deutlicher** getrennt (0,0123 →
+0,0148), `q4lm32` gegen `q4lm32w` ebenfalls (0,0098 → 0,0108, Änderung über ihrer Grenze), die übrigen
+bewegen sich um weniger als 0,001 nats. Die Entscheidung (`>`, `~`) ist in allen fünf Stufen auf beiden
+Metriken dieselbe — auf dieser Stichprobe ist sie überall `~`.
+
+### Die exakten 53 Zeilen
+
+Dort hält die top-4096 der Referenz weniger als 0,95 ihrer Masse; Arm und Referenz dumpen das ganze
+Vokabular, `klfull` ist also exakt.
+
+| Arm | `kl4096` | `klfull` | Differenz | schlechteste Zeile | beste Zeile |
+|---|---|---|---|---|---|
+| `int8` | 1,98319 | 2,42980 | +0,4466 | +7,183 | −0,061 |
+| `q4lm32w` | 1,32051 | 1,63851 | +0,3180 | +2,474 | −0,123 |
+| `q4lm8v` | 1,66911 | 2,09277 | +0,4237 | +5,090 | −0,142 |
+| `s320r0` | 1,66658 | 2,13148 | +0,4649 | +6,214 | −0,111 |
+| `q4lm32` | 1,81226 | 2,30463 | +0,4924 | +3,359 | −0,126 |
+| `q4lm8k` | 1,81660 | 2,23233 | +0,4157 | +5,090 | −0,056 |
+| `q4lm8` | 2,47594 | 2,92355 | +0,4476 | +4,952 | −0,155 |
+
+Auf den schlechtesten 0,65 % der Zeilen unterschätzt die 4.096er-Stütze die KL um 0,32–0,49 nats, auf
+einer Zeile (`s02`, `pos 2889`, `retained` 0,48) um 7,18 nats. Ihr Anteil am Mittel der 1.024 Positionen
+ist 53/8.192 · 0,45 ≈ **0,003 nats** — dieselbe Größenordnung wie der Bias.
+
+### Stichprobe gegen Population
+
+| Arm | Stichprobe | alle 32.746 Positionen | Verhältnis |
+|---|---|---|---|
+| `int8` | 0,02948 | 0,01775 | 1,66 |
+| `q4lm32w` | 0,03075 | 0,01809 | 1,70 |
+| `s320r0` | 0,03723 | 0,02203 | 1,69 |
+| `q4lm32` | 0,04057 | 0,02667 | 1,52 |
+| `q4lm8v` | 0,04478 | 0,03388 | 1,32 |
+| `q4lm8k` | 0,04630 | 0,03418 | 1,35 |
+| `q4lm8` | 0,05857 | 0,04415 | 1,33 |
+
+Die Stichprobe liegt beim 1,3- bis 1,7-fachen der Population — so ist sie gebaut (283 der 1.024
+Positionen sind die flachsten). Das **Niveau** ist damit nicht repräsentativ, die **gepaarten
+Differenzen** sind es: jede Position wird für alle sieben Arme gleich behandelt, die Schichtung kürzt
+sich in der Differenz heraus.
+
+### Was das Urteil nicht sagt
+
+- **Keine Stufe ist auf dieser Stichprobe entscheidbar.** Die Grenze liegt bei 0,0056–0,0150 nats, die
+  größte Stufe bei 0,0123. Alle fünf Stufen sind auf beiden Metriken `~`, also ist der Entscheidungsteil
+  der Regel hier **leer**; es trägt allein die Vorzeichenprüfung. Das war bei der Vorregistrierung nicht
+  absehbar (G1 rechnete über 32.746 Positionen) und wird als Grenze berichtet, nicht als bestandene
+  Prüfung verkauft.
+- **Die Aussage ist eine Stabilitätsaussage, keine Niveauaussage.** Gemessen ist: das Vorzeichen hält und
+  der Abstand zweier Arme verschiebt sich um höchstens 0,0025 nats (Grenze 0,0025). Ob die KL *absolut*
+  stimmt, sagt G2 nicht — dafür bräuchte es die volle Stütze an allen 32.746 Positionen.
+- **Nur ein Korpus, acht Segmente.** Die Rangfolge ist auf `cwe-4k` geprüft, nicht allgemein.
+- **Nur HIP gebaut.** CUDA, SYCL und Metal sind ungeprüfte Textänderungen; Metal hat mit
+  `STRATA_METAL_LOGPOS` eine eigene Implementierung, die hier nicht angefasst wurde.
+- **Die exakte Probe sind 53 Zeilen.** Wie groß der Fehler auf den Zeilen zwischen 0,95 und 0,99 retained
+  ist, ist nicht gemessen, nur durch die 4.096er-Stütze beschrieben.
+- **`kl256` kommt aus den bestehenden Läufen**, nicht aus einem neuen. Die Floor-Substitution gehört zum
+  Yardstick; `kl256sup` zeigt, was sie kostet: zwischen −0,0006 und +0,0022 nats je nach Arm (bei
+  `q4lm8` unterschätzt sie, bei `int8` überschätzt sie am meisten).
+
 

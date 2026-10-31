@@ -181,7 +181,8 @@ def score_exact(ref: pathlib.Path, arm: pathlib.Path, exact: dict) -> dict:
     tot = [x for v in per.values() for x in v["kl4096"]]
     totf = [x for v in per.values() for x in v["klfull"]]
     out["__all__"] = {"rows": len(tot), "kl4096": mean(tot), "klfull": mean(totf),
-                      "worst_row_gap": max(f - g for f, g in zip(tot, totf))}
+                      "worst_row_gap": max(f - g for g, f in zip(tot, totf)),
+                      "least_row_gap": min(f - g for g, f in zip(tot, totf))}
     return out
 
 
@@ -313,10 +314,11 @@ def main() -> int:
         k2s = f"{k2:9.5f}" if k2 is not None else f"{'-':>9s}"
         print(f"{name:10s} {k2s} {ks:9.5f} {k4:9.5f} {bias}  {gs}")
     if res["exact"]:
-        print(f"\nexact rows: {'arm':10s} {'kl4096':>9s} {'klfull':>9s} {'rows':>5s}")
+        print(f"\nexact rows: {'arm':10s} {'kl4096':>9s} {'klfull':>9s} {'gap':>7s} {'worst':>7s} {'least':>7s}")
         for name, d in res["exact"].items():
             x = d["__all__"]
-            print(f"{'':12s}{name:10s} {x['kl4096']:9.5f} {x['klfull']:9.5f} {x['rows']:5d}")
+            print(f"{'':12s}{name:10s} {x['kl4096']:9.5f} {x['klfull']:9.5f} "
+                  f"{x['klfull'] - x['kl4096']:7.4f} {x['worst_row_gap']:7.3f} {x['least_row_gap']:7.3f}")
     if a.population:
         print(f"\nsample against the population: {'arm':10s} {'sample':>9s} {'all':>9s} {'ratio':>6s}")
         for name in arms:
