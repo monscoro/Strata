@@ -81,6 +81,7 @@
   "zrhrpj",
   "zvzywe"
  ],
+ "corpus_vocab_size": 283,
  "runs": {
   "fp16": {
    "per_segment": {
@@ -91,6 +92,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lywgne"
+     ],
+     "missing": [
+      "atiyuw"
+     ],
      "stopped": "eos"
     },
     "s01": {
@@ -100,6 +108,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bmvgdb"
+     ],
+     "missing": [
+      "clldqg"
+     ],
      "stopped": "eos"
     },
     "s02": {
@@ -109,6 +124,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -118,6 +136,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s04": {
@@ -127,6 +148,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "hlczmi"
+     ],
      "stopped": "eos"
     },
     "s05": {
@@ -136,6 +164,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "benmuv"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -145,6 +180,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s07": {
@@ -154,6 +192,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     }
    },
@@ -174,6 +215,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lywgne"
+     ],
+     "missing": [
+      "atiyuw"
+     ],
      "stopped": "eos"
     },
     "s01": {
@@ -183,6 +231,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bmvgdb"
+     ],
+     "missing": [
+      "clldqg"
+     ],
      "stopped": "eos"
     },
     "s02": {
@@ -192,6 +247,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -201,6 +259,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s04": {
@@ -210,6 +271,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "hlczmi"
+     ],
      "stopped": "eos"
     },
     "s05": {
@@ -219,6 +287,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "benmuv"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -228,6 +303,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s07": {
@@ -237,6 +315,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bilnka"
+     ],
+     "missing": [
+      "lnnjgo"
+     ],
      "stopped": "eos"
     }
    },
@@ -257,6 +342,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s01": {
@@ -266,6 +354,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lmaljw"
+     ],
+     "missing": [
+      "clldqg"
+     ],
      "stopped": "eos"
     },
     "s02": {
@@ -275,6 +370,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -284,6 +382,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s04": {
@@ -293,6 +394,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "hlczmi"
+     ],
      "stopped": "eos"
     },
     "s05": {
@@ -302,6 +410,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "benmuv"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -311,6 +426,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s07": {
@@ -320,6 +438,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     }
    },
@@ -340,6 +461,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lywgne"
+     ],
+     "missing": [
+      "atiyuw"
+     ],
      "stopped": "eos"
     },
     "s01": {
@@ -349,6 +477,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bmvgdb"
+     ],
+     "missing": [
+      "clldqg"
+     ],
      "stopped": "eos"
     },
     "s02": {
@@ -358,6 +493,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -367,6 +505,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s04": {
@@ -376,6 +517,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "hlczmi"
+     ],
      "stopped": "eos"
     },
     "s05": {
@@ -385,6 +533,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "benmuv"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -394,6 +549,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s07": {
@@ -403,6 +561,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     }
    },
@@ -423,6 +584,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lywgne"
+     ],
+     "missing": [
+      "atiyuw"
+     ],
      "stopped": "eos"
     },
     "s01": {
@@ -432,6 +600,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bmvgdb"
+     ],
+     "missing": [
+      "clldqg"
+     ],
      "stopped": "eos"
     },
     "s02": {
@@ -441,6 +616,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -450,6 +628,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vmnarn"
+     ],
+     "missing": [
+      "vszdcd"
+     ],
      "stopped": "eos"
     },
     "s04": {
@@ -459,6 +644,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "hlczmi"
+     ],
      "stopped": "eos"
     },
     "s05": {
@@ -468,6 +660,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "benmuv"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -477,6 +676,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s07": {
@@ -486,6 +688,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     }
    },
@@ -506,6 +711,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lywgne"
+     ],
+     "missing": [
+      "atiyuw"
+     ],
      "stopped": "eos"
     },
     "s01": {
@@ -515,6 +727,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bmvgdb"
+     ],
+     "missing": [
+      "clldqg"
+     ],
      "stopped": "eos"
     },
     "s02": {
@@ -524,6 +743,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -533,6 +755,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vmnarn"
+     ],
+     "missing": [
+      "vszdcd"
+     ],
      "stopped": "eos"
     },
     "s04": {
@@ -542,6 +771,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "hlczmi"
+     ],
      "stopped": "eos"
     },
     "s05": {
@@ -551,6 +787,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "benmuv"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -560,6 +803,14 @@
      "distinct_vocab": 6,
      "first10": 0.6,
      "anywhere": 0.6,
+     "corpus10": 6,
+     "extra": [],
+     "missing": [
+      "xlsvug",
+      "nswnkk",
+      "sqoycz",
+      "xivbuo"
+     ],
      "stopped": "budget"
     },
     "s07": {
@@ -569,6 +820,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bilnka"
+     ],
+     "missing": [
+      "lnnjgo"
+     ],
      "stopped": "eos"
     }
    },
@@ -589,6 +847,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lywgne"
+     ],
+     "missing": [
+      "eywzvw"
+     ],
      "stopped": "eos"
     },
     "s01": {
@@ -598,6 +863,11 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 9,
+     "extra": [
+      "lmaljw"
+     ],
+     "missing": [],
      "stopped": "budget"
     },
     "s02": {
@@ -607,6 +877,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -616,6 +889,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vmnarn"
+     ],
+     "missing": [
+      "vszdcd"
+     ],
      "stopped": "eos"
     },
     "s04": {
@@ -625,6 +905,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "vvbqcn"
+     ],
      "stopped": "budget"
     },
     "s05": {
@@ -634,6 +921,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "benmuv"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -643,6 +937,11 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 9,
+     "extra": [
+      "appear"
+     ],
+     "missing": [],
      "stopped": "budget"
     },
     "s07": {
@@ -652,6 +951,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     }
    },
@@ -672,6 +974,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "lywgne"
+     ],
+     "missing": [
+      "eywzvw"
+     ],
      "stopped": "eos"
     },
     "s01": {
@@ -681,6 +990,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "bmvgdb"
+     ],
+     "missing": [
+      "clldqg"
+     ],
      "stopped": "eos"
     },
     "s02": {
@@ -690,6 +1006,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "eos"
     },
     "s03": {
@@ -699,6 +1018,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s04": {
@@ -708,6 +1030,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iwwqby"
+     ],
+     "missing": [
+      "hlczmi"
+     ],
      "stopped": "eos"
     },
     "s05": {
@@ -717,6 +1046,13 @@
      "distinct_vocab": 9,
      "first10": 0.9,
      "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "ttjqzg"
+     ],
+     "missing": [
+      "bkacgz"
+     ],
      "stopped": "eos"
     },
     "s06": {
@@ -726,6 +1062,9 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
      "stopped": "budget"
     },
     "s07": {
@@ -735,6 +1074,11 @@
      "distinct_vocab": 10,
      "first10": 1.0,
      "anywhere": 1.0,
+     "corpus10": 9,
+     "extra": [
+      "bilnka"
+     ],
+     "missing": [],
      "stopped": "budget"
     }
    },

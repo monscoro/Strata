@@ -2,7 +2,7 @@
 """G3, post hoc: which form does the answer take, and does the form carry the difference?
 
     python tools/kv_g3_forms.py --set data/quant_quality/cwe-4k \\
-        --base int8=runs\\int8.json --run fp16=runs\\fp16.json --run q4lm8v=runs\\q4lm8v.json ...
+        --run int8=runs\\int8.json --run fp16=runs\\fp16.json --run q4lm8v=runs\\q4lm8v.json ...
 
 **This is not the pre-registered metric.** `tools/kv_g3_score.py` counts the gold words anywhere in the
 generated text, as registered. That number moves with how much the model writes: a run that answers as a
@@ -15,7 +15,10 @@ the registered result:
   lists; English six-letter words are excluded, which `recall_first10` in the scorer does not do);
 - `first10`: the gold words among the first ten distinct coded words — the answer reading, robust to a
   longer answer but not to a cut one;
-- `anywhere`: the registered reading, for comparison.
+- `anywhere`: the registered reading, for comparison;
+- `corpus10`, `extra`, `missing`: the reading behind the losses table in the report — the gold words among
+  the first ten words of the whole corpus vocabulary (every six-letter word in the set's `s*.txt`, 283 at
+  4K and 408 at 8K), the corpus words named that are not gold, and the gold words the text never names.
 
 Differences are paired over segments with the same 1.895 sd/sqrt(8) bound as the scorer.
 """
@@ -30,8 +33,19 @@ import re
 T7_95 = 1.895
 
 WORD = re.compile(r"[a-z]+")
+SIX = re.compile(r"[a-z]{6}")
 NUMBERED = re.compile(r"^\s*(\d+\.|[-*]\s+\*\*)")
 PROSE = re.compile(r"^\s*(To determine|Here is|The user|We need|I need|Let me|Let's|First,)")
+
+
+def corpus_vocab(set_dir: str, gold: dict) -> set[str]:
+    """Every coded word in the set's texts: the six-letter words of its eight `s*.txt` files."""
+    vocab: set[str] = set()
+    for name in gold:
+        path = pathlib.Path(set_dir) / f"{name}.txt"
+        if path.exists():
+            vocab |= set(SIX.findall(path.read_text(encoding="utf-8")))
+    return vocab
 
 
 def form(text: str) -> str:
@@ -66,9 +80,11 @@ def main() -> int:
 
     gold = {g["name"]: g["answer"] for g in json.load(open(a.gold, encoding="utf-8"))}
     vocab = {w for words in gold.values() for w in words}   # the set's own coded words, 80 of them
-    runs, res = {}, {"vocab": sorted(vocab), "runs": {}, "paired": {}, "note": "post hoc, see the docstring"}
+    corpus = corpus_vocab(a.set, gold) if a.set else set()   # every coded word in the set's texts, ~283 at 4K
+    runs, res = {}, {"vocab": sorted(vocab), "corpus_vocab_size": len(corpus), "runs": {}, "paired": {},
+                     "note": "post hoc, see the docstring"}
     print(f"{'run':9s} {'seg':4s} {'form':8s} {'tok':>4s} {'words':>5s} {'distinct':>8s} "
-          f"{'first10':>7s} {'anywhere':>8s}")
+          f"{'first10':>7s} {'anywhere':>8s} {'corpus10':>8s}  extra / missing")
     for spec in a.run:
         name, _, path = spec.partition("=")
         d = json.load(open(path, encoding="utf-8"))
@@ -80,11 +96,16 @@ def main() -> int:
             g = gold[s["name"]]
             f10 = sum(1 for w in g if w in set(first)) / len(g)
             anyw = sum(1 for w in g if w in set(ws)) / len(g)
+            c10 = list(dict.fromkeys(w for w in ws if w in corpus))[:10]
+            extra = [w for w in c10 if w not in vocab]
+            missing = [w for w in g if w not in set(ws)]
             per[s["name"]] = {"form": form(s["text"]), "tokens": len(s["ids"]), "words": len(ws),
                               "distinct_vocab": len(set(coded)), "first10": f10, "anywhere": anyw,
+                              "corpus10": len(set(c10) & set(g)), "extra": extra, "missing": missing,
                               "stopped": s["stopped"]}
+            note = " ".join(extra) + (" | -" + " ".join(missing) if missing else "")
             print(f"{name:9s} {s['name']:4s} {per[s['name']]['form']:8s} {len(s['ids']):4d} {len(ws):5d} "
-                  f"{len(set(coded)):8d} {f10:7.2f} {anyw:8.2f}")
+                  f"{len(set(coded)):8d} {f10:7.2f} {anyw:8.2f} {per[s['name']]['corpus10']:8d}  {note}")
         runs[name] = per
         segs = sorted(per)
         res["runs"][name] = {"per_segment": per,

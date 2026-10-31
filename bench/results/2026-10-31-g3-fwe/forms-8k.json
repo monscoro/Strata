@@ -1,0 +1,1172 @@
+{
+ "vocab": [
+  "alspdu",
+  "bcitgu",
+  "bejosd",
+  "coqigt",
+  "cyptem",
+  "cyrltw",
+  "dhdsmc",
+  "eagdoe",
+  "eanhzo",
+  "ewehkd",
+  "fbfuac",
+  "fpibak",
+  "ftexnz",
+  "ftmydy",
+  "fzcpkm",
+  "gafeab",
+  "gaoaiw",
+  "gdnhfz",
+  "ghvxuf",
+  "gvscrb",
+  "gxyrzs",
+  "hekdpw",
+  "hkogwh",
+  "hlascp",
+  "hmciba",
+  "hogxix",
+  "htedoz",
+  "ibxveq",
+  "iqwajf",
+  "iwshik",
+  "ixuwxf",
+  "jcnmup",
+  "jtxtvh",
+  "kczdok",
+  "liesog",
+  "llmqcr",
+  "llueqh",
+  "lmaljw",
+  "lmvqem",
+  "lsoqtp",
+  "mcxnkf",
+  "mdcdin",
+  "mnlabd",
+  "mxuecn",
+  "nxedai",
+  "nznhhm",
+  "pgqxbm",
+  "pjqxro",
+  "ppzqrd",
+  "pqqnum",
+  "puufcb",
+  "qdvaah",
+  "qmeglb",
+  "quqtyf",
+  "qxjyae",
+  "rdzpts",
+  "rfhpuq",
+  "rjnllr",
+  "sazwbs",
+  "scdkjz",
+  "scfopt",
+  "sqoycz",
+  "tkzdgm",
+  "twjesb",
+  "ufnllw",
+  "ugvdxi",
+  "uhpbha",
+  "uuqpls",
+  "uvbcic",
+  "vbcbfe",
+  "vediju",
+  "vkbqbd",
+  "vqpbxx",
+  "wjcetc",
+  "xzxrnb",
+  "ycgivo",
+  "yojcyw",
+  "zhzrho",
+  "zuoodf",
+  "zvcten"
+ ],
+ "corpus_vocab_size": 408,
+ "runs": {
+  "fp16": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vcwgmp"
+     ],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iksmjy"
+     ],
+     "missing": [
+      "scfopt"
+     ],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s06": {
+     "form": "list",
+     "tokens": 42,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "wpokgd"
+     ],
+     "missing": [
+      "nxedai"
+     ],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.95,
+   "mean_anywhere": 0.95,
+   "forms": {
+    "list": 8,
+    "numbered": 0,
+    "prose": 0
+   }
+  },
+  "int8": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vcwgmp"
+     ],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iksmjy"
+     ],
+     "missing": [
+      "scfopt"
+     ],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "prose",
+     "tokens": 256,
+     "words": 99,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "budget"
+    },
+    "s06": {
+     "form": "list",
+     "tokens": 42,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.9625,
+   "mean_anywhere": 0.9625,
+   "forms": {
+    "list": 7,
+    "numbered": 0,
+    "prose": 1
+   }
+  },
+  "q4lm32w": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vcwgmp"
+     ],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 40,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "prose",
+     "tokens": 256,
+     "words": 105,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "budget"
+    },
+    "s06": {
+     "form": "list",
+     "tokens": 42,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.975,
+   "mean_anywhere": 0.975,
+   "forms": {
+    "list": 7,
+    "numbered": 0,
+    "prose": 1
+   }
+  },
+  "s320r0": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vcwgmp"
+     ],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "njgnpa"
+     ],
+     "missing": [
+      "cyrltw"
+     ],
+     "stopped": "eos"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iksmjy"
+     ],
+     "missing": [
+      "fzcpkm"
+     ],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s06": {
+     "form": "list",
+     "tokens": 42,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.95,
+   "mean_anywhere": 0.95,
+   "forms": {
+    "list": 8,
+    "numbered": 0,
+    "prose": 0
+   }
+  },
+  "q4lm32": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vcwgmp"
+     ],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "njgnpa"
+     ],
+     "missing": [
+      "cyrltw"
+     ],
+     "stopped": "eos"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iksmjy"
+     ],
+     "missing": [
+      "fzcpkm"
+     ],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "prose",
+     "tokens": 256,
+     "words": 105,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "budget"
+    },
+    "s06": {
+     "form": "list",
+     "tokens": 42,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "wpokgd"
+     ],
+     "missing": [
+      "nxedai"
+     ],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.9375,
+   "mean_anywhere": 0.9375,
+   "forms": {
+    "list": 7,
+    "numbered": 0,
+    "prose": 1
+   }
+  },
+  "q4lm8v": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vcwgmp"
+     ],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "prose",
+     "tokens": 256,
+     "words": 112,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 9,
+     "extra": [
+      "njgnpa"
+     ],
+     "missing": [],
+     "stopped": "budget"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "iksmjy"
+     ],
+     "missing": [
+      "fzcpkm"
+     ],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s06": {
+     "form": "list",
+     "tokens": 42,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.9625,
+   "mean_anywhere": 0.9625,
+   "forms": {
+    "list": 7,
+    "numbered": 0,
+    "prose": 1
+   }
+  },
+  "q4lm8k": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "vcwgmp"
+     ],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 40,
+     "words": 12,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s06": {
+     "form": "list",
+     "tokens": 42,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.975,
+   "mean_anywhere": 0.975,
+   "forms": {
+    "list": 8,
+    "numbered": 0,
+    "prose": 0
+   }
+  },
+  "q4lm8": {
+   "per_segment": {
+    "s00": {
+     "form": "list",
+     "tokens": 42,
+     "words": 12,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [],
+     "missing": [
+      "mxuecn"
+     ],
+     "stopped": "eos"
+    },
+    "s01": {
+     "form": "list",
+     "tokens": 43,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s02": {
+     "form": "list",
+     "tokens": 44,
+     "words": 11,
+     "distinct_vocab": 9,
+     "first10": 0.9,
+     "anywhere": 0.9,
+     "corpus10": 9,
+     "extra": [
+      "elxmur"
+     ],
+     "missing": [
+      "hekdpw"
+     ],
+     "stopped": "eos"
+    },
+    "s03": {
+     "form": "list",
+     "tokens": 45,
+     "words": 12,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s04": {
+     "form": "list",
+     "tokens": 40,
+     "words": 12,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s05": {
+     "form": "list",
+     "tokens": 45,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    },
+    "s06": {
+     "form": "prose",
+     "tokens": 256,
+     "words": 100,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "budget"
+    },
+    "s07": {
+     "form": "list",
+     "tokens": 41,
+     "words": 11,
+     "distinct_vocab": 10,
+     "first10": 1.0,
+     "anywhere": 1.0,
+     "corpus10": 10,
+     "extra": [],
+     "missing": [],
+     "stopped": "eos"
+    }
+   },
+   "mean_first10": 0.975,
+   "mean_anywhere": 0.975,
+   "forms": {
+    "list": 7,
+    "numbered": 0,
+    "prose": 1
+   }
+  }
+ },
+ "paired": {
+  "fp16": {
+   "first10": {
+    "n": 8,
+    "mean": -0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 1,
+    "a_better": 0
+   },
+   "anywhere": {
+    "n": 8,
+    "mean": -0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 1,
+    "a_better": 0
+   }
+  },
+  "q4lm32w": {
+   "first10": {
+    "n": 8,
+    "mean": 0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 0,
+    "a_better": 1
+   },
+   "anywhere": {
+    "n": 8,
+    "mean": 0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 0,
+    "a_better": 1
+   }
+  },
+  "s320r0": {
+   "first10": {
+    "n": 8,
+    "mean": -0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 1,
+    "a_better": 0
+   },
+   "anywhere": {
+    "n": 8,
+    "mean": -0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 1,
+    "a_better": 0
+   }
+  },
+  "q4lm32": {
+   "first10": {
+    "n": 8,
+    "mean": -0.024999999999999994,
+    "sd": 0.04629100498862756,
+    "bound": 0.031014217649790402,
+    "a_worse": 2,
+    "a_better": 0
+   },
+   "anywhere": {
+    "n": 8,
+    "mean": -0.024999999999999994,
+    "sd": 0.04629100498862756,
+    "bound": 0.031014217649790402,
+    "a_worse": 2,
+    "a_better": 0
+   }
+  },
+  "q4lm8v": {
+   "first10": {
+    "n": 8,
+    "mean": 0.0,
+    "sd": 0.0,
+    "bound": 0.0,
+    "a_worse": 0,
+    "a_better": 0
+   },
+   "anywhere": {
+    "n": 8,
+    "mean": 0.0,
+    "sd": 0.0,
+    "bound": 0.0,
+    "a_worse": 0,
+    "a_better": 0
+   }
+  },
+  "q4lm8k": {
+   "first10": {
+    "n": 8,
+    "mean": 0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 0,
+    "a_better": 1
+   },
+   "anywhere": {
+    "n": 8,
+    "mean": 0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 0,
+    "a_better": 1
+   }
+  },
+  "q4lm8": {
+   "first10": {
+    "n": 8,
+    "mean": 0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 0,
+    "a_better": 1
+   },
+   "anywhere": {
+    "n": 8,
+    "mean": 0.012499999999999997,
+    "sd": 0.03535533905932737,
+    "bound": 0.023687499999999993,
+    "a_worse": 0,
+    "a_better": 1
+   }
+  }
+ },
+ "note": "post hoc, see the docstring"
+}

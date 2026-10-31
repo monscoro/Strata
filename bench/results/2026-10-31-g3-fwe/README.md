@@ -9,8 +9,8 @@ Vorläufer: G1 (`bench/results/2026-10-28-g1-features/README.md`), G2
 (`bench/results/2026-10-28-g2-full-vocab/README.md`).
 
 Dieses Dokument legt **vor** dem ersten Lauf fest, was gemessen wird, wie gezählt wird und wann das
-Ergebnis „der Maßstab hat keine Auflösung" heißt. Drei Nachträge (unten) halten fest, was die Pilotläufe
-am Anker davor geändert haben.
+Ergebnis „der Maßstab hat keine Auflösung" heißt. Vier Nachträge (unten) halten fest, was die Pilotläufe
+am Anker und die 4K-Ergebnisse davor geändert haben; jeder steht **vor** dem Lauf, den er betrifft.
 
 ## Ergebnis
 
@@ -33,29 +33,41 @@ Neun Läufe, je ein Engine-Start, je acht Segmente, Budget 256, Denkblock geschl
 Gepaart gegen `int8` (Grenze 1,895·sd/√8) liegt **kein** Arm jenseits der Grenze. Der größte Abstand ist
 `q4lm8v` mit −0,062 (Grenze 0,094, in 2 von 8 Segmenten schlechter, in keinem besser); die anderen liegen
 zwischen 0,000 und +0,025 mit Grenzen von 0,024 bis 0,043. `q4lm8v` gegen `fp16` ist −0,075 (Grenze 0,093).
-Die zweite Fassung (`recall_first10`, die ersten zehn genannten Wörter) ändert keine Zahl außer bei
-`q4lm8k` (0,925 statt 0,950) — die Gold-Wörter stehen in beiden Antwortformen vorn.
+Die zweite Fassung (`recall_first10`, die ersten zehn genannten Wörter) senkt drei Mittel leicht — `fp16`
+0,925 statt 0,950, `q4lm8k` 0,900 statt 0,950, `q4lm8` 0,938 statt 0,950 —, weil sie auch die Reihenfolge
+mitzählt: ein Korpuswort vor einem Gold-Wort kostet einen Platz. Am Urteil ändert sie nichts.
 
 Über alle 8 × 8 = 64 Arm-Segment-Zellen: **28 nennen alle zehn Gold-Wörter, 35 nennen neun, eine nennt
-sechs.** Kein Segment hat in allen acht Armen dieselben zehn Wörter — die Unterschiede sitzen im zehnten
-Platz.
+sechs.** Auf einem Segment (s02) nennen alle acht Arme alle zehn Gold-Wörter; auf den übrigen sieben fehlt
+mindestens einem Arm eines.
 
 ### Was die Verluste sind
 
 Der größte Teil der fehlenden Wörter ist **das Modell, nicht das KV**, und zwar für alle Arme gleich:
+alle acht Arme nennen auf jedem dieser fünf Segmente ein Wort aus dem Korpus, das nicht zu den zehn
+häufigsten gehört.
 
-| Segment | alle Arme nennen | Gold wäre | Ausnahme |
+| Segment | was die Arme nennen | Gold wäre | Ausnahme |
 |---|---|---|---|
-| s00 | `lywgne` | `atiyuw` | nur `q4lm32w` nennt `atiyuw` |
-| s01 | `bmvgdb` | `clldqg` | nur `q4lm8k` nennt `clldqg` |
-| s03 | `vmnarn` | `vszdcd` | nur `q4lm32`, `q4lm8v`, `q4lm8k`; die anderen nennen `vszdcd` |
-| s04 | `iwwqby` | `hlczmi` | — |
-| s05 | `benmuv` | `bkacgz` | — |
+| s00 | alle acht `lywgne` | `atiyuw` | `q4lm8k` und `q4lm8` nennen `atiyuw`, dafür fehlt ihnen `eywzvw` |
+| s01 | sechs `bmvgdb`, `q4lm32w` `lmaljw` | `clldqg` | `q4lm8k` nennt `clldqg` im Fließtext |
+| s03 | `q4lm32`, `q4lm8v`, `q4lm8k` nennen `vmnarn` | `vszdcd` | die anderen fünf nennen `vszdcd` |
+| s04 | sieben `iwwqby` | `hlczmi` | `q4lm8k` nennt `hlczmi` im Fließtext, dafür fehlt `vvbqcn` |
+| s05 | sieben `benmuv`, `q4lm8` `ttjqzg` | `bkacgz` | — |
 
-Diese fünf Wörter sind Häufigkeitsfehler des Modells auf dieser Aufgabe — `fp16` macht sie genauso. Sie
-sind der Grund, warum der Anker bei 9,50/10 steht und nicht bei 10/10.
+Diese fünf Wörter sind Häufigkeitsfehler des Modells auf dieser Aufgabe — `fp16` macht vier davon
+(`atiyuw`, `clldqg`, `hlczmi`, `bkacgz`) genauso. Sie sind der Grund, warum der Anker bei 9,50/10 steht
+und nicht bei 10/10. Die Ausnahmen in der letzten Spalte sind kein Quantisierungseffekt: `q4lm8k`
+antwortet auf s01 und s04 im Fließtext und nennt mehr als zehn Wörter, auf s00 lassen `q4lm8k` und
+`q4lm8` `eywzvw` weg, und `q4lm8` nennt auf s05 `ttjqzg`.
 
-Der Arm mit dem größten Abstand, `q4lm8v`, verliert fünf Wörter auf zwei Segmenten:
+Gelesen ist die Tabelle aus den Rohläufen: jedes Gold-Wort, das im ganzen Text eines Laufs nicht
+vorkommt, und jedes genannte Wort aus dem Korpus, das nicht zu den zehn häufigsten gehört (283
+Kunstwörter aus den acht `s*.txt` des Sets).
+
+Der Arm mit dem größten Abstand, `q4lm8v`, verliert zehn Wörter: vier sind die gemeinsamen Modellfehler
+(s00, s01, s04, s05), eins teilt es mit `q4lm32` und `q4lm8k`, vier sind Verbosität und eins ist sein
+eigener Fehler.
 
 - **s03, ein Wort:** `vmnarn` statt `vszdcd` — derselbe Fehler wie `q4lm32` und `q4lm8k`.
 - **s06, vier Wörter:** `q4lm8v` antwortet dort nicht als Liste, sondern schreibt die Häufigkeiten aus
@@ -63,6 +75,9 @@ Der Arm mit dem größten Abstand, `q4lm8v`, verliert fünf Wörter auf zwei Seg
   256 Token stehen dann nur sechs der zehn Wörter. Es kennt die anderen; das Budget schneidet sie ab.
   Die nachträgliche Form-Analyse (`tools/kv_g3_forms.py`) zeigt es: im ganzen Text nennt `q4lm8v` auf s06
   sechs verschiedene Kunstwörter, die anderen Arme zehn.
+- **s07, ein Wort:** `bilnka` statt `lnnjgo` — als einziger Arm; `fp16`, `int8` und die anderen nennen
+  `lnnjgo`. Das ist der einzige Einzelwortverlust eines Arms, den die gemeinsamen Modellfehler nicht
+  erklären.
 
 Die Antwortform ist überhaupt nicht stabil: `fp16` und `int8` antworten auf 6 von 8 Segmenten als
 Kommaliste (41–46 Token, endet mit dem Ende-Token) und auf 2 als Fließtext mit Nummerierung (256 Token,
@@ -81,21 +96,68 @@ Die vorregistrierte Bedingung —
 sich die Arme funktional nicht messbar; was sich unterscheidet, sind einzelne Wörter im zehnten Platz
 und die Antwortform.
 
-Die Decke blockiert nicht (Nachtrag 2), und die 8K-Fassung greift, wenn **kein** Arm ein Wort verliert:
-`q4lm8v` verliert fünf und `q4lm32` eins, also greift sie nicht. Dass diese Verluste unter der Grenze
-liegen, ist eine Aussage über n = 8 und 10 Wörter je Segment, nicht über die Arme.
+Die Decke blockiert nicht (Nachtrag 2). Die dort vorregistrierte 8K-Fortsetzung greift, wenn **kein** Arm
+ein Wort verliert: `q4lm8v` verliert zehn Wörter und `q4lm32` fünf, also greift sie nicht. Dass diese
+Verluste unter der Grenze liegen, ist eine Aussage über n = 8 und 10 Wörter je Segment, nicht über die
+Arme.
+Gefahren wurde 8K trotzdem — als eigene, vor dem ersten 8K-Lauf registrierte Runde (Nachtrag 4), also als
+Entscheidung und nicht als Fortsetzung der Regel.
+
+### Das 8K-Ergebnis
+
+Gelaufen: `fp16` und `int8` (6:56 und 6:28), dann — nach der Tabelle oben — die sechs Arme
+(7:30 bis 7:46 je Lauf), zusammen **59 min GPU**.
+
+| Lauf | `recall` | je Segment (Treffer von 10) |
+|---|---|---|
+| `fp16` (Anker) | 0,950 | 9 10 9 10 9 10 10 9 |
+| `int8` | 0,963 | 9 10 9 10 9 10 10 10 |
+| `q4lm32w` | 0,975 | 9 10 9 10 10 10 10 10 |
+| `s320r0` | 0,950 | 9 10 9 9 9 10 10 10 |
+| `q4lm32` | 0,938 | 9 10 9 9 9 10 10 9 |
+| `q4lm8v` | 0,963 | 9 10 9 10 9 10 10 10 |
+| `q4lm8k` | 0,975 | 9 10 9 10 10 10 10 10 |
+| `q4lm8` | 0,975 | 9 10 9 10 10 10 10 10 |
+
+Die Entscheidungstabelle griff in der dritten Zeile: der Anker liegt mit 9,50/10 an der Decke, aber `int8`
+ist nicht identisch zu ihm (s07 ein Wort mehr), also liefen die sechs Arme.
+
+**Wieder liegt kein Arm jenseits der Grenze.** Der größte Abstand ist `q4lm32` mit −0,025 (Grenze 0,031,
+in 2 von 8 Segmenten schlechter); `q4lm32w`, `q4lm8k` und `q4lm8` liegen mit +0,012 über `int8`, also in
+der Gegenrichtung. Über alle 64 Zellen: **39 nennen alle zehn Gold-Wörter, 25 neun** — keine weniger.
+Drei Segmente (s01, s05, s06) sind in allen acht Armen identisch, und zwar mit 10/10. Die zweite Fassung
+(`recall_first10`) ändert nur `q4lm8v` (0,938 statt 0,963): es antwortet auf s03 im Fließtext, und zwei
+Gold-Wörter stehen dort nach Korpuswörtern.
+
+Der Anteil der Modellfehler ist bei 8K noch klarer als bei 4K:
+
+| Segment | Treffer | wer fehlt |
+|---|---|---|
+| s00 | 9 in **allen acht** | `mxuecn` |
+| s02 | 9 in **allen acht** | `hekdpw` |
+| s03 | 9 bei `s320r0`, `q4lm32` | `cyrltw` |
+| s04 | 9 bei `fp16`, `int8`, `s320r0`, `q4lm32`, `q4lm8v` | `scfopt` (2×), `fzcpkm` (3×) |
+| s07 | 9 bei `fp16`, `q4lm32` | `nxedai` (2×) |
+
+Zwei der acht Segmente verlieren alle Arme gleich, und zwar dasselbe Wort — das ist das Modell. Auf den
+übrigen drei unterscheiden sich die Arme um ein Wort, in beide Richtungen.
+
+**Damit ist die Frage der Stufe an beiden Längen beantwortet:** bei 4.096 und bei 8.192 Token, mit 81 und
+mit 163 Kunstwörtern, liegt kein Arm jenseits der Grenze. Die 4-Bit-Arme sind von `int8` funktional nicht
+zu trennen, und die 8K-Fassung macht es nicht anders — sie ist für das Modell schwerer (zwei Segmente mit
+einem Fehler in allen acht Armen), aber nicht für die Quantisierung.
 
 ### Was daraus für G4 folgt
 
-G4 sollte Merkmale aus G1 mit den Ereignisraten aus G3 korrelieren. Die Ereignisraten sind hier 0 bis 5
-Wörter je 80, davon die meisten das Modell selbst, und kein Arm ist entscheidbar. Eine Korrelation
-zwischen einem Merkmal und einer Rate, die sich nicht von null unterscheidet, ist keine Messung. G4 hat
-auf diesem Instrument **keinen Gegenstand**; das ist das Kill-Kriterium der Stufe, und es wird nicht
-weggerechnet.
+G4 sollte Merkmale aus G1 mit den Ereignisraten aus G3 korrelieren. Die Ereignisraten sind 0 bis 4 Wörter
+je 80 bei 4K und 0 bis 1 bei 8K, davon die meisten das Modell selbst, und kein Arm ist entscheidbar. Eine
+Korrelation zwischen einem Merkmal und einer Rate, die sich nicht von null unterscheidet, ist keine
+Messung. G4 hat auf diesem Instrument **keinen Gegenstand**; das ist das Kill-Kriterium der Stufe, und es
+wird nicht weggerechnet.
 
-Die 8K-Fassung (Nachtrag 4) ist gelaufen und ändert daran nichts: auch dort liegt kein Arm jenseits der
-Grenze, und die Modellfehler sind noch geschlossener (zwei Segmente mit demselben Fehler in allen acht
-Armen). Damit sind zwei Wege geprüft, nicht einer.
+Die 8K-Fassung (oben, registriert in Nachtrag 4) ist gelaufen und ändert daran nichts: auch dort liegt kein
+Arm jenseits der Grenze, und die Modellfehler sind noch geschlossener (zwei Segmente mit demselben Fehler
+in allen acht Armen). Damit sind zwei Wege geprüft, nicht einer.
 
 Was bleibt:
 
@@ -147,48 +209,6 @@ Budget 256, `--short-read 64`, `--prefill 512`, ein Engine je Lauf.
 
 **Kosten.** Ein 8K-Lauf ist rund doppelt so teuer wie ein 4K-Lauf (Prefill 8K statt 4K); geschätzt
 **8–10 min je Lauf**, zwei Läufe also rund **20 min GPU**. Die sechs Arme wären danach rund **1 h**.
-
-### Das 8K-Ergebnis
-
-Gelaufen: `fp16` und `int8` (6:56 und 6:28), dann — nach der Tabelle oben — die sechs Arme
-(7:30 bis 7:46 je Lauf), zusammen **59 min GPU**.
-
-| Lauf | `recall` | je Segment (Treffer von 10) |
-|---|---|---|
-| `fp16` (Anker) | 0,950 | 9 10 9 10 9 10 10 9 |
-| `int8` | 0,963 | 9 10 9 10 9 10 10 10 |
-| `q4lm32w` | 0,975 | 9 10 9 10 10 10 10 10 |
-| `s320r0` | 0,950 | 9 10 9 9 9 10 10 10 |
-| `q4lm32` | 0,938 | 9 10 9 9 9 10 10 9 |
-| `q4lm8v` | 0,963 | 9 10 9 10 9 10 10 10 |
-| `q4lm8k` | 0,975 | 9 10 9 10 10 10 10 10 |
-| `q4lm8` | 0,975 | 9 10 9 10 10 10 10 10 |
-
-Die Entscheidungstabelle griff in der dritten Zeile: der Anker liegt mit 9,50/10 an der Decke, aber `int8`
-ist nicht identisch zu ihm (s07 ein Wort mehr), also liefen die sechs Arme.
-
-**Wieder liegt kein Arm jenseits der Grenze.** Der größte Abstand ist `q4lm32` mit −0,025 (Grenze 0,031,
-in 2 von 8 Segmenten schlechter); `q4lm32w`, `q4lm8k` und `q4lm8` liegen mit +0,012 über `int8`, also in
-der Gegenrichtung. Über alle 64 Zellen: **39 nennen alle zehn Gold-Wörter, 25 neun** — keine weniger.
-Drei Segmente (s01, s05, s06) sind in allen acht Armen identisch, und zwar mit 10/10.
-
-Der Anteil der Modellfehler ist bei 8K noch klarer als bei 4K:
-
-| Segment | Treffer | wer fehlt |
-|---|---|---|
-| s00 | 9 in **allen acht** | `mxuecn` |
-| s02 | 9 in **allen acht** | `hekdpw` |
-| s03 | 9 bei `s320r0`, `q4lm32` | `cyrltw` |
-| s04 | 9 bei `fp16`, `s320r0`, `q4lm32`, `q4lm8v` | `fzcpkm` (3×), `scfopt` (2×) |
-| s07 | 9 bei `fp16`, `q4lm32` | `nxedai` (2×) |
-
-Zwei der acht Segmente verlieren alle Arme gleich, und zwar dasselbe Wort — das ist das Modell. Auf den
-übrigen drei unterscheiden sich die Arme um ein Wort, in beide Richtungen.
-
-**Damit ist die Frage der Stufe an beiden Längen beantwortet:** bei 4.096 und bei 8.192 Token, mit 81 und
-mit 163 Kunstwörtern, liegt kein Arm jenseits der Grenze. Die 4-Bit-Arme sind von `int8` funktional nicht
-zu trennen, und die 8K-Fassung macht es nicht anders — sie ist für das Modell schwerer (zwei Segmente mit
-einem Fehler in allen acht Armen), aber nicht für die Quantisierung.
 
 ## Frage
 
@@ -258,10 +278,10 @@ ihn, nicht den S3-Pfad.
 ## Die Metrik
 
 Je Segment: `recall = |Gold ∩ Wörter(Text)| / 10`, wobei `Wörter(Text)` die Mengen der `[a-z]+`-Läufe
-des generierten Textes in Kleinschreibung ist. Ein Gold-Wort zählt, wenn es irgendwo in den 64 Token
-steht; die **Reihenfolge wird nicht bewertet** (RULER bewertet sie auch nicht).
+des generierten Textes in Kleinschreibung ist. Ein Gold-Wort zählt, wenn es irgendwo im Budget von 256
+Token steht; die **Reihenfolge wird nicht bewertet** (RULER bewertet sie auch nicht).
 
-- **primär:** `recall` über alle 64 Token.
+- **primär:** `recall` über alle 256 Token.
 - **sekundär:** `recall_first10` — dieselbe Zählung, aber nur über die ersten zehn **verschiedenen**
   sechsbuchstabigen Wörter des Textes. Das ist die Fassung „hat es die richtigen zehn genannt".
 
@@ -273,9 +293,9 @@ Beide werden berichtet. Die Aussage der Stufe hängt an `recall`.
 - **Gepaart über Segmente** gegen `int8` und gegen `fp16`: je Segment die Differenz, dann Mittel, sd,
   Grenze `1,895 · sd/√8` (dieselbe Grenze wie G1 und G2, t mit df = 7), plus die Zahl der Segmente, in
   denen der Arm schlechter liegt. **Cluster ist das Segment, nie die Position** (§3 des Plans).
-- Bei 8 Segmenten und 10 Wörtern ist ein Wort 0,1 im Mittel; die Auflösung der gepaarten Grenze liegt
-  bei rund 0,1. Kleinere Unterschiede sind mit diesem Instrument nicht messbar, und das wird berichtet,
-  nicht weggerechnet.
+- Bei 8 Segmenten und 10 Wörtern ist ein Wort 0,1 im Mittel. Die gepaarte Grenze liegt in den gemessenen
+  Läufen zwischen 0,024 und 0,094; ein Unterschied von einem Wort auf einem Segment ist damit nicht
+  messbar, und das wird berichtet, nicht weggerechnet.
 
 ## Das Gate
 
@@ -324,8 +344,9 @@ Gegenprobe: ein Merkmal, das dort einen Verlust meldet, ist ein Fehlalarm.
 
 ## Was das nicht sagt
 
-- **Acht Segmente, ein Korpus, eine Aufgabe.** Die Auflösung ist rund 0,1 im Mittel; ein Unterschied von
-  einem Wort je Segment ist nicht messbar.
+- **Zwei Längen, je acht Segmente, ein Korpus, eine Aufgabe.** Die Auflösung ist rund 0,1 im Mittel; ein
+  Unterschied von einem Wort je Segment ist nicht messbar. Die 8K-Fassung ist länger, aber dieselbe Aufgabe
+  aus demselben Generator.
 - **Die Rauschgrenze ist ein Wort.** Zwei Konfigurationen derselben KV-Form (`--spec 2` gegen `--spec 4`)
   unterscheiden sich um ein Wort auf einem Segment (Nachtrag 1). Ein Unterschied von einem Wort zwischen
   zwei Armen ist deshalb keine Aussage.
@@ -357,10 +378,11 @@ Auswertung ist offline.
 |---|---|
 | `tools/kv_g3_run.py` | ein Engine je Lauf, `GEN` je Segment, schreibt Ids und Text |
 | `tools/kv_g3_score.py` | `recall`, `recall_first10`, gepaarte Differenzen, Sättigungs-/Bodenurteil |
-| `tools/kv_g3_forms.py` | nachträglich: Antwortform, wörterbuchbeschränkte Zählung, gepaart |
+| `tools/kv_g3_forms.py` | nachträglich: Antwortform, wörterbuchbeschränkte Zählung, Korpus-Vokabular (`corpus10`, `extra`, `missing`), gepaart |
 | `score.json` | die vorregistrierte Auswertung der acht 4K-Läufe |
 | `score-8k.json` | dieselbe Auswertung für die acht 8K-Läufe |
 | `forms.json` | die nachträgliche Form-Analyse der 4K-Läufe |
+| `forms-8k.json` | dieselbe Analyse für die 8K-Läufe |
 | `data/quant_quality/cwe-4k/` | das 4K-Set (Ids, Gold, Texte) |
 | `data/quant_quality/cwe-8k/` | das 8K-Set, gleicher Seed und Alpha, 163 Kunstwörter |
 
