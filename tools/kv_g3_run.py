@@ -45,6 +45,16 @@ def drop_spec(args: list[str]) -> list[str]:
     return out
 
 
+def set_spec(args: list[str], window: int) -> list[str]:
+    out, i = list(args), 0
+    while i < len(out) - 1:
+        if out[i] == "--spec":
+            out[i + 1] = str(window)
+            return out
+        i += 1
+    return out + ["--spec", str(window)]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True)
@@ -59,6 +69,7 @@ def main() -> int:
                     help="prompt tokens read through the decode windows (64 = the engine's and the app's default)")
     ap.add_argument("--segments", help="comma list of segment names (default: all)")
     ap.add_argument("--drop-spec", action="store_true", help="drop --spec/--spec-min-p (the greedy cross-check)")
+    ap.add_argument("--spec", type=int, help="replace the config's --spec window (a native IQ pack needs >= 2)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -70,6 +81,8 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     base = drop_spec(list(cfg["args"])) if a.drop_spec else list(cfg["args"])
+    if a.spec is not None:
+        base = set_spec(base, a.spec)
     args = QQ.engine_args({**cfg, "args": base}, None, st["seg_tokens"], a.kv, a.short_read)
     env = dict(os.environ)
     env.update(cfg.get("env", {}))
@@ -124,7 +137,7 @@ def main() -> int:
         p.kill()
     errf.close()
     out.write_text(json.dumps({"kv": a.kv, "env": a.env or [], "new": a.new, "short_read": a.short_read,
-                               "drop_spec": a.drop_spec, "ids": str(ids_path), "config": a.config,
+                               "drop_spec": a.drop_spec, "spec": a.spec, "ids": str(ids_path), "config": a.config,
                                "args": args, "segments": rows}, indent=1))
     print(f"wrote {out}")
     return 0

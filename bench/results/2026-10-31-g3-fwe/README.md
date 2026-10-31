@@ -99,7 +99,7 @@ Zwei Prüfungen **vor** jeder Armaussage:
 | Prüfung | Erwartung | Wenn sie fällt |
 |---|---|---|
 | `int8` zweimal, zwei getrennte Engine-Starts | dieselben 8 × 64 Token-Ids | die Armvergleiche warten, bis die Ursache benannt ist; die Nichtdeterminismus-Breite wird berichtet |
-| `int8` ohne `--spec`/`--spec-min-p` | dieselben Ids wie mit (der gepinnte Config dekodiert spekulativ) | die spekulative Dekodierung ist die gemessene; die Abweichung wird als Grenze berichtet, nicht als Fehler |
+| `int8` ohne `--spec`/`--spec-min-p` | dieselben Ids wie mit (der gepinnte Config dekodiert spekulativ) | siehe Nachtrag: für dieses Modell nicht durchführbar, ersetzt durch `--spec 2` gegen `--spec 4` |
 
 Die zweite Prüfung ist keine Formsache: spekulative Dekodierung ist nur dann verlustfrei, wenn die
 Verifikation das greedy-Ergebnis exakt reproduziert. Weicht sie ab, ist das eine Eigenschaft des
@@ -157,3 +157,18 @@ plus die beiden Gate-Läufe rund **45 min GPU**. Die Auswertung ist offline.
 | `tools/kv_g3_score.py` | `recall`, `recall_first10`, gepaarte Differenzen, Sättigungs-/Bodenurteil |
 | `data/quant_quality/cwe-4k/gold.json` | die zehn Gold-Wörter je Segment |
 | `data/quant_quality/cwe-4k/set.ids.json` | Prompt-Ids und `answer_at` |
+
+## Nachtrag (2026-10-31, vor dem Anker-Lauf)
+
+**Die zweite Gate-Prüfung ist nicht durchführbar.** Ein nativer IQ-Pack verlangt `--spec T` mit `T >= 2`;
+die Engine verweigert ohne das den Start (gemessen: der `int8`-Lauf ohne `--spec`, Exit 2, stderr
+`strata generate: … is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) and --prefill
+CHUNK`; statische Analyse dazu: `src/program/generate.cpp:3752-3757` prüft `o.spec < 2`). Ein Lauf ohne
+spekulative Dekodierung existiert für dieses Modell also nicht.
+
+Ersetzt wird sie durch **`int8` mit `--spec 2` gegen den gepinnten `--spec 4`**, gleiche Ids erwartet. Das
+ist schwächer als geplant: es zeigt, dass die Fenstergröße der Verifikation die Token nicht ändert, nicht,
+dass die Verifikation das greedy-Ergebnis eines ungedrafteten Laufs reproduziert. Der Bericht nennt es so.
+
+**Gate 1 besteht:** `int8` zweimal in zwei getrennten Engine-Starts, 8 von 8 Segmenten mit denselben
+Token-Ids und demselben Text.
