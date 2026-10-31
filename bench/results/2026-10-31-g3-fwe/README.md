@@ -102,6 +102,41 @@ Drei Wege, alle außerhalb dieser Vorregistrierung und deshalb eine Entscheidung
 3. **Annehmen, was gemessen ist:** bei 4K sind die 4-Bit-Arme von `int8` funktional nicht zu trennen. Das
    ist ein Ergebnis und passt zu G2 (die KL-Rangfolge ist auf dieser Stichprobe nicht entscheidbar).
 
+## Nachtrag 4 (2026-10-31, vor dem ersten 8K-Lauf): die Fortsetzung
+
+**Warum überhaupt.** G4 hat bei 4K keinen Gegenstand (oben). Die 8K-Fassung ist der Weg 1 aus der Liste;
+sie wird gefahren, weil mehr Wörter über mehr Token zu zählen mehr Gelegenheit zum Verlieren ist — und
+weil die KV-Kompression genau dort sitzen sollte: weit weg, viele Token, ein seltenes Detail.
+
+**Das Set.** `data/quant_quality/cwe-8k`, gebaut mit demselben Generator, demselben Seed (42) und
+demselben Alpha (2,0), nur `--seq-tokens 8192`:
+
+| | 4K (`cwe-4k`) | 8K (`cwe-8k`) |
+|---|---|---|
+| Token je Segment | 4.088–4.096 | 8.187–8.191 |
+| Prompt (`answer_at`) | 4.054–4.064 | 8.152–8.161 |
+| gezogene Wörter | 1.967–2.293 | 4.158–4.605 |
+| Kunstwörter im Vokabular | 81 | **163** |
+
+Der Generator skaliert das Vokabular mit (`seq_tokens // 50`), also ist die 8K-Fassung nicht nur länger,
+sondern auch schwerer: 163 Kandidaten statt 81, doppelt so viele gezogene Wörter. Das ist die
+vorregistrierte Fassung („gleicher Seed, gleiche Alpha"), und es wird so berichtet.
+
+**Die Läufe.** Zuerst nur `fp16` und `int8` — die Frage dieser Runde ist, ob das Instrument bei 8K
+überhaupt etwas sieht, nicht die Rangfolge der Arme. Alles andere wie bei 4K: `--close-thinking`,
+Budget 256, `--short-read 64`, `--prefill 512`, ein Engine je Lauf.
+
+**Die Entscheidung, vor dem ersten 8K-Lauf festgelegt:**
+
+| Befund bei 8K | Folge |
+|---|---|
+| Anker ≤ 2,5/10 | Boden: G3 hat auch bei 8K keinen Gegenstand, keine Arme, G4 bleibt verschoben |
+| Anker ≥ 9,5/10 **und** `int8` auf allen acht Segmenten identisch zum Anker | das Instrument sieht bei 8K nichts, was es bei 4K nicht sah; keine Arme, Ergebnis „bei 4K und 8K nicht trennbar" |
+| sonst | die sechs Arme laufen bei 8K |
+
+**Kosten.** Ein 8K-Lauf ist rund doppelt so teuer wie ein 4K-Lauf (Prefill 8K statt 4K); geschätzt
+**8–10 min je Lauf**, zwei Läufe also rund **20 min GPU**. Die sechs Arme wären danach rund **1 h**.
+
 ## Frage
 
 Bisher ist jede Aussage dieser Arbeitslinie eine Zahl über die **Verteilung** des nächsten Tokens
