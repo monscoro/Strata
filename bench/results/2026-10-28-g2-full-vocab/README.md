@@ -296,7 +296,7 @@ nicht, solange die beiden Variablen nicht gesetzt sind.
 
 **Das Gate hat einen echten Fehler gefunden.** Der erste `q4lm32w`-Lauf übergab `--kv q4lm32w`; das ist
 zwar ein gültiger Formatname der Engine, aber nicht der Arm aus S3 — der ist `q4lm32` **plus**
-`STRATA_KV_WINDOW=1 S=256 R=64`. Ergebnis: 31.658 von 32.746 Zeilen wichen ab, 1.088 stimmten zufällig.
+`STRATA_KV_WINDOW=1 S=256 R=64`. Ergebnis: 31.658 von 32.746 Zeilen wichen ab, 1.088 stimmten überein.
 Ohne das Gate wäre ein falsch konfigurierter Arm als Messung durchgegangen.
 
 ### Die Zahlen je Arm
