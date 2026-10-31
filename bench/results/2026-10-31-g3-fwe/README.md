@@ -1,9 +1,9 @@
 # G3: unterscheiden sich die Arme funktional?
 
-**Status: fertig (2026-10-31).** Neun Läufe bei Budget 256. Gate 1 besteht, das Ersatz-Gate fällt und
-liefert damit die Rauschgrenze von einem Wort. **Kein Arm liegt jenseits der Grenze.** Der Befund: die
-Unterschiede zwischen den Armen sitzen im zehnten Platz, nicht in der Antwort — das Modell selbst irrt
-sich auf vier Segmenten, für alle Arme mit demselben Wort. Katalogzeile:
+**Status: fertig (2026-10-31).** Neun Läufe bei 4K und acht bei 8K, Gate 1 besteht, das Ersatz-Gate fällt
+und liefert damit die Rauschgrenze von einem Wort. **Bei beiden Längen liegt kein Arm jenseits der
+Grenze.** Der Befund: die Unterschiede zwischen den Armen sitzen im zehnten Platz, nicht in der Antwort —
+das Modell selbst irrt sich auf Segmenten, für alle Arme mit demselben Wort. Katalogzeile:
 `docs/paper/Ansatz_Improvements.md`, Arbeitsplan G3 (`docs/research/BEYOND_KL_QUANT_FIDELITY.md` §4).
 Vorläufer: G1 (`bench/results/2026-10-28-g1-features/README.md`), G2
 (`bench/results/2026-10-28-g2-full-vocab/README.md`).
@@ -93,14 +93,25 @@ zwischen einem Merkmal und einer Rate, die sich nicht von null unterscheidet, is
 auf diesem Instrument **keinen Gegenstand**; das ist das Kill-Kriterium der Stufe, und es wird nicht
 weggerechnet.
 
-Drei Wege, alle außerhalb dieser Vorregistrierung und deshalb eine Entscheidung, keine Fortsetzung:
+Die 8K-Fassung (Nachtrag 4) ist gelaufen und ändert daran nichts: auch dort liegt kein Arm jenseits der
+Grenze, und die Modellfehler sind noch geschlossener (zwei Segmente mit demselben Fehler in allen acht
+Armen). Damit sind zwei Wege geprüft, nicht einer.
 
-1. **Härter messen, gleiche Aufgabe:** 8K-Fassung (`--seq-tokens 8192`). Mehr Wörter zu zählen heißt
-   mehr Gelegenheit zu verlieren — aber auch ein schwererer Anker.
-2. **Andere Aufgabe:** die Dreiwort-Fassung (`data/quant_quality/fwe-2k`) ist leichter, nicht schwerer;
-   sie wäre die Gegenprobe „verliert ein Arm überhaupt je ein Wort", nicht die härtere Fassung.
-3. **Annehmen, was gemessen ist:** bei 4K sind die 4-Bit-Arme von `int8` funktional nicht zu trennen. Das
-   ist ein Ergebnis und passt zu G2 (die KL-Rangfolge ist auf dieser Stichprobe nicht entscheidbar).
+Was bleibt:
+
+1. **Andere Aufgabe, härter als diese.** Die Dreiwort-Fassung (`data/quant_quality/fwe-2k`) ist leichter,
+   nicht schwerer — sie wäre die Gegenprobe „verliert ein Arm überhaupt je ein Wort", nicht die härtere
+   Fassung. Eine Aufgabe, die dieses Modell nicht ohnehin zu 95 % löst, ist mit dem Generator nicht
+   gebaut.
+2. **Annehmen, was gemessen ist:** bei 4K und bei 8K sind die 4-Bit-Arme von `int8` funktional nicht zu
+   trennen. Das ist ein Ergebnis und passt zu G2 (die KL-Rangfolge ist auf dieser Stichprobe nicht
+   entscheidbar). Es heißt **nicht**, dass die Arme verlustfrei sind — es heißt, dass dieser Maßstab den
+   Verlust nicht sieht, und ein Maßstab, der ihn nicht sieht, kann G4 nicht tragen.
+
+Der ehrliche Schluss der Stufe: **die funktionale Gegenprobe zur KL fehlt weiter.** G3 hat sie versucht
+und an zwei Längen keine Auflösung gefunden. Wer sie braucht, braucht eine Aufgabe, an der dieses Modell
+scheitert — nicht eine, die es löst.
+
 
 ## Nachtrag 4 (2026-10-31, vor dem ersten 8K-Lauf): die Fortsetzung
 
@@ -136,6 +147,48 @@ Budget 256, `--short-read 64`, `--prefill 512`, ein Engine je Lauf.
 
 **Kosten.** Ein 8K-Lauf ist rund doppelt so teuer wie ein 4K-Lauf (Prefill 8K statt 4K); geschätzt
 **8–10 min je Lauf**, zwei Läufe also rund **20 min GPU**. Die sechs Arme wären danach rund **1 h**.
+
+### Das 8K-Ergebnis
+
+Gelaufen: `fp16` und `int8` (6:56 und 6:28), dann — nach der Tabelle oben — die sechs Arme
+(7:30 bis 7:46 je Lauf), zusammen **59 min GPU**.
+
+| Lauf | `recall` | je Segment (Treffer von 10) |
+|---|---|---|
+| `fp16` (Anker) | 0,950 | 9 10 9 10 9 10 10 9 |
+| `int8` | 0,963 | 9 10 9 10 9 10 10 10 |
+| `q4lm32w` | 0,975 | 9 10 9 10 10 10 10 10 |
+| `s320r0` | 0,950 | 9 10 9 9 9 10 10 10 |
+| `q4lm32` | 0,938 | 9 10 9 9 9 10 10 9 |
+| `q4lm8v` | 0,963 | 9 10 9 10 9 10 10 10 |
+| `q4lm8k` | 0,975 | 9 10 9 10 10 10 10 10 |
+| `q4lm8` | 0,975 | 9 10 9 10 10 10 10 10 |
+
+Die Entscheidungstabelle griff in der dritten Zeile: der Anker liegt mit 9,50/10 an der Decke, aber `int8`
+ist nicht identisch zu ihm (s07 ein Wort mehr), also liefen die sechs Arme.
+
+**Wieder liegt kein Arm jenseits der Grenze.** Der größte Abstand ist `q4lm32` mit −0,025 (Grenze 0,031,
+in 2 von 8 Segmenten schlechter); `q4lm32w`, `q4lm8k` und `q4lm8` liegen mit +0,012 über `int8`, also in
+der Gegenrichtung. Über alle 64 Zellen: **39 nennen alle zehn Gold-Wörter, 25 neun** — keine weniger.
+Drei Segmente (s01, s05, s06) sind in allen acht Armen identisch, und zwar mit 10/10.
+
+Der Anteil der Modellfehler ist bei 8K noch klarer als bei 4K:
+
+| Segment | Treffer | wer fehlt |
+|---|---|---|
+| s00 | 9 in **allen acht** | `mxuecn` |
+| s02 | 9 in **allen acht** | `hekdpw` |
+| s03 | 9 bei `s320r0`, `q4lm32` | `cyrltw` |
+| s04 | 9 bei `fp16`, `s320r0`, `q4lm32`, `q4lm8v` | `fzcpkm` (3×), `scfopt` (2×) |
+| s07 | 9 bei `fp16`, `q4lm32` | `nxedai` (2×) |
+
+Zwei der acht Segmente verlieren alle Arme gleich, und zwar dasselbe Wort — das ist das Modell. Auf den
+übrigen drei unterscheiden sich die Arme um ein Wort, in beide Richtungen.
+
+**Damit ist die Frage der Stufe an beiden Längen beantwortet:** bei 4.096 und bei 8.192 Token, mit 81 und
+mit 163 Kunstwörtern, liegt kein Arm jenseits der Grenze. Die 4-Bit-Arme sind von `int8` funktional nicht
+zu trennen, und die 8K-Fassung macht es nicht anders — sie ist für das Modell schwerer (zwei Segmente mit
+einem Fehler in allen acht Armen), aber nicht für die Quantisierung.
 
 ## Frage
 
@@ -292,9 +345,11 @@ Gegenprobe: ein Merkmal, das dort einen Verlust meldet, ist ein Fehlalarm.
 
 ## Kosten
 
-Gemessen bei den neun Läufen (4.067-Token-Prompt, geschlossener Denkblock, Budget 256, HIP, gfx1200):
+Gemessen bei den neun 4K-Läufen (4.067-Token-Prompt, geschlossener Denkblock, Budget 256, HIP, gfx1200):
 **4,0 bis 4,8 min je Lauf** (schnellster `q4lm8` 4:03, langsamster `q4lm32w` 4:47), zusammen **41 min
-GPU** für neun Läufe; der `--spec 2`-Lauf kam mit 4:02 dazu. Die Auswertung ist offline.
+GPU**; der `--spec 2`-Lauf kam mit 4:02 dazu. Die acht 8K-Läufe (8.168-Token-Prompt) brauchten **6:28 bis
+7:46 je Lauf**, zusammen **59 min**. Insgesamt also **rund 1 h 45 min GPU** für die ganze Stufe. Die
+Auswertung ist offline.
 
 ## Dateien
 
@@ -303,14 +358,15 @@ GPU** für neun Läufe; der `--spec 2`-Lauf kam mit 4:02 dazu. Die Auswertung is
 | `tools/kv_g3_run.py` | ein Engine je Lauf, `GEN` je Segment, schreibt Ids und Text |
 | `tools/kv_g3_score.py` | `recall`, `recall_first10`, gepaarte Differenzen, Sättigungs-/Bodenurteil |
 | `tools/kv_g3_forms.py` | nachträglich: Antwortform, wörterbuchbeschränkte Zählung, gepaart |
-| `score.json` | die vorregistrierte Auswertung der acht Läufe |
-| `forms.json` | die nachträgliche Form-Analyse |
-| `data/quant_quality/cwe-4k/gold.json` | die zehn Gold-Wörter je Segment |
-| `data/quant_quality/cwe-4k/set.ids.json` | Prompt-Ids und `answer_at` |
+| `score.json` | die vorregistrierte Auswertung der acht 4K-Läufe |
+| `score-8k.json` | dieselbe Auswertung für die acht 8K-Läufe |
+| `forms.json` | die nachträgliche Form-Analyse der 4K-Läufe |
+| `data/quant_quality/cwe-4k/` | das 4K-Set (Ids, Gold, Texte) |
+| `data/quant_quality/cwe-8k/` | das 8K-Set, gleicher Seed und Alpha, 163 Kunstwörter |
 
 Die Rohläufe (Ids und Text je Segment, je Lauf eine JSON) liegen in
-`C:\Users\krone\git\Strata-data\bench\2026-10-31-g3\`; die 64-Token- und Pilotläufe in dessen
-Unterordner `pilot\`.
+`C:\Users\krone\git\Strata-data\bench\2026-10-31-g3\` (4K) und in dessen Unterordner `8k\` (8K); die
+64-Token- und Pilotläufe in `pilot\`.
 
 ## Nachtrag (2026-10-31, vor dem Anker-Lauf)
 

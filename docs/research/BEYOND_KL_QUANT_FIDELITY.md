@@ -105,9 +105,12 @@ Gate 1 besteht (zwei `int8`-Läufe token-identisch), das Ersatz-Gate `--spec 2` 
 3 von 8 Segmenten andere Token, auf einem auch ein Wort der Antwort —, das ist die gemessene
 Rauschgrenze von einem Wort. **Kein Arm liegt jenseits der Grenze** (größter Abstand `q4lm8v` −0,062,
 Grenze 0,094); die fehlenden Wörter sind fast alle Fehler des Modells selbst, die `fp16` genauso macht.
-Damit hat **G4 auf diesem Instrument keinen Gegenstand** — die Ereignisraten sind 0 bis 5 Wörter je 80
-und nicht entscheidbar. Die 8K-Fassung greift nach der vorregistrierten Regel nicht, weil ein Arm Wörter
-verliert; sie bleibt der nächste Schritt, wenn G4 einen Gegenstand braucht.
+Die 8K-Fassung (`data/quant_quality/cwe-8k`, gleicher Seed und Alpha, 163 Kunstwörter) wurde danach auf
+eigenen Beschluss gefahren und ändert nichts: acht Läufe, kein Arm jenseits der Grenze (größter Abstand
+`q4lm32` −0,025, Grenze 0,031), zwei Segmente mit demselben Fehler in allen acht Armen. Damit hat **G4
+auf diesem Instrument keinen Gegenstand** — die Ereignisraten sind 0 bis 5 Wörter je 80 und an beiden
+Längen nicht entscheidbar. Die funktionale Gegenprobe zur KL fehlt weiter; sie braucht eine Aufgabe, an
+der dieses Modell scheitert, nicht eine, die es zu 95 % löst.
 
 **Reihenfolge ist bindend:** G1 vor G2 vor G3 vor G4. G1 ist gratis und kann sofort laufen; G2 ist
 die Voraussetzung dafür, dass G1 nicht durch die Linse M1/CB5 gemessen wird; G3 entscheidet, ob G4
