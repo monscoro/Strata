@@ -42,15 +42,17 @@ Token, ein seltenes Detail.
 |---|---|
 | Prompt | `ids[:answer_at]` aus `data/quant_quality/cwe-4k/set.ids.json` (4.054–4.064 Token) plus der Assistenten-Turn mit geschlossenem Denkblock, `<|im_start|>assistant\n thinking\n\n</think>\n\n` (7 Token) — der Pfad, den die App im Nicht-Denken-Modus bedient |
 | Dekodierung | **greedy** (`GEN` ohne Sampling-Schlüssel; der Engine-Default ist argmax, keine Strafterme), `ckpt=0` je Segment |
-| Budget | **64 neue Token** oder das Ende-Token des Modells, was zuerst kommt |
+| Budget | **256 neue Token** oder das Ende-Token des Modells, was zuerst kommt |
 | Engine | `bench/configs/cwe4k-swift-iq3_xxs.json`, ein Engine-Start je Lauf, alle acht Segmente darin |
 | Prompt-Pfad | `--short-read 64` (Engine- und App-Default), `--prefill 512` (Chunk des gepinnten Configs) |
 | Build | `build-hip-port\strata.exe`, HIP, ROCm 7.1, gfx1200 — derselbe Build wie G2 |
 
-**Warum 64 Token:** mit geschlossenem Denkblock antwortet das Modell direkt; die gemessene Antwort ist 42–46
-Token lang (Pilot, siehe Nachtrag 2). 64 ist die Antwort plus Luft. Ein falsches Wort trifft ein Gold-Wort mit
-10/2.000 Wahrscheinlichkeit (2.000 gezogene Wörter, 10 davon Gold), also erwartet 0,15 Fehltreffer je Segment
-über die rund 20 Token Luft — dieselbe Größenordnung für jeden Arm.
+**Warum 256 Token:** das Modell antwortet in einer von zwei Formen, und beide sind zwischen `fp16` und
+`int8` auf denselben Segmenten identisch (Nachtrag 3): als Kommaliste (zehn Wörter in 41–46 Token) oder
+nummeriert mit einem Satz je Wort (rund 15 Token je Wort, also rund 170 für zehn). 256 trägt beide; 64
+schnitt die nummerierte Form nach ein bis zwei Wörtern ab. Ein falsches Wort trifft ein Gold-Wort mit
+10/2.000 Wahrscheinlichkeit (2.000 gezogene Wörter, 10 davon Gold), also erwartet 0,15 Fehltreffer je
+Segment über die Luft — dieselbe Größenordnung für jeden Arm.
 
 **Die Arme** (dieselben sieben wie G2, plus der Anker):
 
@@ -152,8 +154,9 @@ Gegenprobe: ein Merkmal, das dort einen Verlust meldet, ist ein Fehlalarm.
 ## Kosten
 
 Gemessen an einem 4.067-Token-Prompt mit geschlossenem Denkblock auf `fp16`, HIP, gfx1200: **25 s** je
-Segment (Pilot 3). Acht Segmente und ein Engine-Start (rund 14 s) sind also **rund 3,5 min je Lauf**; acht
-Läufe rund **30 min GPU**. Die Auswertung ist offline.
+Segment bei 46 erzeugten Token (Pilot 3); mit dem Budget von 256 Token sind es rund **33 s**. Acht
+Segmente und ein Engine-Start (rund 14 s) sind also **rund 4,5 min je Lauf**; neun Läufe (Anker, `int8`
+zweimal, sechs Arme) rund **45 min GPU**. Die Auswertung ist offline.
 
 ## Dateien
 
@@ -210,4 +213,24 @@ Was der Pilot **nicht** zeigt: er lief nur auf `fp16` und nur auf zwei bzw. acht
 Prompt-Form und Budget, nicht das Ergebnis. Die `recall`-Zahl über die ganze Ausgabe bleibt anfällig für
 eine Aufzählung — deshalb steht in jeder Tabelle die Spalte `distinct6`; ein Lauf, der den Text aufzählt,
 zeigt dort mehr als 20 verschiedene sechsbuchstabige Wörter statt der 10 einer Antwort.
+
+## Nachtrag 3 (2026-10-31, vor dem ersten Arm-Lauf): das Budget trägt beide Antwortformen
+
+Der Gate- und Ankerlauf mit dem neuen Prompt (Budget 64) zeigt zwei Antwortformen, die beide zwischen
+`fp16` und `int8` **auf demselben Segment identisch** sind:
+
+| Segment | Form | Länge | Treffer bei 64 |
+|---|---|---|---|
+| s00, s01, s02, s04, s05, s07 | Kommaliste (`mfkbjz, zvzywe, …`) | 41–46 Token, endet mit dem Ende-Token | 9–10 von 10 |
+| s03, s06 | nummeriert mit einem Satz je Wort (`1. **rpwqxq**: This word appears very frequently …`) | rund 15 Token je Wort, also rund 170 für zehn | 1 bzw. 2 von 10 |
+
+Die nummerierte Form ist keine Entartung, sondern die zweite Antwortform des Modells; sie wird vom Budget
+abgeschnitten, nicht vom KV. Anker und Default messen dort dasselbe (s03: `fp16` 1, `int8` 2; s06: beide 2),
+also ist der Fehler für den gepaarten Vergleich unschädlich — aber er kostet 8 der 10 Wörter und damit
+Auflösung.
+
+**Deshalb: Budget 256.** Das trägt die nummerierte Form (rund 170 Token) mit Luft und ändert an der
+Kommaliste nichts, weil sie mit dem Ende-Token endet. Der Anker bleibt damit bei `recall` 0,738 über die
+acht Segmente (9 9 10 1 9 9 2 10) — zwischen Boden und Decke, das Instrument hat Auflösung.
+
 
