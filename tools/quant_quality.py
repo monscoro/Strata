@@ -484,7 +484,9 @@ PROMPT_LENS = (256, 512, 768, 1000)
 
 def cmd_prompt(a) -> int:
     """The batched prompt path's answer: every segment's first 256 / 512 / 768 / 1000 tokens as a prompt (one request
-    each, no prompt cache), and the logits after it (STRATA_DUMP_FIRST_LOGITS: float32, the whole vocabulary)."""
+    each, no prompt cache), and the logits after it (STRATA_DUMP_FIRST_LOGITS: float32, the whole vocabulary).
+    `--lens 256,512,768,1000,2048,4056` widens the nested set (decode-4k); `--prefill N` fixes the chunk instead
+    of `auto` (a ring the user sized needs a chunk that fits its recent rows)."""
     cfg = json.load(open(a.config, encoding="utf-8-sig"))
     st = json.load(open(a.ids))
     out = pathlib.Path(a.out).resolve()
@@ -504,11 +506,16 @@ def cmd_prompt(a) -> int:
     env["STRATA_DUMP_FIRST_LOGITS"] = str(out / "first")
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
-    args = engine_args(cfg, a.gpu_experts, max(PROMPT_LENS), a.kv)
+    lens = tuple(int(x) for x in a.lens.replace(" ", "").split(",")) if a.lens else PROMPT_LENS
+    for s in st["segments"]:
+        for n in lens:
+            if n > len(s["ids"]):
+                raise SystemExit(f"{s['name']}: len {n} exceeds the segment's {len(s['ids'])} tokens")
+    args = engine_args(cfg, a.gpu_experts, max(lens), a.kv)
     k = args.index("--short-read")
     del args[k:k + 2]                      # the default (64): these prompts take the batched prompt path
     k = args.index("--prefill")
-    args[k + 1] = "auto"
+    args[k + 1] = "auto" if a.prefill is None else str(a.prefill)
     if a.wrap:
         args = a.wrap.split() + args
     errf = open(out / "stderr.txt", "w")
@@ -522,7 +529,7 @@ def cmd_prompt(a) -> int:
         raise SystemExit(f"the engine ended before READY (exit {p.wait()}); see {out}/stderr.txt")
     index = []
     for s in st["segments"]:
-        for n in PROMPT_LENS:
+        for n in lens:
             p.stdin.write("GEN 1 " + ",".join(map(str, s["ids"][:n])) + "\n")
             p.stdin.flush()
             done = None
@@ -541,7 +548,7 @@ def cmd_prompt(a) -> int:
     except subprocess.TimeoutExpired:
         p.kill()
     errf.close()
-    (out / "index.json").write_text(json.dumps({"requests": index, "args": args, "env": a.env or []}, indent=1))
+    (out / "index.json").write_text(json.dumps({"requests": index, "lens": lens, "args": args, "env": a.env or []}, indent=1))
     print(f"{len(index)} prompts")
     return 0
 
@@ -931,6 +938,9 @@ def main() -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--ids", default=str(SET_DIR / "set.ids.json"))
     p.add_argument("--env", action="append")
+    p.add_argument("--lens", help="a comma list of nested prompt lengths (default: 256,512,768,1000); the run records them in index.json")
+    p.add_argument("--prefill", type=int, default=None,
+                   help="a fixed prompt chunk (default: auto); a ring sized by STRATA_KV_WINDOW_BATCH needs one that fits")
     p.add_argument("--gpu-experts", action="store_true")
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap")
