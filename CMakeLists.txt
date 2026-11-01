@@ -1293,6 +1293,21 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(kv_window_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_window_parity COMMAND kv_window_parity)
 
+  # WP-2a: the exact window's side pool (both append forms: steps and pos0/T) against kv_gather_q4_step attached
+  # and detached - every cell reads bitwise its fp16 twin where qsa_win_slot says exact and its own quantized
+  # values elsewhere: ring wrap, sinks that never move, the legal-max batch T = S + B, stale tags after a rewind
+  # (GPU, synthetic, no model). kv_gather_q4_step reads STRATA_KV_WINDOW_TAG once, so the win_all variant is a
+  # second run of the same binary, like the register kernel above.
+  add_executable(kv_win_parity src/kernels/kv_win_parity.cpp)
+  target_include_directories(kv_win_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(kv_win_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME kv_win_parity COMMAND kv_win_parity)
+  add_test(NAME kv_win_parity_win_all COMMAND kv_win_parity)
+  set_tests_properties(kv_win_parity_win_all PROPERTIES ENVIRONMENT "STRATA_KV_WINDOW_TAG=1")
+  # the over-sized batch (T = S + B + 1) fails loudly (exit 1); WILL_FAIL turns that refusal into a contract
+  add_test(NAME kv_win_parity_refuse COMMAND kv_win_parity --refuse)
+  set_tests_properties(kv_win_parity_refuse PROPERTIES WILL_FAIL TRUE)
+
   # PR #120: the hybrid K8V4 KV (INT8 K + rotated Q4_0 V) vs host references (GPU, synthetic, no model).
   add_executable(kv_hybrid_parity src/kernels/kv_hybrid_parity.cpp)
   target_include_directories(kv_hybrid_parity PRIVATE ${_strata_gpu_include_directories})
