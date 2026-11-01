@@ -140,7 +140,7 @@ dafür geraten.
 
 | Punkt | Wert |
 |---|---|
-| Engine | 0.1.47 Debug-Build `build-hip-port\strata.exe`, SHA-256 `F9058D56…860F20`, ROCm 7.1 |
+| Engine | 0.1.47 Debug-Build `build-hip-port\strata.exe`, SHA-256 `CD5700EC…3D0394CA`, ROCm 7.1 (vor dem ersten Arm gemessen; der Build unterscheidet sich von der SHA `F9058D56…860F20` der Sonden-Läufe — der Vergleich zu deren Absolutwerten ist mit Vorsicht zu lesen, die gepaarten Vergleiche sind intern) |
 | Modell | swift-1.5-iq3_xxs, `bench/configs/cwe4k-swift-iq3_xxs.json` (`env` bleibt leer; Fenster-Umgebung je Arm) |
 | Prompts | cwe-4k, 8 Segmente × 6 Längen (256/512/768/1000/2048/4056) = 48 Requests je Arm |
 | Pfad | batched Prompt-Pfad (kein `--short-read`), ein Decode-Schritt je Request |
