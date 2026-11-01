@@ -1,6 +1,7 @@
 # Decode bei 4K: der Kandidat am echten Kontext
 
-**Status: vorregistriert (2026-11-01), Ergebnis vor dem ersten Arm-Lauf.** Anschluss an
+**Status: gemessen (2026-11-01), sieben Arme, Ergebnis unten. Vorregistriert vor dem ersten
+Arm-Lauf.** Anschluss an
 `bench/results/2026-10-28-decode-probe/` (dort ausdrücklich offen gelassen: „Ein Lauf mit
 4K-Prompts und einem Decode-Schritt wäre der nächste Arm — und ein anderer, weil er die
 Ring-Verdrängung mitbringt"). Katalogzeile: `docs/paper/Ansatz_Improvements.md`, B-Term B4.
@@ -162,4 +163,123 @@ Reihenfolge: `fp16`, `int8`, `w256r64`, `w256r64B512`, `w64r64`, `w256r0`, `w8v`
 
 ## Ergebnis
 
-*(wird nach dem Lauf hier eingetragen)*
+Gelaufen am 2026-11-01, sieben Arme, je 48 Requests, alle Güte-Gatter (`Q0`) bestanden: die
+`index.json`-Umgebung exakt wie in der Tabelle, 48 `first.*`-Dateien je Arm, kein „nonfinite",
+kein „do not fit"; der `B512`-Arm mit `--prefill 512` und ohne Ring-Anhebung (stderr: keine
+Zeile „KV window ring sized"), die vier Auto-Arme mit „ring sized for the prompt chunk (6144)".
+`KL(fp16‖Arm)` über das **volle Vokabular**, je Prompt:
+
+| Arm | `--kv` | Fenster | mean KL | median | max | Top-1 = fp16 |
+|---|---|---|---|---|---|---|
+| `int8` | `int8` | aus | **0,00184** | 0,00014 | 0,04381 | **48/48** |
+| `w256r64` | `q4lm32` | 256/64 | 0,00429 | 0,00018 | 0,11601 | 47/48 |
+| `w256r64B512` | `q4lm32` | 256/64, `B=512`, `--prefill 512` | 0,00434 | 0,00018 | 0,09059 | 47/48 |
+| `w64r64` | `q4lm32` | 64/64 | 0,00419 | 0,00029 | 0,07449 | 47/48 |
+| `w256r0` | `q4lm32` | 256/0 | 0,00482 | 0,00018 | 0,11097 | 47/48 |
+| `w8v` | `q4lm8v` | 256/64 | 0,00423 | 0,00018 | 0,13922 | 47/48 |
+
+Gepaart, **je Segment** (df = 7, `t_crit` 2,365; positiv heißt „der Arm ist schlechter"; Grenze =
+1,645 · SEM über die 8 Segmentwerte):
+
+| Vergleich | Δ (Arm − Basis) | 95 % | `t` | Segmente schlechter | einseitige Grenze bei Parität |
+|---|---|---|---|---|---|
+| `w256r64` − `int8` | +0,00244 | [−0,00123, +0,00612] | +1,57 | 6/8 | 0,0026 |
+| `w256r64B512` − `int8` | +0,00249 | [−0,00054, +0,00552] | +1,95 | 7/8 | 0,0021 |
+| `w256r64B512` − `w256r64` | +0,00005 | [−0,00188, +0,00197] | +0,06 | 4/8 | 0,0013 |
+| `w64r64` − `w256r64` | −0,00009 | [−0,00398, +0,00379] | −0,06 | 5/8 | 0,0027 |
+| `w256r0` − `w256r64` | +0,00054 | [−0,00065, +0,00172] | +1,07 | 5/8 | 0,0008 |
+| `w8v` − `w256r64` | −0,00006 | [−0,00191, +0,00178] | −0,08 | 3/8 | 0,0013 |
+
+### `Q1` — steht der Kandidat am 4K-Decode-Punkt auf `int8`?
+
+**Nach der vorregistrierten Regel: ja, Parität.** Das Intervall schließt die 0 ein (+0,00244
+[−0,00123, +0,00612]), der Punktwert liegt **unter** der einseitigen Grenze von 0,0026, und die
+Top-1-Übereinstimmung liegt mit 47/48 genau einen Request unter `int8`s 48/48 — beide Klauseln
+der Regel sind erfüllt. Anders als in der Sonde (dort lautete die Netto-Aussage „nicht
+unterscheidbar, mit Neigung zu schlechter", weil der Punktwert über der Grenze lag) trägt diesmal
+auch die Richtung nicht über die Grenze hinaus.
+
+Die per-Längen-Struktur gehört zur Lesung dazu (mean KL je verschachtelter Länge, darunter die
+gepaarte Differenz dieser Länge, 8 Segmente je Zelle):
+
+| Länge | `int8` | `w256r64` | gepaart (Δ) | Segment-sd |
+|---|---|---|---|---|
+| 256 | 0,0002 | 0,0003 | +0,00007 | 0,0002 |
+| 512 | 0,0008 | 0,0036 | +0,00278 | 0,0059 |
+| 768 | 0,0009 | 0,0042 | +0,00331 | 0,0079 |
+| 1.000 | 0,0002 | 0,0009 | +0,00065 | 0,0014 |
+| 2.048 | 0,0005 | 0,0005 | −0,00009 | 0,0003 |
+| 4.056 | 0,0083 | 0,0163 | +0,00795 | 0,0262 |
+
+Am Antwortpunkt (4.056) lesen beide Arme fast den ganzen Kontext quantisiert, und die KLs liegen
+dort tatsächlich in der Gegend der späten teacher-forced-Buckets: `w256r64` 0,0163 gegen den
+0,01689-Volltextwert aus `2026-10-28-ring-geometry`, `int8` 0,0083. Die gepaarte Differenz dort
+ist nominell **+0,008** bei Segment-sd 0,026 — `t` +0,86, weit von trennbar entfernt. Das heißt
+nicht „Kandidat gleich gut am Antwortpunkt", sondern: **die Antwortpunkt-Stelle allein löst mit
+8 Segmenten keine 0,008 nats auf.** Die Sonde und dieser Lauf messen beide im frühen Bereich; wer
+den Kandidaten am echten 4K-Decode verteidigen will, braucht mehr Segmente oder echte Generationen.
+
+### `Q2` — kostet die S-Achse am Decode-Punkt?
+
+**Nicht entscheidbar — und die codegeleitete Erwartung bestätigt sich nicht.** −0,00009
+[−0,00398, +0,00379], 5/8 Segmente. Nach der statischen Analyse liest `S = 64` am Decode-Punkt nur
+128 exakte Zellen statt 320, unabhängig von der Ring-Verdrängung; gemessen: kein Unterschied.
+Die Aussage im Sonden-README stimmt nach dem Code nicht so, wie sie formuliert ist — der
+Unterschied zwischen den `S`-Varianten hängt nicht an der Verdrängung, er ist an dieser Stelle
+einfach nicht da.
+
+### `Q3` — tragen die Sinks am Decode-Punkt?
+
+**Nicht entscheidbar.** +0,00054 [−0,00065, +0,00172], 5/8 Segmente, Grenze 0,0008. Die Richtung
+(ohne Sinks nominell schlechter) stimmt mit dem Prefill-Befund (+0,00394, 8/8) überein, aber am
+Decode-Antwortpunkt bleibt sie unter der Auflösung.
+
+### `Q4` — die 16/8-Frage am realen Maßstab (Wiederholung)
+
+**Unentschieden.** `w8v` − `w256r64` = −0,00006, 3/8 Segmente. Weder die Prefill-Reihenfolge
+(16/16 besser, gesichert) noch die Nominalordnung der Sonde (16/8 nominell besser) reproduziert
+sich: an dieser Decode-Stelle sind die beiden bei denselben Bytes gleich. Der Produktpunkt
+(`w256r64`) bleibt, wie die teacher-forced-Sicherungen ihn stehen haben.
+
+### `Q5` — die B-Frage am echten Antwortpunkt
+
+**Der Ring selbst ist am Decode-Punkt unsichtbar.** `w256r64B512` − `w256r64` = +0,00005
+[−0,00188, +0,00197], 4/8 Segmente, Grenze 0,0013. Der Auto-Arm hielt am 4K-Punkt einen
+6.400-Zeilen-recent-Ring (`B` auf 6.144 gehoben, 12,6 MiB pro QSA-Layer, stderr-Zeile) und las
+dabei den **ganzen Prompt exakt**; der `B512`-Arm verdrängte in einem 832-Zeilen-Ring mit
+`--prefill 512` — und die Decode-Verteilung am Antwortpunkt unterscheidet sich trotzdem um
+0,00005 nats.
+
+Damit ist der statisch abgeleitete Befund am echten Lauf bestätigt, und er ist der Grundbaustein
+für die Byte-Seite: **die exakte Lesemenge des Decode-Pfades hängt vom Horizont ab (`R` Sinks +
+`S` Zellen davor), nicht von `B`.** Der Ring braucht `B` nur, um eine ganze Append-Batch zu
+fassen; am Decode-Punkt darf er Zellen in den quantisierten Bulk entlassen, ohne dass sich die
+Verteilung messbar ändert. Für das korrigierte Byte-Modell (`R + S + B`) heißt das: `B` muss nur
+den Prefill-Chunk decken, nicht den Kontext — der Produktpunkt mit `B = 6.144` reserviert am
+Decode mehr Zeilen, als gelesen werden. Was das zur Laufzeit- und Byte-A/B am 128K-Produktpunkt
+wird (Katalogzeile `B4`), steht noch aus.
+
+### Der gemeinsame Top-1-Flip
+
+Alle vier `q4lm`-Arme (drei `q4lm32`-Geometrien plus `w8v`) verlieren **denselben** Request:
+`s01` bei Länge 768. `int8` verliert keinen. Die vier teilen dasselbe Bulk-Quant (dort liegt der
+Unterschied zu `int8`); die Ring-Geometrie ist daran unbeteiligt. Ein Request von 48 — ein
+Hinweis, keine Urteilsgrundlage.
+
+### Auflösung, aus der beobachteten Streuung
+
+Einseitige Grenzen bei Parität über die Segmentwerte: 0,0008–0,0027 je nach Paar (Tabelle oben).
+Die vorab notierte Erwartung war „Trennbarkeit bei ~0,005, Versagen bei ~0,002"; gemessen:
+0,0008–0,0033 über die Paare. Die KLs am Antwortpunkt sind eine Größenordnung über den
+Sonden-KLs, die gepaarte Auflösung ist es nicht — die Segmentstreuung wächst langsamer als die
+KLs selbst.
+
+### Was dieser Lauf nicht sagt
+
+- `Q5` misst nur den Decode-Punkt an einer Position: der Prefill-Unterschied der beiden
+  Chunk-Einstellungen (ganz-Prompt-exakt gegen verdrängend) ist in den Dump-Wert zwar
+  eingerechnet, aber nicht als eigene Größe lesbar.
+- Die 128K-Fragen (S/R-Aufteilung, `B` bei echten 6.144er-Chunks, Laufzeit- und Byte-A/B gegen
+  `int8` am Produktpunkt) haben hier kein Objekt; dafür bleibt es bei
+  `2026-10-28-ring-geometry`, `cwe-128k` und der Katalogzeile `B4`.
+- Echte Generationen (nicht nur der erste Decode-Schritt) sind nicht gemessen.
