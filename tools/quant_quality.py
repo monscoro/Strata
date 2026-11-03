@@ -202,7 +202,7 @@ def mem_available_gb() -> float:
 
 def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16",
                 short_read: int | None = None, prefill: str = "512",
-                prompt_cache: int = 0) -> list[str]:
+                prompt_cache: int = 0, max_ctx_cap: int = 131072) -> list[str]:
     base, out, i = list(cfg["args"]), [], 0
     while i < len(base):
         x = base[i]
@@ -219,7 +219,9 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16",
         fixed[1] = gpu_experts if isinstance(gpu_experts, str) else "1500"
     # The pack's context is 131,072 tokens; a 128K segment needs the whole window for the prompt plus one token.
     # Without the cap a 128K set would ask for 131,584 and the engine would refuse the model's own context.
-    max_ctx = min(seg_tokens + 512, 131072)
+    # --max-context raises the cap for a longer set (the model's own context is 262,144); the default keeps every
+    # existing run byte-identical.
+    max_ctx = min(seg_tokens + 512, max_ctx_cap)
     short = min(seg_tokens + 64, max_ctx - 1)
     if short_read is not None:   # --short-read N: 0 forces the batched prompt path (the S2 probe's route)
         short = min(short_read, max_ctx - 1)
@@ -251,7 +253,8 @@ def cmd_run(a) -> int:
     env["STRATA_LOGPOS_TOPK"] = str(a.topk)
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
-    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv, a.short_read, a.prefill, a.prompt_cache)
+    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv, a.short_read, a.prefill, a.prompt_cache,
+                       getattr(a, "max_context", 0) or 131072)
     if getattr(a, "exe", None):
         args[0] = a.exe
     if a.wrap:
@@ -939,6 +942,9 @@ def main() -> int:
                          "prompt reaches the window path; needs --prompt-cache 3 or more"))
     p.add_argument("--prompt-cache", type=int, default=0, metavar="N",
                    help="the engine's --prompt-cache (default 0, the quality runs' fixed value); --pin needs 3 or more")
+    p.add_argument("--max-context", type=int, default=0, metavar="N",
+                   help=("raise the engine's --max-context cap above 131,072 for a set longer than 128K (the model's "
+                         "own context is 262,144); default 0 keeps every existing run byte-identical"))
     p = sub.add_parser("kvstats", help="per-layer K/V distribution stats for one calibration text "
                                        "(STRATA_KVSTATS tap + aggregation: kurtosis, crest, block-max, channels)")
     p.add_argument("--config", required=True)
