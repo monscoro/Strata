@@ -189,8 +189,9 @@ in Layer 4 bis 13,2 % in Layer 0), also ist auch hier keine Zahl die ganze Gesch
   baubar — die Begründung ist jetzt an zwei Punkten dieselbe.
 - **Die Leiter kauft am 128K-Punkt weniger pro S.** S=512 → 13,6 % (32K: 20,3), S=4.096 →
   43,6 % (65,6), S=8.192 → 52,1 % (76,2). Um die Hälfte der Auswahl exakt zu lesen, bräuchte es
-  am 128K-Punkt ein S um 8.192 — 32× das heutige —, und das Byte-Modell preist 8.512 Ringzeilen
-  mit 4,50 + 16·8.512/131.072 = **5,54 bit/Zelle**, teurer als der Produktpunkt (5,29). Die
+  am 128K-Punkt ein S um 8.192 — 32× das heutige —, und das Byte-Modell preist diesen Ring mit
+  B = 512 auf 64 + 8.192 + 512 = 8.768 Zeilen: 4,50 + 16·8.768/131.072 = **5,57 bit/Zelle**
+  (mit B = 6.144: 6,26) — beide über dem Produktpunkt (5,29). Die
   registrierte S1-Lesung (Recall und d-Fächer, nicht der unerreichbare 50-%-Satz) steht damit
   auch für die 128K-Hälfte: **B1 öffnet sich nicht** — im Gegenteil, es kauft hier weniger pro
   S als bei 32K. Das war die offene Frage des 32K-Berichts, und die Antwort ist „nein".
