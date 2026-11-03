@@ -201,7 +201,8 @@ def mem_available_gb() -> float:
 
 
 def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16",
-                short_read: int | None = None, prefill: str = "512") -> list[str]:
+                short_read: int | None = None, prefill: str = "512",
+                prompt_cache: int = 0) -> list[str]:
     base, out, i = list(cfg["args"]), [], 0
     while i < len(base):
         x = base[i]
@@ -222,8 +223,11 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16",
     short = min(seg_tokens + 64, max_ctx - 1)
     if short_read is not None:   # --short-read N: 0 forces the batched prompt path (the S2 probe's route)
         short = min(short_read, max_ctx - 1)
-    return [cfg["exe"], "--serve", *out, *fixed, "--kv", kv, "--max-context", str(max_ctx),
+    args = [cfg["exe"], "--serve", *out, *fixed, "--kv", kv, "--max-context", str(max_ctx),
             "--short-read", str(short), "--prefill", str(prefill)]
+    if prompt_cache:   # a request's pin=N needs --prompt-cache 3 or more (generate.cpp); default stays 0
+        args[args.index("--prompt-cache") + 1] = str(prompt_cache)
+    return args
 
 
 def cmd_run(a) -> int:
@@ -247,7 +251,7 @@ def cmd_run(a) -> int:
     env["STRATA_LOGPOS_TOPK"] = str(a.topk)
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
-    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv, a.short_read, a.prefill)
+    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv, a.short_read, a.prefill, a.prompt_cache)
     if getattr(a, "exe", None):
         args[0] = a.exe
     if a.wrap:
@@ -268,7 +272,11 @@ def cmd_run(a) -> int:
 
     for s in st["segments"]:
         n0, t0 = lines(), time.time()
-        p.stdin.write("GEN 1 " + ",".join(map(str, s["ids"])) + "\n")
+        # pin=N cuts the prompt read at N (a checkpoint edge): the part before is batched, the rest goes through the
+        # verify windows when it fits --short-read (generate.cpp: cuts = {reread_to, root_at, message_at, turn_at,
+        # pin_at, n-1}).  Needs --prompt-cache >= 3.  Absent: the request is exactly the one every earlier run sent.
+        pin = f"pin={a.pin} " if a.pin else ""
+        p.stdin.write("GEN 1 " + pin + ",".join(map(str, s["ids"])) + "\n")
         p.stdin.flush()
         done = None
         for line in p.stdout:
@@ -300,6 +308,7 @@ def cmd_run(a) -> int:
     pathlib.Path(str(out) + ".seg.json").write_text(json.dumps({"segments": segs, "config": a.config,
                                                                  "args": args, "env": a.env or [],
                                                                  "kv": a.kv, "topk": a.topk,
+                                                                 "pin": a.pin, "prompt_cache": a.prompt_cache,
                                                                  "expert_cache_lines": cache}, indent=1))
     return 0
 
@@ -924,6 +933,12 @@ def main() -> int:
                    help=("the engine's --prefill chunk. Default 512 keeps every earlier run byte-identical; `auto` "
                          "sizes the chunk from the prompt (a ring sized by STRATA_KV_WINDOW_BATCH then holds the "
                          "whole prompt, which is what a 128K tag arm needs: ring S+B >= --short-read)"))
+    p.add_argument("--pin", type=int, default=None, metavar="N",
+                   help=("send pin=N in the GEN line: the prompt read is cut at N (a checkpoint edge), so the rest "
+                         "goes through the verify windows when it fits --short-read. The only way a tail of a long "
+                         "prompt reaches the window path; needs --prompt-cache 3 or more"))
+    p.add_argument("--prompt-cache", type=int, default=0, metavar="N",
+                   help="the engine's --prompt-cache (default 0, the quality runs' fixed value); --pin needs 3 or more")
     p = sub.add_parser("kvstats", help="per-layer K/V distribution stats for one calibration text "
                                        "(STRATA_KVSTATS tap + aggregation: kurtosis, crest, block-max, channels)")
     p.add_argument("--config", required=True)
