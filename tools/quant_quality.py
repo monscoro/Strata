@@ -201,7 +201,7 @@ def mem_available_gb() -> float:
 
 
 def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16",
-                short_read: int | None = None) -> list[str]:
+                short_read: int | None = None, prefill: str = "512") -> list[str]:
     base, out, i = list(cfg["args"]), [], 0
     while i < len(base):
         x = base[i]
@@ -223,7 +223,7 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int, kv: str = "fp16",
     if short_read is not None:   # --short-read N: 0 forces the batched prompt path (the S2 probe's route)
         short = min(short_read, max_ctx - 1)
     return [cfg["exe"], "--serve", *out, *fixed, "--kv", kv, "--max-context", str(max_ctx),
-            "--short-read", str(short), "--prefill", "512"]
+            "--short-read", str(short), "--prefill", str(prefill)]
 
 
 def cmd_run(a) -> int:
@@ -247,7 +247,7 @@ def cmd_run(a) -> int:
     env["STRATA_LOGPOS_TOPK"] = str(a.topk)
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
-    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv, a.short_read)
+    args = engine_args(cfg, a.gpu_experts, st["seg_tokens"], a.kv, a.short_read, a.prefill)
     if getattr(a, "exe", None):
         args[0] = a.exe
     if a.wrap:
@@ -920,6 +920,10 @@ def main() -> int:
     p.add_argument("--allow-no-positions", action="store_true",
                    help=("a probe run (STRATA_KV_S2_STATS): the batched prompt path writes no per-position logits, "
                          "so a segment with fewer than half its positions is not an error and the run continues"))
+    p.add_argument("--prefill", default="512", metavar="N|auto",
+                   help=("the engine's --prefill chunk. Default 512 keeps every earlier run byte-identical; `auto` "
+                         "sizes the chunk from the prompt (a ring sized by STRATA_KV_WINDOW_BATCH then holds the "
+                         "whole prompt, which is what a 128K tag arm needs: ring S+B >= --short-read)"))
     p = sub.add_parser("kvstats", help="per-layer K/V distribution stats for one calibration text "
                                        "(STRATA_KVSTATS tap + aggregation: kurtosis, crest, block-max, channels)")
     p.add_argument("--config", required=True)
