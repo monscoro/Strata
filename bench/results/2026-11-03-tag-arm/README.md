@@ -312,6 +312,13 @@ Zwei Einschränkungen, die zur Zahl gehören: der 512-Punkt wird von **einem** P
 Segmentmittel bei 512 kein Längeneffekt; und die Segment-Clusterung hat df = 7, die Längen innerhalb
 eines Segments sind geschachtelt, nicht unabhängig.
 
+**Einordnung: 4K ist ein Diagnose-Punkt, kein Produktpunkt.** Er ist billig (48 Requests in
+Minuten), die Verteilung steht still, und ein Effekt, der hier nicht auftritt, tritt nirgends auf —
+deshalb stand er in der Vorregistrierung. Der Einsatzpunkt der Maschine liegt bei 32K bis 256K
+Kontext; dort entscheidet sich, ob der Tag etwas wert ist, und dort ist bisher nur 128K gemessen
+(ungültig wäre die Verallgemeinerung von 4K auf 32K+). Die `T1`/`T2`-Zahlen bleiben, was sie sind:
+ein Mechanik- und Paritätstest am kürzesten Punkt, nicht der Produktnachweis.
+
 ## Der 128K-Punkt (T3)
 
 Ein Segment (`p128k`, 131.022 Token), ein `GEN 1`, per-Position-Logits aus den Verify-Fenstern,
@@ -393,20 +400,21 @@ Regeländerung.
 
 ## Was das heißt
 
-- **Der Tag ist am 4K-Punkt die bessere Lesepolitik — der gepaarte Test trennt ihn aber nicht von
-  0.** 0,00235 gegen 0,00434, Top-1 48/48 statt 47/48, 7/8 Segmente, und ein 95-%-Intervall, das die
-  0 einschließt. Er kostet 0 Bytes, er schadet nicht messbar, und er bringt den Fensterarm auf
-  `int8`-Parität.
-- **Am 128K-Punkt, wo E1 den größten Hebel ausgerechnet hat (48,55 % exakt statt 8,55 %), ist der
-  Effekt null** (−0,00001 nats, Intervall ±0,0007). Die Abdeckungszahl ist keine Qualitätszahl: der
-  Quantisierungsfehler genau dieser Ringzellen ist zu klein, um in der Verteilung anzukommen. Der
-  Abstand zu `int8` (0,00126) wird davon nicht berührt — nach E1 liegt die Hälfte der
-  Indexer-Auswahl außerhalb des Rings (50,6 %), und dort kann der Tag nichts ändern.
-- **Die Kette E1 → Tag-Arm ist damit geschlossen:** der Hebel ist gratis, am 4K-Punkt nicht von 0 zu
-  trennen (Punktzahl zugunsten des Tags), am 128K-Punkt wirkungslos. Ein 5,0-bit/Zelle-Ziel wird
-  davon nicht erreicht; `B1` bleibt geschlossen. Ein Auslieferungs-Default ist der Tag auf dieser
-  Evidenz **nicht** — dafür fehlt der Nachweis am 128K-Punkt, und der 4K-Nachweis ist ein
-  Nicht-Schlechter-Machen.
+- **Der Einsatzpunkt ist 32K bis 256K, nicht 4K.** Gemessen ist dort bisher der 128K-Punkt, und
+  dort ist der Effekt null (−0,00001 nats, Intervall ±0,0007). Die Abdeckung, die der Tag
+  zusätzlich exakt liest, **fällt mit dem Horizont** (E1/S1 über die S-Leiter: 100 → 94,6 → 80,0 →
+  48,6 %); 32K und 64K sind deshalb die einzigen Längen, an denen der Tag noch mehr zeigen könnte
+  als bei 128K, und 256K kann 128K nicht übertreffen — der Ring hält dort 6.400 von 262.144 Zellen
+  (2,4 % des Kontexts) statt 4,9 % bei 128K. **32K, 64K und 256K sind ungemessen**; das ist der
+  nächste Schritt, nicht eine Nebenfrage.
+- **Der 4K-Punkt ist ein Diagnose-Punkt.** Er ist billig (48 Requests in Minuten), die Verteilung
+  ist eingefroren, und ein Unterschied, der hier nicht auftritt, tritt nirgends auf. Er zeigt, dass
+  der Mechanismus wirkt — Top-1 48/48 statt 47/48, `int8`-Parität, 7/8 Segmente zugunsten des Tags
+  —, und er zeigt **nicht**, dass dieser Gewinn bei 32K+ bleibt. Die 0,00198 sind kein
+  Produktversprechen.
+- **Für die Leiter ändert das nichts:** der Hebel ist gratis, am 128K-Punkt wirkungslos, und ein
+  5,0-bit/Zelle-Ziel wird davon nicht erreicht; `B1` bleibt geschlossen. Ein Auslieferungs-Default
+  ist der Tag auf dieser Evidenz **nicht** — dafür fehlt der Nachweis im Einsatzbereich.
 
 ## Reproduktion (die tatsächlich gelaufenen Befehle)
 
