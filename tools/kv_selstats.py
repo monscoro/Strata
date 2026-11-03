@@ -218,12 +218,51 @@ def cmd_report(a) -> int:
               f"(mean selected sink cells {sum(num(r, 'in_r') for r in dec) / len(dec):.1f} of {a.r})")
         print(f"  recall of the recent: {sum(num(r, 'in_s') for r in dec) / (a.s * len(dec)):.1%}  "
               f"(mean selected recent cells {sum(num(r, 'in_s') for r in dec) / len(dec):.1f} of {a.s})")
+        long = [r for r in dec if num(r, "n_kv") > 16384]
         if "d2" in dec[0]:
-            rest = tot - exact
-            print("  of the cells that are not read exact, distance behind the horizon in multiples of S:")
-            print("  " + "  ".join(
-                f"{name} {100 * sum(num(r, name) for r in dec) / rest:.1f}%"
-                for name in ("d2", "d4", "d8", "d16", "d32", "older")))
+            names = (("d2", 1), ("d4", 2), ("d8", 4), ("d16", 8), ("d32", 16))
+
+            def d_stats(sub, label):
+                # Multiples against a uniform draw over [R, n - S), the form the 32K report published: a bucket's
+                # observed share of the non-exact hits over its expected share (width / span), pooled per sample.
+                # d2 is the next S cells behind the recent window (a doubled S would catch it); older is the rest.
+                cells = sum(num(r, "in_r") + num(r, "in_s") + num(r, "in_b") + num(r, "outside") for r in sub)
+                ex = sum(num(r, "in_r") + num(r, "in_s") for r in sub)
+                rest = cells - ex
+                if rest <= 0:
+                    return
+                print(f"  {label}:")
+                print("    of the non-exact hits: " + "  ".join(
+                    f"{name} {100 * sum(num(r, name) for r in sub) / rest:.1f}%"
+                    for name in ("d2", "d4", "d8", "d16", "d32", "older")))
+                exp = {name: 0.0 for name, _ in names}
+                exp_older = 0.0
+                for r in sub:
+                    n, w = num(r, "n_kv"), num(r, "width")
+                    span = n - a.s - a.r
+                    if span <= 0:
+                        continue
+                    cum = 0
+                    for name, mult in names:
+                        exp[name] += w * mult * a.s / span
+                        cum += mult * a.s
+                    exp_older += w * max(0.0, span - cum) / span
+                print("    multiples against a uniform draw over [R, n-S): " + "  ".join(
+                    f"{name} {sum(num(r, name) for r in sub) / rest / (exp[name] / cells):.2f}x"
+                    for name, _ in names) +
+                    f"  older {sum(num(r, 'older') for r in sub) / rest / (exp_older / cells):.2f}x")
+                # The S ladder: a larger S reclassifies the near buckets into the exact set (the selection itself
+                # is unchanged - the same cells, read differently). Cumulative, as a share of all selected cells.
+                cum = ex
+                lad = []
+                for name, mult in names:
+                    cum += sum(num(r, name) for r in sub)
+                    lad.append(f"S={a.s * 2 * mult} {100 * cum / cells:.1f}%")
+                print("    S ladder (exact + d2..): " + "  ".join(lad))
+
+            d_stats(dec, "this row pools every n_kv > 2051")
+            if long:
+                d_stats(long, "n_kv > 16384 (the published 32K basis)")
         if "tag_b" in dec[0]:
             ts = sum(num(r, "tag_s") for r in dec)
             tb = sum(num(r, "tag_b") for r in dec)
@@ -234,7 +273,6 @@ def cmd_report(a) -> int:
             print(f"  tag still names the cell: S {100*ts/iss:.1f}%  B {100*tb/ib:.1f}%  outside {100*to/max(ou,1):.1f}%")
             print(f"  a tag-hit read would make {100*(ts+tb+to+sum(num(r,'in_r') for r in dec))/tot:.1f}% of the "
                   f"selection exact, against {100*exact/tot:.1f}% today (this row pools every n_kv > 2051)")
-            long = [r for r in dec if num(r, "n_kv") > 16384]
             if long:
                 lt = sum(num(r, "in_r") + num(r, "in_s") + num(r, "in_b") + num(r, "outside") for r in long)
                 lex = sum(num(r, "in_r") + num(r, "in_s") for r in long)
