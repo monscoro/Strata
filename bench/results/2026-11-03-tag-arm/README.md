@@ -1,7 +1,8 @@
 # T1/T2/T3 — der Tag-Arm: Lesepolitik am 4K-Decode-Punkt und teacher-forced am 128K-Punkt
 
-**Status: vorregistriert (2026-11-03), vor dem ersten Arm-Lauf.** Der erste Arm-Lauf (auch der
-Reuse-Gate-Lauf `D0`) darf erst nach dem Schreiben dieses Dokuments starten. Katalogzeile:
+**Status: gemessen (2026-11-03), Ergebnis unten. Vorregistriert vor dem ersten Arm-Lauf.** Der
+erste Arm-Lauf (auch der Reuse-Gate-Lauf `D0`) durfte erst nach dem Schreiben dieses Dokuments
+starten. Katalogzeile:
 `docs/paper/Ansatz_Improvements.md`, E1/S1-Fortsetzung (der Qualitätsbeweis, den
 `bench/results/2026-11-01-e1-128k/` ausdrücklich offen lässt). Anschluss an
 `bench/results/2026-10-27-s3-level-split/` (die vorhandene teacher-forced 4K-Messung) und
@@ -238,3 +239,211 @@ python tools\kv_k1.py --ref ...\128k\fp16.tsv --run ...\128k\win.tsv --run ...\1
 Rohdaten (TSVs, `first.*`, stderr, `index.json`) liegen außerhalb des Repos unter
 `C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\`; im Repo steht dieses Dokument und nach
 dem Lauf der Ergebnisabschnitt darunter.
+
+---
+
+# Ergebnis
+
+**Status: gemessen (2026-11-03).** Alle Güte-Gatter bestanden: Engine-SHA
+`CD5700EC0793F83B…3D0394CA` vor jedem Lauf unverändert; jeder Arm `DONE` ohne „nonfinite", kein
+„do not fit", kein `ERR`; die vier 4K-Arme mit 48 `first.*`-Dateien und der registrierten
+`env`-Umgebung; die vier 128K-Arme mit **6.144** Positionen, derselben Positionsmenge
+(124.877…131.020) in allen vieren, der Ring-Zeile („ring sized for the prompt chunk (6144 cells)", also
+`B` = 6.144 und `S+B` = 6.400 Ringzeilen) in `win` und `tag` und der `STRATA_KV_WINDOW_TAG=1`-Zeile
+nur in `tag`. Ein GPU-Job zur Zeit, 30 s zwischen zwei Starts.
+
+Reuse-Gate `D0` hielt: der fp16-Kontrolllauf über die Länge 4056 reproduzierte die acht
+`first.*`-Dumps vom 2026-11-01 **byte-identisch** (8/8, je 993.280 B).
+
+## Der 4K-Decode-Punkt (T1, T2)
+
+`KL(fp16‖Arm)` über das **volle Vokabular**, 48 Requests je Arm (8 Segmente × 6 Längen):
+
+| Arm | `--kv` | Fenster | `--prefill` | mean KL | median | max | Top-1 = fp16 |
+|---|---|---|---|---|---|---|---|
+| `int8` | `int8` | aus | auto | **0,00184** | 0,00014 | 0,04381 | **48/48** |
+| `winB512` | `q4lm32` | 256/64, `B=512` | 512 | 0,00434 | 0,00018 | 0,09059 | 47/48 |
+| `tagB512` | `q4lm32` | dasselbe + `TAG=1` | 512 | **0,00235** | 0,00009 | 0,06422 | **48/48** |
+| `tagAuto` | `q4lm32` | 256/64 + `TAG=1` | auto | 0,00134 | 0,00018 | 0,02467 | **48/48** |
+
+Die Längenstruktur (Mittel über die 8 Segmente je Länge) zeigt, wo der Tag liest:
+
+| Arm | 256 | 512 | 768 | 1000 | 2048 | 4056 |
+|---|---|---|---|---|---|---|
+| `int8` | 0,000234 | 0,000808 | 0,000927 | 0,000240 | 0,000546 | 0,008314 |
+| `winB512` | 0,000302 | 0,003592 | 0,007416 | 0,000237 | 0,001481 | 0,012985 |
+| `tagB512` | 0,000302 | 0,003056 | **0,000607** | 0,000271 | **0,000427** | **0,009449** |
+| `tagAuto` | 0,000302 | 0,003056 | 0,000576 | 0,000307 | 0,000257 | **0,003548** |
+
+Bei 256 sind `winB512` und `tagB512` **byte-identisch** (8/8): dort lesen beide jede Zelle exakt,
+der Schalter hat nichts zu tun. Die 0,000302, die beide dort gegen `fp16` haben, sind der
+Ring-gegen-Pool-Pfad — beiden Armen gemeinsam, also kein Verzerrer des gepaarten Vergleichs. Ab 768
+trennt der Tag die beiden Arme deutlich (0,000607 gegen 0,007416), bei 4056 halbiert `tagAuto` den
+Fehler des Fensters (0,003548 gegen 0,012985).
+
+Gepaart, **je Segment** (df = 7, `t_crit` 2,365; positiv heißt „der Arm ist schlechter"; Grenze =
+1,645 · SEM über die 8 Segmentwerte):
+
+| Vergleich | Δ (Arm − Basis) | 95 % | `t` | Segmente schlechter | Grenze bei Parität |
+|---|---|---|---|---|---|
+| `tagB512 − winB512` | **−0,00198** | [−0,00458; +0,00061] | −1,81 | **1/8** | 0,00180 |
+| `tagB512 − int8` | **+0,00051** | [−0,00068; +0,00170] | +1,01 | 4/8 | 0,00083 |
+| `tagAuto − winB512` | −0,00299 | [−0,00682; +0,00084] | −1,85 | 0/8 | 0,00266 |
+| `tagAuto − int8` | −0,00050 | [−0,00143; +0,00042] | −1,29 | 3/8 | 0,00064 |
+
+**`T1` — der Tag trägt nicht, die Richtung zeigt zu ihm.** Drei der vier registrierten Klauseln
+halten: der Mittelwert ist negativ (−0,00198), in 7 von 8 Segmenten ist der Tag besser, und
+der Betrag des Mittelwerts liegt mit 0,00198 über der Paar-Grenze 0,00180. Klausel 1 fällt: das
+95-%-Intervall [−0,00458; +0,00061] schließt die 0 **nicht** aus. Die registrierte Regel hat für
+diesen Fall („Intervall enthält 0, Effekt über der Grenze") keine Kategorie, und sie wird nicht
+nachträglich ergänzt. Berichtet wird also der Buchstabe der Regel — **nicht getragen** — mit der
+Richtung: 4 von 6 Längen und 7 von 8 Segmenten zeigen zum Tag (256 ist ein Gleichstand, 1000 steht
+mit +0,000033 minimal dagegen), und die Punktzahl 0,00198 sind 79 % des Abstands, den `winB512` zu
+`int8` hat (0,00249). Der Tag nimmt dem Fensterarm also fast seinen ganzen Rückstand zu `int8` ab;
+mit 8 Segmenten lässt sich aber nur zeigen, dass er es nicht schlechter macht.
+
+**`T2` — die Lücke zu `int8` ist geschlossen.** Alle drei Klauseln halten: das Intervall
+[−0,00068; +0,00170] schließt die 0 ein, |Mittel| 0,00051 ≤ 0,00083, Top-1 48/48 wie `int8`
+(48/48). Der Mittelwert ist positiv, also **Parität, kein Gewinn** — und er liegt innerhalb der
+Auflösung dieses Paares.
+
+Zwei Einschränkungen, die zur Zahl gehören: der 512-Punkt wird von **einem** Prompt getragen
+(s02 bei 512: 0,0166 im Tag-Arm, 0,0178 im Fenster-Arm, 0,0005 bei `int8`), deshalb sind die
+Segmentmittel bei 512 kein Längeneffekt; und die Segment-Clusterung hat df = 7, die Längen innerhalb
+eines Segments sind geschachtelt, nicht unabhängig.
+
+## Der 128K-Punkt (T3)
+
+Ein Segment (`p128k`, 131.022 Token), ein `GEN 1`, per-Position-Logits aus den Verify-Fenstern,
+6.144 Positionen je Arm, `KL(fp16‖Arm)` über `fp16`s top-256:
+
+| Arm | mean KL | sd | Block-95 % (256) | einseitige 95-%-Grenze |
+|---|---|---|---|---|
+| `win` | **0,00211** | 0,0513 | [+0,00047; +0,00486] | +0,00458 |
+| `tag` | **0,00212** | 0,0516 | [+0,00055; +0,00458] | +0,00413 |
+| `int8` | 0,00085 | 0,0333 | [+0,00012; +0,00222] | +0,00218 |
+
+Gepaart je Position (Δ = Arm − Basis, negativ = Arm besser), Moving-Block-Bootstrap über 24 Blöcke
+à 256 Positionen, 2.000 Resamples, Seed 20261103:
+
+| Vergleich | Δ | Block-95 % | einseitige Grenze |
+|---|---|---|---|
+| `tag − win` | **−0,00001** | [−0,00066; +0,00069] | +0,00053 |
+| `win − int8` | +0,00126 | [+0,00033; +0,00265] | +0,00244 |
+| `tag − int8` | **+0,00127** | [+0,00040; +0,00234] | +0,00214 |
+
+**`T3a` — der Arm ist informativ.** `KL(fp16‖win)` = 0,00211 mit Block-95 % [+0,00047; +0,00486]
+ohne 0: der Ring verdrängt, `win` ist nicht heimlich `fp16`. Die 128K-Frage ist damit gültig.
+
+**`T3b` — der Tag trägt am 128K-Punkt nicht.** Δ = −0,00001, das 95-%-Intervall
+[−0,00066; +0,00069] enthält die 0, und |Δ| liegt zwei Größenordnungen unter der vorab fixierten
+Schwelle 0,0013 nats. Beide Klauseln fallen. Robust über die Blockweiten: 512 → −0,00001
+[−0,00063; +0,00066]; 1.024 → −0,00001 [−0,00049; +0,00045]. Der Arm liest also nachweislich
+anders (die Dumps sind nicht identisch) und ändert die Verteilung trotzdem nicht.
+
+**`T3c` — die Lücke zu `int8` ist am 128K-Punkt nicht geschlossen.** `tag − int8` = +0,00127
+(positiv: der Tag ist schlechter), einseitige 95-%-Grenze +0,00214, über der K1-Grenze +0,001.
+`win − int8` = +0,00126 — der Tag verschiebt den Abstand um 0,00001. Praktisch nichts.
+
+Zur Einordnung, **beschreibend und nicht entscheidungsrelevant**: der Tag ist an 5.407 der 6.144
+Positionen besser (Median −1,3·10⁻⁵ nats) und an 737 schlechter, dort aber mit größerem Betrag
+(p95 +1,9·10⁻⁵); das Mittel ist deshalb ≈ 0. Die exakte Lesung hilft an der Mehrheit der
+Positionen ein wenig und schadet an einer Minderheit stärker.
+
+## `T3d` — die registrierte Mechanik-Nullprobe ist gescheitert
+
+Wie registriert muss `tagAuto` `fp16` **bit für bit** reproduzieren. Es tut es nicht: 0 von 48
+Dumps identisch (mean KL 0,00134, Top-1 48/48).
+
+Der Grund ist die Prämisse, nicht der Mechanismus: ein `q4lm32`-Arm kann am 4K-Punkt `fp16` nie
+byte-gleich treffen, weil schon die KV des Prompts quantisiert ist und der Ring ein anderer
+Kernel-Aufruf ist. Sichtbar wird dieser Rest bei 256 Token, wo **beide** Fenster-Arme jede Zelle
+exakt lesen: `winB512` und `tagB512` sind dort byte-identisch (8/8), und beide liegen 0,000302 von
+`fp16` entfernt. Dieser Betrag gehört zum Ring-Pfad, nicht zum Schalter — er ist beiden Armen
+gemeinsam und verzerrt den gepaarten Vergleich nicht.
+
+Damit ist die registrierte Klausel **gescheitert und nicht erfüllbar**. Nach ihrem Buchstaben
+wären `T1` und `T3` ungültig; diese Lesung wird hier nicht angewandt, weil ihre Voraussetzung (ein
+`q4lm32`-Lauf gleich `fp16`) konstruktiv unmöglich ist und jeder `q4lm32`-Arm daran scheitern
+müsste. Der Mechanismus, den die Probe prüfen sollte, ist durch die 256-Token-Identität belegt:
+wo die Lesemengen gleich sind, sind die Ausgaben gleich. Das ist **schwächer** als die registrierte
+Probe — sie zeigt, dass der Schalter bei gleicher Lesemenge nichts anderes tut, nicht dass er bei
+jeder Länge nur die Lesemenge ändert. Es ist eine berichtete Abweichung, keine stillschweigende
+Regeländerung.
+
+## Abweichungen vom registrierten Plan
+
+1. **`T3`-Geometrie: der Tail erreicht die Fenster nur über eine Schnittkante.** Registriert war
+   `--short-read 6144` allein. Der erste `fp16`-Versuch tat genau das und schrieb in 979,6 s
+   **0 Positionen**: der Prompt läuft als ein batched Chunk, und ohne Pin fällt kein Schnitt in die
+   letzten 6.144 Token (`cuts = {reread_to, root_at, message_at, turn_at, pin_at, n−1}`). Gelöst mit
+   `pin=124877` in der `GEN`-Zeile plus `--prompt-cache 3`: [0, 124.877) batched, der Tail durch die
+   Verify-Fenster. Der 0-Positionen-Lauf bleibt als Beleg in den Rohdaten.
+2. **Positionsbereich.** Registriert: 124.878…131.021. Gemessen: 124.877…131.020 (6.144
+   Positionen; `pin` ist 0-basiert, die letzte geschriebene Position ist die vor dem letzten Token).
+3. **Reuse der drei 4K-Arme** (`int8`, `winB512`, `fp16`), gedeckt durch `D0` (8/8 byte-identisch).
+4. **`T3d` wie registriert gescheitert**, mit Ersatzbeleg statt nachträglicher Regeländerung.
+5. **Die `T1`-Regel hat keine Kategorie für „Intervall enthält 0, |Mittel| über der Grenze"** —
+   berichtet als „nicht getragen" mit Richtung, ohne neue Klausel.
+6. **Der 512-Punkt des 4K-Satzes wird von einem Prompt dominiert** (s02: 0,0166 im Tag-Arm, 0,0178
+   im Fenster-Arm, 0,0005 bei `int8`); die Segmentmittel bei 512 sind kein Längeneffekt.
+7. **`--block` im Werkzeug.** `tools/kv_k1.py` hat die registrierte Moving-Block-Bootstrap erst mit
+   diesem Lauf bekommen (`--block N`, Standard 0 = aus). Ohne `--block` druckt es dieselben Zahlen
+   wie vorher (geprüft an `win`/`int8`: 0,00211 bzw. 0,00085, Positionsebene).
+
+## Was das heißt
+
+- **Der Tag ist am 4K-Punkt die bessere Lesepolitik — der gepaarte Test trennt ihn aber nicht von
+  0.** 0,00235 gegen 0,00434, Top-1 48/48 statt 47/48, 7/8 Segmente, und ein 95-%-Intervall, das die
+  0 einschließt. Er kostet 0 Bytes, er schadet nicht messbar, und er bringt den Fensterarm auf
+  `int8`-Parität.
+- **Am 128K-Punkt, wo E1 den größten Hebel ausgerechnet hat (48,55 % exakt statt 8,55 %), ist der
+  Effekt null** (−0,00001 nats, Intervall ±0,0007). Die Abdeckungszahl ist keine Qualitätszahl: der
+  Quantisierungsfehler genau dieser Ringzellen ist zu klein, um in der Verteilung anzukommen. Der
+  Abstand zu `int8` (0,00126) wird davon nicht berührt — nach E1 liegt die Hälfte der
+  Indexer-Auswahl außerhalb des Rings (50,6 %), und dort kann der Tag nichts ändern.
+- **Die Kette E1 → Tag-Arm ist damit geschlossen:** der Hebel ist gratis, am 4K-Punkt nicht von 0 zu
+  trennen (Punktzahl zugunsten des Tags), am 128K-Punkt wirkungslos. Ein 5,0-bit/Zelle-Ziel wird
+  davon nicht erreicht; `B1` bleibt geschlossen. Ein Auslieferungs-Default ist der Tag auf dieser
+  Evidenz **nicht** — dafür fehlt der Nachweis am 128K-Punkt, und der 4K-Nachweis ist ein
+  Nicht-Schlechter-Machen.
+
+## Reproduktion (die tatsächlich gelaufenen Befehle)
+
+```powershell
+# D0 zuerst (Gate), dann die beiden neuen 4K-Arme, dann die vier 128K-Arme — ein GPU-Job zur Zeit,
+# 30 s zwischen zwei Starts. Die drei Reuse-Arme des 4K-Punkts kommen aus 2026-11-01-decode4k.
+python tools\quant_quality.py prompt --config bench\configs\cwe4k-swift-iq3_xxs.json `
+    --ids data\quant_quality\cwe-4k\set.ids.json --lens 4056 --kv fp16 `
+    --out C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\4k\d0-fp16
+
+python tools\quant_quality.py prompt --config bench\configs\cwe4k-swift-iq3_xxs.json `
+    --ids data\quant_quality\cwe-4k\set.ids.json --lens 256,512,768,1000,2048,4056 --kv q4lm32 `
+    --prefill 512 --env STRATA_KV_WINDOW=1 --env STRATA_KV_WINDOW_S=256 `
+    --env STRATA_KV_WINDOW_R=64 --env STRATA_KV_WINDOW_BATCH=512 --env STRATA_KV_WINDOW_TAG=1 `
+    --out C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\4k\tagB512
+
+python tools\quant_quality.py prompt --config bench\configs\cwe4k-swift-iq3_xxs.json `
+    --ids data\quant_quality\cwe-4k\set.ids.json --lens 256,512,768,1000,2048,4056 --kv q4lm32 `
+    --env STRATA_KV_WINDOW=1 --env STRATA_KV_WINDOW_S=256 --env STRATA_KV_WINDOW_R=64 `
+    --env STRATA_KV_WINDOW_TAG=1 `
+    --out C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\4k\tagAuto
+
+# 128K: je Arm einmal, --pin/--prompt-cache tragen die Schnittkante (Abweichung 1)
+python tools\quant_quality.py run --config bench\configs\cwe4k-swift-iq3_xxs.json `
+    --ids C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\p128k.ids.json `
+    --kv <fp16|int8|q4lm32> --prefill auto --short-read 6144 --topk 256 --allow-no-positions `
+    --pin 124877 --prompt-cache 3 `
+    [--env STRATA_KV_WINDOW=1 --env STRATA_KV_WINDOW_S=256 --env STRATA_KV_WINDOW_R=64 `
+     [--env STRATA_KV_WINDOW_TAG=1]] `
+    --out C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\128k\<arm>.tsv
+
+# Auswertung
+python tools\kv_decode.py --ref ...\2026-11-01-decode4k\fp16 `
+    --run ...\2026-11-01-decode4k\int8 --run ...\2026-11-01-decode4k\w256r64B512 `
+    --run ...\2026-11-03-tag-arm\4k\tagB512 --run ...\2026-11-03-tag-arm\4k\tagAuto `
+    --base int8 --base w256r64B512
+python tools\kv_k1.py --ref ...\128k\fp16.tsv --run ...\128k\win.tsv --run ...\128k\tag.tsv `
+    --run ...\128k\int8.tsv --kl-topk 256 --block 256 --json ...\128k\k1.json
+#   Robustheit: dasselbe mit --block 512 und --block 1024 (nicht entscheidend)
+```
