@@ -1,8 +1,8 @@
 # 256K: trägt die Tag-Lesung am oberen Rand des Einsatzbereichs?
 
-**Status: vorregistriert (2026-11-03), vor dem ersten Lauf.** Der erste Arm-Lauf darf erst nach dem
-Schreiben dieses Dokuments starten. Anschluss an `bench/results/2026-11-03-deploy-range/` (32K,
-64K) und `2026-11-03-tag-arm/` (4K, 128K).
+**Status: vorregistriert (2026-11-03), gemessen (2026-11-04).** Die Regeln unten standen vor dem
+ersten Arm-Lauf; das Ergebnis steht darunter. Anschluss an `bench/results/2026-11-03-deploy-range/`
+(32K, 64K) und `2026-11-03-tag-arm/` (4K, 128K).
 
 ## Warum
 
@@ -81,6 +81,106 @@ Blöcke von 256 aufeinanderfolgenden Positionen (24 Blöcke, 2.000 Resamples, Se
 
 Drei Läufe, je ~262K: ~1.950 s Prefill (bei 134 tok/s) + 6.144 Fenster-Schritte, nach der
 128K-Erfahrung (1.193 s) zusammen etwa 1,8 Stunden GPU, kein Engine-Bau.
+
+---
+
+# Ergebnis
+
+**Status: gemessen (2026-11-04).** Alle Güte-Gatter bestanden: je Arm **6.143** Positionen, in
+allen drei Armen dieselbe Positionsmenge, `win`/`tag` mit der Ring-Zeile, nur `tag` mit der
+`STRATA_KV_WINDOW_TAG=1`-Zeile, kein „nonfinite", kein „do not fit", kein `ERR`, Engine-SHA
+unverändert. Alle drei Engine-Zeilen tragen `--max-context 262144`, `--short-read 6144` und
+`--prompt-cache 3`; `seg.json` meldet `pin` 255.900. Die vier Kopien der Passage sind Token für
+Token identisch (262.044 Token, geprüft).
+
+## Verteilung
+
+`KL(int8‖Arm)` je Position, 6.143 Positionen pro Arm:
+
+| Arm | Mittel | Median | p90 | p99 | max | > 0,01 nat | > 0,1 nat |
+|---|---|---|---|---|---|---|---|
+| `win` | 0,000405 | 0,00000064 | 0,000006 | 0,000128 | 0,9210 | 10 | 5 |
+| `tag` | 0,000103 | 0,00000073 | 0,000006 | 0,000078 | 0,3062 | 7 | 2 |
+
+`KL(int8‖win)` ist an **allen** 6.143 Positionen größer als 0, `KL(int8‖tag)` ebenso: der Ring
+liest überall etwas anderes als `int8`, nur sehr wenig. Keine Position liegt über 1 nat.
+
+## `Q3` — ist der Arm informativ? **Ja, knapp.**
+
+`KL(int8‖win)` = **0,000405**, Block-95 % [+0,0000023; +0,001210]. Das Intervall schließt die 0
+aus, aber die untere Grenze liegt nur 2,3·10⁻⁶ über ihr. Die Klausel ist damit erfüllt — der Ring
+hat den Prompt nicht einfach gehalten —, und `Q1` ist gültig; viel Spielraum lässt der Punkt aber
+nicht.
+
+## `Q1` — trägt der Tag bei 256K? **Nein.**
+
+Gepaart `tag − win`, negativ = Tag besser:
+
+| `tag − win` | Block-95 % | einseitige Grenze | besser / schlechter |
+|---|---|---|---|
+| **−0,000302** | [−0,000905; +0,0000001] | +0,00000006 | 2.886 / 3.257 |
+
+Der Mittelwert zeigt zum Tag, aber zwei der drei Klauseln scheitern: das Intervall schließt die 0
+nicht aus (die Obergrenze liegt 1·10⁻⁷ über ihr), und 0,0003 nats liegt weit unter der
+0,0013-Schwelle. Der Median ist praktisch null (+0,00000001). Die Regel „Tag trägt" ist **nicht**
+erfüllt.
+
+## `Q2` — ist die Lücke zu `int8` geschlossen? **Ja.**
+
+| Arm | `KL(int8‖Arm)` | Block-95 % | einseitige Grenze | Regel |
+|---|---|---|---|---|
+| `tag` | **0,000103** | [+0,0000023; +0,0003048] | +0,0003046 | **geschlossen** (Mittel ≤ 0,001, Obergrenze < +0,001) |
+| `win` | 0,000405 | [+0,0000023; +0,0012098] | +0,0012096 | — |
+
+Beide Klauseln halten deutlich: der Mittelwert liegt bei einem Zehntel der Schwelle, die
+einseitige Obergrenze bei einem Drittel. Der Tag ist an diesem Punkt sogar näher an `int8` als das
+Fenster — aber der gepaarte Unterschied (0,0003 nats) ist zu klein, um nach `Q1` etwas zu tragen.
+
+## Beschreibend, nicht registriert
+
+Es gibt am 256K-Punkt **keine** Position über 1 nat; die post-hoc-Trimmung, die an den anderen
+Punkten zwischen 6 und 220 Offsets entfernt, ist hier leer und ändert keine Zahl. Der Grund ist derselbe wie
+in der Wiederholungs-Kontrolle: der Tail ist die vierte Lesung desselben Textes, und Wiederholung
+senkt den Fehler.
+
+## Was das heißt
+
+- **Registriert:** Der Tag trägt bei 256K nicht (`Q1`), die Lücke zu `int8` ist geschlossen
+  (`Q2`), der Arm ist informativ (`Q3`). Damit ist die Aussage „kein Hebel über 32K" für alle
+  Punkte des Einsatzbereichs belegt: 32K, 64K, 128K und 256K.
+- **Der Punkt ist der am stärksten wiederholte.** Der Ring hält 6.144 von 262.144 Zellen
+  (2,3 %), und `KL(int8‖win)` liegt bei 0,0004 nats — der niedrigste Absolutwert der Reihe,
+  allerdings gegen `int8` statt `fp16` gemessen und damit nicht direkt mit den anderen Punkten
+  vergleichbar (siehe Aufbau). Der Vergleich, der zählt, ist der gepaarte `tag − win`, und der
+  ist null.
+- **Wiederholung, nicht Länge.** Der Tail ist die vierte Lesung; die Wiederholungs-Kontrolle
+  (`bench/results/2026-11-03-repeat-control/`) zeigt bei gleicher Länge, dass die zweite Lesung
+  die KL um 7,6-mal (Mittel) senkt und den Tag-Effekt umdreht. `Q4` verbietet, daraus einen
+  Verlauf über die Länge zu machen; es bleibt: an diesem Punkt hat der Tag nichts zu geben.
+- **Für das Produkt:** kein Auslieferungs-Default, kein 5,0-bit/Zelle-Hebel; `B1` bleibt
+  geschlossen.
+
+## Abweichungen vom registrierten Plan
+
+1. **6.143 statt 6.144 Positionen** — dieselbe Pin-Arithmetik wie an allen anderen Punkten
+   (`pin = n − 6144` ergibt `n − 1 − pin = 6.143`); alle drei Arme teilen dieselben Positionen,
+   keine Regel hängt an der Zahl.
+2. **Keine fp16-Referenz** — wie vorregistriert; `int8` ist die Referenz, die absoluten KLs sind
+   mit den fp16-Punkten nicht vergleichbar.
+3. **Die post-hoc-Trimmung ist leer** (keine Position über 1 nat); sie wird berichtet, entscheidet
+   aber nichts.
+4. **Kein Timing, kein Byte-A/B.**
+
+## Grenzen, offen genannt
+
+1. **Keine fp16-Referenz** (siehe Aufbau). Die Aussage ist „Abstand zu `int8`".
+2. **Vierfache Wiederholung.** Der Tail ist die vierte Lesung desselben Textes (Abstände 65,5K,
+   131K, 196,5K). Der Punkt kann von der Wiederholungs-Senkung nur profitieren (die KL fällt),
+   und er trennt Länge und Wiederholung nicht.
+3. **Ring = 2,3 % des Kontexts**, der kleinste Anteil aller Punkte.
+4. **Ein Segment**, keine Segment-Clusterung; die 6.143 Positionen sind geschachtelt.
+5. **`Q3` ist knapp** — die untere Intervallgrenze liegt 2,3·10⁻⁶ über 0. Der Punkt ist
+   informativ, aber nur eben.
 
 ## Reproduktion
 
