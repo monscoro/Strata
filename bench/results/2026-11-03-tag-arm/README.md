@@ -1,8 +1,9 @@
 # T1/T2/T3 — der Tag-Arm: Lesepolitik am 4K-Decode-Punkt und teacher-forced am 128K-Punkt
 
-**Status: gemessen (2026-11-03), Ergebnis unten. Vorregistriert vor dem ersten Arm-Lauf.** Der
-erste Arm-Lauf (auch der Reuse-Gate-Lauf `D0`) durfte erst nach dem Schreiben dieses Dokuments
-starten. Katalogzeile:
+**Status: gemessen (2026-11-03), Reihe geschlossen (2026-11-04), Ergebnis unten. Vorregistriert
+vor dem ersten Arm-Lauf.** Der erste Arm-Lauf (auch der Reuse-Gate-Lauf `D0`) durfte erst nach dem
+Schreiben dieses Dokuments starten. Die fünf Punkte und das Fazit stehen unter „Was das heißt".
+Katalogzeile:
 `docs/paper/Ansatz_Improvements.md`, E1/S1-Fortsetzung (der Qualitätsbeweis, den
 `bench/results/2026-11-01-e1-128k/` ausdrücklich offen lässt). Anschluss an
 `bench/results/2026-10-27-s3-level-split/` (die vorhandene teacher-forced 4K-Messung) und
@@ -398,23 +399,43 @@ Regeländerung.
    diesem Lauf bekommen (`--block N`, Standard 0 = aus). Ohne `--block` druckt es dieselben Zahlen
    wie vorher (geprüft an `win`/`int8`: 0,00211 bzw. 0,00085, Positionsebene).
 
-## Was das heißt
+## Was das heißt (Stand 2026-11-04: die Reihe ist geschlossen)
 
-- **Der Einsatzpunkt ist 32K bis 256K, nicht 4K.** Gemessen ist dort bisher der 128K-Punkt, und
-  dort ist der Effekt null (−0,00001 nats, Intervall ±0,0007). Die Abdeckung, die der Tag
-  zusätzlich exakt liest, **fällt mit dem Horizont** (E1/S1 über die S-Leiter: 100 → 94,6 → 80,0 →
-  48,6 %); 32K und 64K sind deshalb die einzigen Längen, an denen der Tag noch mehr zeigen könnte
-  als bei 128K, und 256K kann 128K nicht übertreffen — der Ring hält dort 6.400 von 262.144 Zellen
-  (2,4 % des Kontexts) statt 4,9 % bei 128K. **32K, 64K und 256K sind ungemessen**; das ist der
-  nächste Schritt, nicht eine Nebenfrage.
-- **Der 4K-Punkt ist ein Diagnose-Punkt.** Er ist billig (48 Requests in Minuten), die Verteilung
-  ist eingefroren, und ein Unterschied, der hier nicht auftritt, tritt nirgends auf. Er zeigt, dass
-  der Mechanismus wirkt — Top-1 48/48 statt 47/48, `int8`-Parität, 7/8 Segmente zugunsten des Tags
-  —, und er zeigt **nicht**, dass dieser Gewinn bei 32K+ bleibt. Die 0,00198 sind kein
-  Produktversprechen.
-- **Für die Leiter ändert das nichts:** der Hebel ist gratis, am 128K-Punkt wirkungslos, und ein
-  5,0-bit/Zelle-Ziel wird davon nicht erreicht; `B1` bleibt geschlossen. Ein Auslieferungs-Default
-  ist der Tag auf dieser Evidenz **nicht** — dafür fehlt der Nachweis im Einsatzbereich.
+Der Tag-Arm ist an fünf Punkten gemessen. Die Tabelle ist die ganze Evidenz:
+
+| Punkt | Referenz | `tag − win` | Block-95 % | `tag − int8` | trägt? |
+|---|---|---|---|---|---|
+| 4K Decode (Diagnose) | `fp16`, volles Vokabular | −0,00198 | [−0,00458; +0,00061] | +0,00051 [−0,00068; +0,00170] | nein (Intervall mit 0); `int8`-Parität |
+| 32K | `fp16`, top-256 | −0,01008 | [−0,03335; +0,01238] | +0,00916 (Obergrenze +0,02795) | nein |
+| 64K | `fp16`, top-256 | −0,00953 | [−0,01877; +0,00049] | −0,00332 (Obergrenze +0,00638) | nein |
+| 128K | `fp16`, top-256 | −0,00001 | [−0,00066; +0,00069] | +0,00127 (Obergrenze +0,00214) | nein |
+| 256K | `int8`, top-256 | −0,000302 | [−0,000905; +0,0000001] | +0,000103 (Obergrenze +0,000305) | nein; `int8`-Lücke geschlossen |
+
+- **Kein Punkt trägt nach der vorregistrierten Regel.** 4K (`T1`), 32K/64K (`D1`), 128K (`T3b`)
+  und 256K (`Q1`): an keinem Punkt schließt das Intervall die 0 aus **und** liegt |Mittel| über
+  0,0013. Die Punktwerte zeigen an allen fünf Punkten zum Tag (negativ), aber an den kurzen ist
+  die Streuung größer als der Effekt, und an den langen ist der Effekt null. Kein
+  Vorzeichenbefund wird nachträglich zur Regel gemacht.
+- **Die `int8`-Lücke ist nur dort geschlossen, wo der Punkt fast nichts kostet:** 4K-Parität
+  (`T2`) und 256K (`Q2`, `KL(int8‖tag)` 0,000103 gegen 0,000405 für das Fenster). An 32K, 64K und
+  128K ist sie es nicht, und die 64K-Schließung aus der Wiederholungs-Kontrolle ist
+  floor-getragen (getrimmt +0,00096).
+- **Wiederholung, nicht Länge, erklärt den 128K-Nullpunkt.** Die Kontrolle bei gleicher Länge
+  (65,5K) zeigt: dieselbe Passage 32,8K früher gelesen senkt `KL(fp16‖int8)` um Faktor 0,132 im
+  Mittel und 0,074 im Median und dreht den Tag-Effekt von −0,00743 (frisch, Intervall mit 0) auf
+  +0,00176 (wiederholt, signifikant schlechter). Der 128K-Punkt ist eine zweite Lesung derselben
+  Passage; der 256K-Punkt ist die vierte. Keiner der beiden trennt Länge von Wiederholung.
+- **4K bleibt ein Diagnose-Punkt.** Er zeigt, dass der Mechanismus wirkt (Top-1 48/48,
+  `int8`-Parität, 7/8 Segmente zugunsten des Tags), und er zeigt nicht, dass dieser Gewinn bei
+  32K+ bleibt.
+- **Für die Leiter ändert das nichts:** der Hebel ist gratis, trägt aber nirgends im
+  Einsatzbereich; ein 5,0-bit/Zelle-Ziel wird davon nicht erreicht, `B1` bleibt geschlossen. Ein
+  Auslieferungs-Default ist der Tag auf dieser Evidenz **nicht**.
+
+**Der Arm ist damit geschlossen.** Er bleibt als Forschungsarm im Baum (Flag aus, `int8`-Pfad
+unberührt, keine Byte-Änderung); weitere Läufe sind nicht geplant. Die Rohdaten liegen in den
+fünf Ergebnisordnern (`2026-11-03-tag-arm/` für 4K und 128K, `2026-11-03-deploy-range/` für 32K
+und 64K, `2026-11-03-repeat-control/`, `2026-11-03-256k/`).
 
 ## Reproduktion (die tatsächlich gelaufenen Befehle)
 
