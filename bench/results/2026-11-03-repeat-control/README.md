@@ -86,6 +86,132 @@ Resamples, Seed 20261103).
 Acht Läufe (2 Punkte × 4 Arme), je ~65,5K: ~490 s Prefill + 6.144 Fenster-Schritte, nach der
 64K-Erfahrung (629–667 s) zusammen etwa 90 Minuten GPU, kein Engine-Bau.
 
+---
+
+# Ergebnis
+
+**Status: gemessen (2026-11-03/04).** Alle Güte-Gatter bestanden: je Punkt und Arm **6.143**
+Positionen, innerhalb eines Punktes dieselbe Positionsmenge in allen vier Armen, `win`/`tag` mit
+der Ring-Zeile, nur `tag` mit der `STRATA_KV_WINDOW_TAG=1`-Zeile, kein „nonfinite", kein
+„do not fit", kein `ERR`, Engine-SHA unverändert. Die 6.144 Tail-Token von `F` und `R` sind
+identisch (6.144/6.144 geprüft), die Positionen liegen bei `F` 59.367…65.509 und bei `R`
+59.368…65.510.
+
+## Die zwei Punkte
+
+`KL(fp16‖Arm)` über `fp16`s top-256, je Position, 6.143 Positionen pro Arm und Punkt:
+
+| Punkt | Arm | Mittel | Median | Positionen > 1 nat | max |
+|---|---|---|---|---|---|
+| `F` (frisch) | `int8` | 0,02669 | 0,000739 | 37 | 11,13 |
+| `F` (frisch) | `win` | 0,02810 | 0,001323 | 36 | 13,25 |
+| `F` (frisch) | `tag` | 0,02066 | 0,000963 | 32 | 7,92 |
+| `R` (wiederholt) | `int8` | 0,00352 | 0,000055 | 2 | 7,74 |
+| `R` (wiederholt) | `win` | 0,00483 | 0,000089 | 4 | 9,10 |
+| `R` (wiederholt) | `tag` | 0,00659 | 0,000302 | 4 | 8,15 |
+
+## `P1` — senkt Wiederholung den Fehler? **Ja, deutlich.**
+
+`KL(fp16‖int8)`: Mittel **0,02669 → 0,00352** (Verhältnis 0,132), Median **0,000739 →
+0,000055** (Verhältnis 0,074). Beide Klauseln der Regel (Mittel **und** Median höchstens die
+Hälfte) halten klar. Dasselbe Bild bei den anderen Armen: `win` 0,172 im Mittel / 0,067 im
+Median, `tag` 0,319 / 0,314. Gepaart über den Tail-Offset (dieselben 6.144 Token, nur in einem
+anderen Kontext gelesen) ist die Differenz `R − F` negativ mit Intervall ohne 0: `int8`
+−0,02317 [−0,03136; −0,01486], `win` −0,02327 [−0,03387; −0,01379], `tag` −0,01407
+[−0,02095; −0,00736].
+
+**Damit ist Wiederholung als Treiber bestätigt — bei einem Abstand von 32.756 Token.** Der
+128K-Punkt liest denselben Text bei einem Abstand von 65.511 Token und liegt 47-mal unter dem
+64K-Punkt; der 64K-Punkt mit 32,8K Abstand liegt 7,6-mal darunter. Beide Beobachtungen zeigen in
+dieselbe Richtung; sie beweisen nicht, dass der 128K-Abfall **nur** von der Wiederholung kommt
+(siehe Grenzen).
+
+## `P2` — trägt der Tag auch auf wiederholtem Text? **Nein — und auf wiederholtem Text schadet er.**
+
+Gepaart `tag − win`, negativ = Tag besser:
+
+| Punkt | `tag − win` | Block-95 % | einseitige Grenze |
+|---|---|---|---|
+| `F` (frisch) | **−0,00743** | [−0,01728; +0,00093] | −0,00014 |
+| `R` (wiederholt) | **+0,00176** | [+0,00024; +0,00359] | +0,00331 |
+
+In `F` zeigt der Punktwert zum Tag, das Intervall schließt die 0 aber ein (wie bei 32K/64K/128K):
+die registrierte Regel „Tag trägt" ist **nicht** erfüllt. In `R` ist das Vorzeichen umgedreht und
+das Intervall schließt die 0 aus: der Tag ist dort **signifikant schlechter** als das Fenster
+(+0,00176 nats, 4.749 von 6.143 Positionen schlechter). Der Effekt der Tag-Lesung wechselt mit
+der Wiederholung das Vorzeichen.
+
+## `P3` — ist die Lücke zu `int8` geschlossen? **In `F` nach der Regel ja, in `R` nein.**
+
+| Punkt | `tag − int8` | Block-95 % | einseitige Grenze | Regel |
+|---|---|---|---|---|
+| `F` (frisch) | **−0,00603** | [−0,01204; −0,00033] | −0,00134 | **geschlossen** (Mittel ≤ 0, Obergrenze < +0,001) |
+| `R` (wiederholt) | **+0,00307** | [+0,00177; +0,00471] | +0,00439 | nicht geschlossen |
+
+Im frischen 64K-Kontext liegt der Tag **unter** `int8` (0,02066 gegen 0,02669), mit Intervall ohne
+0. Das ist der erste Punkt der Reihe, an dem der gepaarte Unterschied zu `int8` das Intervall ohne
+0 hat (am 64K-Punkt aus `2026-11-03-deploy-range/` war der Punktwert ebenfalls zugunsten des Tags,
+das Intervall schloss die 0 aber ein). Der Befund
+ist allerdings **floor-getragen** (nächster Abschnitt): ohne die Positionen über 1 nat bleibt
+`tag − int8` = +0,00096 [−0,00003; +0,00196], also Gleichstand statt Vorsprung. In `R` ist der Tag
+auch nach der Regel schlechter als `int8`.
+
+## Beschreibend, nicht registriert
+
+Ohne die Offsets, an denen ein Arm im jeweiligen Kontext über 1 nat liegt (`F`: 65 entfernt,
+`R`: 7), ergibt sich gepaart:
+
+| Punkt | `tag − win` (getrimmt) | `tag − int8` (getrimmt) |
+|---|---|---|
+| `F` | **−0,00130 [−0,00244; −0,00009]** | +0,00096 [−0,00003; +0,00196] |
+| `R` | **+0,00175 [+0,00079; +0,00298]** | +0,00240 [+0,00156; +0,00362] |
+
+Getrimmt ist der Tag auf frischem Text besser als das Fenster (0,0013 nats, Intervall ohne 0,
+knapp an der 0,0013-Schwelle) und auf wiederholtem Text schlechter (+0,0018, Intervall ohne 0).
+Gegen `int8` bleibt er an beiden Punkten auf oder hinter `int8`-Niveau. Die Trimmung ist
+**post hoc** und entscheidet nichts; sie steht hier, weil der registrierte Mittelwert an beiden
+Punkten von 0,1–1,1 % der Positionen (65 bzw. 7 Offsets) regiert wird.
+
+## Was das heißt
+
+- **Registriert:** Wiederholung senkt den Fehler deutlich (`P1`: 7,6-mal im Mittel, 13-mal im
+  Median bei 32,8K Abstand). Der Tag trägt auf keinem der beiden Punkte (`P2`); auf wiederholtem
+  Text ist er signifikant schlechter als das Fenster. Die `int8`-Lücke ist nur im frischen
+  Kontext nach der Regel geschlossen (`P3`), und dort nur, solange die Floor-Positionen im
+  Mittel bleiben.
+- **Der 128K-Nullpunkt ist damit zum großen Teil erklärt:** die zweite Lesung derselben Passage
+  senkt die KL um fast eine Größenordnung, und sie dreht das Vorzeichen des Tag-Effekts. Der
+  128K-Punkt ist kein Beleg dafür, dass der Tag bei 128K nichts kann — er ist ein Beleg dafür,
+  dass er auf bereits gelesenem Text nichts kann.
+- **Für das Produkt:** auf frischem Text ist der Tag eine kleine, kostenlose Verbesserung
+  (getrimmt 0,0013 nats), auf wiederholtem Text ein kleiner Schaden (+0,0018). Das ist kein
+  Auslieferungs-Default und kein 5,0-bit/Zelle-Hebel; `B1` bleibt geschlossen.
+- **Offen:** 256K (`2026-11-03-256k/`, eigener Lauf) — dort ist der Tail die vierte Lesung
+  desselben Textes, also maximal wiederholt.
+
+## Abweichungen vom registrierten Plan
+
+1. **6.143 statt 6.144 Positionen** — dieselbe Pin-Arithmetik wie bei 32K/64K (`pin = n − 6144`
+   ergibt `n − 1 − pin = 6.143`); alle vier Arme eines Punktes teilen dieselben Positionen, keine
+   Regel hängt an der Zahl.
+2. **Der erste Lauf wurde durch einen Server-Neustart abgebrochen** (2026-11-03, `fresh fp16`,
+   0-Byte-TSV) und am 2026-11-04 vollständig neu gefahren; die TSV ist die des Neustarts.
+3. **`P1` ist ein Vergleich zweier Kontexte, kein gepaarter Eingriff** — die erste Hälfte
+   unterscheidet sich (`s04–s07` gegen `s00–s03`), siehe Grenzen.
+4. **Kein Timing, kein Byte-A/B.**
+
+## Grenzen, offen genannt
+
+1. **Die erste Hälfte unterscheidet sich.** In `R` stand 32,8K früher derselbe Text, in `F`
+   anderer. Der unmittelbare Präfix des Tails ist in beiden derselbe (`s00`, `s01`, `s02`, Anfang
+   `s03`), aber ein Rest-Konfund bleibt: „Wiederholung" ist hier „derselbe Text 32,8K früher plus
+   anderer Text davor".
+2. **Abstand 32,8K, nicht 65,5K.** `P1` zeigt, dass Wiederholung überhaupt wirkt; es beweist
+   nicht, dass der 128K-Abfall (Abstand 65,5K) allein daher kommt.
+3. **Ein Segment je Punkt**, keine Segment-Clusterung; die 6.143 Positionen sind geschachtelt.
+4. **`P3`-„geschlossen" in `F` ist floor-getragen** — die getrimmte Zahl steht daneben und ist als
+   post hoc markiert.
+
 ## Reproduktion
 
 ```powershell
