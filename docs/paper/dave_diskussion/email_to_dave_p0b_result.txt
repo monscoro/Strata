@@ -1,0 +1,62 @@
+Subject: P0b result: the 16/16 tail is tangential - the norm correction is dead
+
+Hi Dave,
+
+the capture is through, and the answer to my own question is negative, cleanly.
+6,144 tail positions (124,877...131,020), 12 QSA layers, 2 KV heads, K and V
+separately, 75.5M rotated values from the batched prefill path (engine 0.1.47,
+gfx1200, RX 9060 XT).
+
+MSE per value, radial share r, gain against the current max|x|/87 block:
+
+    arm                        bits     MSE        r      gain
+    max|x|/87 (18 B)           4.50   8.404e-03   0.6%    0.00 dB
+    RMS/32 per vector (16 B)   4.12   1.151e-02   1.2%   -1.36 dB
+    max|x|/87 + norm           4.62   8.339e-03   0.0%   +0.03 dB
+    RMS/32 + norm              4.12   1.143e-02   0.0%   -1.34 dB
+    int8                       8.25   4.296e-05   0.4%  +22.91 dB
+    RMS/32 per 32-block        4.00   1.092e-02   0.9%   -1.14 dB
+
+At the 18 positions that carry 54 % of the P0a gap: max|x|/87 MSE 8.204e-03,
+r 0.6 %, max|x|/87 + norm +0.03 dB. The KV error there is not larger than
+average - it is slightly smaller.
+
+So the norm correction buys 0.03 dB where the rule needs 0.77 dB (0.95x MSE).
+Dead at r = 0.6 % < 5 %.
+
+Your Villines pointer made me measure the minimum cosine per (layer, head,
+K/V). For our arm: min 0.9949 over all 48 units, none below 0.5, none negative;
+at the top-gap positions min 0.9955, p1 0.9959, median 0.9966. The near-zero
+collapse does not reproduce on this model with this table. I am not disputing
+his measurement of turboquant_4bit_nc - different codebook and scaling - only
+noting that our 16/16 arm does not show it.
+
+Two more numbers that explain the tail, or rather un-explain it: mean vector
+norm 15.87 overall against 15.70 at the top-gap positions (1.0x), Pearson
+r(norm, P0a gap) = -0.04. And a spot check: position 130972, the worst P0a
+position (+0.99 nats), has MSE 8.18e-03, min cosine 0.9959, mean norm 15.88 -
+indistinguishable from position 130000 (7.57e-03) or 125500 (8.44e-03).
+
+My reading: the tail is not a codec error at those positions. The logits are
+sensitive there; the K/V is normal. That also means no per-vector correction
+at the same error level can fix it - only a lower error everywhere (int8 is
+22.9 dB better in vector MSE), more bits at specific cells, or a different read
+path.
+
+One limitation I want to be explicit about: the 18 positions come from the
+windowed P0a arm. The pure q4lm32 arm writes no logits on the batched path, so
+I have its KV error there but not its own logit tail. That is the remaining
+control: a pure 16/16 run without the window, same 6,144 positions. It decides
+whether the P0a tail is a codec effect or a read-path effect (exact window plus
+q4 bulk). It changes no default.
+
+Decision per the pre-registered rule: no 18-byte build, no 16-byte format, no
+P2, no 5.0-bit budget. B1 stays closed.
+
+If you want the numbers, p0b.json has all arms, the K/V split, the cosine and
+the norm series - say the word. If you have a view on the sensitivity reading,
+or on whether a per-layer split is worth a look before the pure-arm control, I
+take it.
+
+Best,
+M.

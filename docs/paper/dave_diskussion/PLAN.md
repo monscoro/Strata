@@ -141,14 +141,77 @@ geschaetzt wird.
 Vor dem 128K-Lauf steht ein 32K-Smoke (`p32k.ids.json`, Dump 26.756...32.755):
 er prueft Format, Chunking und den Analysepfad, bevor der grosse Lauf startet.
 
+## P0b - Ergebnis (gemessen 2026-11-07)
+
+**Capture.** `p128k.ids.json` (131.022 Token), batched Prefill (`--short-read 0`),
+`--kv q4lm32`, Dump nach der Hadamard-Rotation und vor `kv_append_q4`. 12 QSA-
+Layer (3...47), 2 KV-Koepfe, K und V getrennt, Positionen 124.877...131.020
+(6.144), 75.497.472 Werte, 302 MB, Laufzeit 981,7 s. Engine 0.1.47 aus
+`build-hip-port` (ROCm 7.1, gfx1200, RX 9060 XT). Der 32K-Smoke (5.999
+Positionen, 26.756...32.754) lief mit denselben Zahlen und diente nur der
+Formatpruefung.
+
+**Alle Werte, 6.144 Positionen:**
+
+| Arm | bit/Wert | MSE | radialer Anteil | Gewinn gegen max/87 |
+|---|---:|---:|---:|---:|
+| `max/87` (18 B) | 4,50 | 8,4041e-03 | **0,6 %** | 0,00 dB |
+| `RMS/32` per Vektor (16 B) | 4,12 | 1,1505e-02 | 1,2 % | −1,36 dB |
+| `max/87` + Norm | 4,62 | 8,3394e-03 | 0,0 % | +0,03 dB |
+| `RMS/32` + Norm | 4,12 | 1,1429e-02 | 0,0 % | −1,34 dB |
+| `int8` | 8,25 | 4,2964e-05 | 0,4 % | +22,91 dB |
+| `RMS/32` per 32er-Block | 4,00 | 1,0919e-02 | 0,9 % | −1,14 dB |
+
+K/V getrennt: K 2,472e-03 / 0,6 %, V 3,296e-04 / 0,7 % (max/87); `RMS/32`
+K 3,382e-03 / 1,2 %, V 4,526e-04 / 1,3 %.
+
+**Die 18 Top-Gap-Positionen aus P0a** (130972, 127887, 130973, 130952, 130942,
+130968, 126191, 125074, 128793, 130954, 128883, 124891, 127727, 128709, 128516,
+125064, 128583, 130951): `max/87` MSE 8,2036e-03, radial **0,6 %**;
+`max/87`+Norm 8,1403e-03 (+0,03 dB); `int8` 4,1521e-05 (+22,96 dB). Der
+KV-Fehler an diesen Positionen ist also **nicht groesser** als im Mittel.
+
+**Norm und Cosinus.** Mittlere Vektor-Norm 15,871 im Ganzen, 15,702 an den
+Top-Gap-Positionen (1,0x); Pearson r(Norm, P0a-Gap) = −0,041. Minimaler Cosinus
+pro (Layer, Kopf, K/V) fuer `max/87`: **0,9949** ueber alle 48 Einheiten, keine
+unter 0,5, keine negativ; an den Top-Gap-Positionen min 0,9955, p1 0,9959,
+Median 0,9966. Fuer `RMS/32`: min 0,9790, an den Top-Gap-Positionen 0,9898.
+Ein Spot-Check am Dump: Position 130972 hat MSE 8,18e-03, min Cosinus 0,9959,
+mittlere Norm 15,88; Position 130000 7,57e-03, 125500 8,44e-03.
+
+**Lesart.** Der 16/16-Fehler ist **tangential**: die Normkorrektur kauft
+0,03 dB, die Schwelle verlangt 0,77 dB (0,95x MSE). Daves Vermutung trifft zu.
+Der Tail ist kein Codec-Fehler: an den 18 Positionen, die 54 % des P0a-Abstands
+tragen, sind Norm, MSE und Cosinus unauffaellig. Die Logits sind dort
+empfindlich, nicht die K/V schlechter. Villines' Worst-Case-Kollaps (min
+Cosinus nahe null) reproduziert auf diesem Modell mit dieser Tabelle **nicht**;
+das ist ein Befund ueber unseren Arm, keine Widerlegung seiner Messung an
+`turboquant_4bit_nc`. `RMS/32` ist zudem schlechter als `max/87` (−1,36 dB) und
+hat den groesseren radialen Anteil - das 16-Byte-Format traegt nicht.
+
+**Entscheidung (nach der vorab festgelegten Regel).** `r` = 0,6 % an den
+Top-Gap-Positionen < 5 % → **tot**. Kein minimaler 18-Byte-Build, kein
+16-Byte-Format, kein P2. Kein 5,0-bit-Budget, kein Default, B1 bleibt
+geschlossen.
+
+**Grenze.** Die 18 Positionen stammen aus dem gefensterten P0a-Arm (`win`).
+Der reine `q4lm32`-Arm schreibt auf dem batched Pfad keine Logits, sein eigener
+Tail ist also nicht gemessen. Die Aussage gilt fuer den KV-Fehler an diesen
+Positionen, nicht fuer die Behauptung, der reine Arm habe dort keinen
+Logit-Tail. Genau das ist die verbleibende P1-Kontrolle.
+
 ## Was P1 jetzt ist
 
 `p99` und `letzte 1.024` liegen bereits in den 6.144 Tail-Positionen; sie brauchen
-keinen neuen GPU-Lauf. Das **Ganzsegment** ist der falsche Zielwert: es verwassert
-den Tail. Ein reiner 16/16-Lauf **ohne Fenster** bleibt die einzige fehlende
-Kontrolle, falls P0b Codec und Lesepfad trennen muss; er ist nicht P0b.
+keinen neuen GPU-Lauf. P0b hat den **Codec** entschieden (Normkorrektur tot,
+16-Byte-Format schlechter), aber nicht den Tail des **reinen** Arms: die 18
+Positionen stammen aus dem gefensterten `win`-Lauf. Der reine 16/16-Lauf **ohne
+Fenster** (`--kv q4lm32`, `--short-read 6144`, kein `STRATA_KV_WINDOW`) ist
+damit die naechste und einzige fehlende Kontrolle: er sagt, ob der P0a-Tail ein
+Codec-Effekt oder ein Effekt des Lesepfads (exaktes Fenster plus q4-Bulk) ist.
+Er aendert keinen Default und oeffnet kein 5,0-bit-Budget.
 
-## Reproduktion (geplant)
+## Reproduktion (gelaufen 2026-11-07)
 
 ```powershell
 $out = 'C:\Users\krone\git\Strata-data\bench\2026-11-07-p0b'
@@ -174,4 +237,6 @@ python tools\kv_p0b_radial.py --dump $out\kv.bin --top-n 18 `
     --json $out\p0b.json
 ```
 
-Der Lauf braucht die GPU; er startet erst nach dem ausdruecklichen OK.
+Der Dump (`kv.bin`) und die Zahlen (`p0b.json`) liegen in
+`Strata-data\bench\2026-11-07-p0b`; der 32K-Smoke dort als `kv32k.bin` und
+`p0b32k.json`. Die Analyse braucht keine GPU.
