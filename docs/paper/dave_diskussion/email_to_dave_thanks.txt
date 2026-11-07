@@ -1,0 +1,67 @@
+Subject: Danke - L1/16/16 akzeptiert; P0a zeigt einen Tail, keine
+ Mittelwert-Verschiebung
+
+Hi Dave,
+
+danke fuer die Korrektur. Ich akzeptiere sie: L1 ist nicht tot, und
+`turboquant_4bit_nc` ist 16/16. Damit ist 16/16 der Produktkandidat, gegen den
+jede Revision antreten muss. Die Spezifikationsantworten schliessen die Punkte,
+die ich offen hatte: Rotation vor der Quantisierung, eine data-oblivious
+N(0,1)-Tabelle, L2-Norm pro Vektor pro KV-Kopf, Korrektur vor der inversen
+Rotation, "per-coordinate" als eine Tabelle koordinatenweise. Danke, dass du
+die pauschale Abwertung zurueckgenommen hast.
+
+Ich habe P0a inzwischen offline auf den vorhandenen 128K-Daten gerechnet - kein
+GPU-Lauf, 6.144 Tail-Positionen, KL(fp16||Arm) ueber fp16s top-256. `win` und
+`tag` sind dort beide q4lm32 = 16/16; `int8` ist die Latte.
+
+    Arm             mean       median     p99        max        mean ohne top 1 %
+    int8            0,000847   0,000002   0,001623   2,493      0,000021
+    win  (16/16)    0,002108   0,000023   0,003362   3,211      0,000075
+    tag  (16/16)    0,002115   0,000005   0,002849   2,881      0,000033
+
+Gepaart `win - int8`: mean +0,001261, aber mean ohne die top 1 % -0,000079.
+91,5 % der Positionen sind besser. 18 Positionen haben Delta > 0,1 nats, 36
+haben Delta > 0,01. Die fuenf groessten sind 130972 (+0,99), 127887 (+0,93),
+130973 (+0,84), 130952 (+0,72), 130942 (+0,71) - zusammen 54 % des gesamten
+Abstands. Die letzte 1.024 ist +0,003790, ohne top 1 % -0,000472.
+
+Das ist der Punkt, an dem deine Normkorrektur fuer uns schwierig wird: der
+16/16-Abstand zu int8 ist kein uniformer Shift, sondern ein Tail aus wenigen
+Positionen. Auf 99 % der Positionen ist 16/16 nicht schlechter. Eine radiale
+per-Vektor-Korrektur passt auf einen Mittelwert-Bias; unseren Tail trifft sie
+nur, wenn genau diese Ausreisser einen Normfehler haben.
+
+Deshalb die eine Frage, die ich dir jetzt stelle: hilft `norm_correction` einem
+Ausreisser-Vektor, oder nur dem Mittelwert? Konkret: hast du eine p99-,
+letzte-1.024- oder Worst-Position-Zahl fuer `turboquant_4bit_nc`, oder nur PPL?
+Wenn es sie nicht gibt, ist das die Zahl, die wir selbst produzieren.
+
+Unser P0b ist entsprechend gebaut:
+
+- Capture der post-Rotation-K/V an den 6.144 Tail-Positionen, alle 12 QSA-
+  Layer, 2 KV-Koepfe, K und V getrennt.
+- Vier Arme auf denselben Vektoren: max|x|/87 (heutiger 18-Byte-Block),
+  RMS/32 (deine feste Tabelle), max/87 + Orakel-Normkorrektur, RMS/32 +
+  Orakel-Normkorrektur. Dazu int8 auf denselben Vektoren als Codec-Latte.
+- Zerlegung exakt nach KVarN: radial = (||x|| - ||x_dq||)^2, tangential =
+  2||x||||x_dq||(1 - cos), total = radial + tangential. Die Orakel-Korrektur
+  ist x_dq * (||x|| / ||x_dq||); danach bleibt nur der tangentiale Term.
+- Entscheidung vor dem Lauf: radialer Anteil r = radial / total. r < 5 % tot,
+  5...20 % marginal (kein Build, P2 entscheidet), r >= 20 % ueberlebt. Ein
+  hohes r im Mittel bei r < 5 % an den Top-Gap-Positionen ist kein Tail-Gewinn.
+- Das 16-Byte-Format nur, wenn MSE(RMS/32 + Norm) < MSE(max/87). Der minimale
+  18-Byte-Build nur, wenn MSE(max/87 + Norm) <= 0,95 * MSE(max/87).
+
+P1 hat sich damit verschoben: p99 und letzte 1.024 liegen schon in den 6.144
+Tail-Positionen; das Ganzsegment ist der falsche Zielwert, weil es den Tail
+verwaessert. Ein reiner 16/16-Lauf ohne Fenster bleibt die einzige fehlende
+Kontrolle, falls P0b Codec und Lesepfad trennen muss. P2 (4K, 8 Segmente)
+startet nur, wenn P0b ueberlebt. Kein 5,0-bit-Budget, kein Default.
+
+Wenn du zu dem Tail-Fall eine Zahl oder eine Vermutung hast: ich nehme sie.
+Wenn nicht, schicke ich dir die radiale/tangentiale Zerlegung, sobald der
+Capture durch ist.
+
+Best,
+M.

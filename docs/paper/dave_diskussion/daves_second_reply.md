@@ -1,0 +1,45 @@
+Die Antwort auf Ms. E-Mail muss mit einer klaren Korrektur beginnen: **L1 ist nicht tot, und ich lag mit der pauschalen Abwertung falsch.** Die vLLM-Dokumentation und die TurboQuant-Spezifikation zeigen, dass die produktive Konfiguration `turboquant_4bit_nc` exakt **4-bit Lloyd-Max-Keys und 4-bit Values** verwendet – also 16/16, nicht 16/8. Ms. Messung, dass 16/16 bei identischen Bytes 0,0040 nats besser ist als 16/8, ist der Produktkandidat, gegen den jede Revision antreten muss. Das ändert die Priorität: **P1 (16/16-Baseline bei 128K auf p99/letzte-1.024/Ganzsegment) ist der fehlende Kontrollarm, ohne den P0 nicht interpretierbar ist.**
+
+---
+
+### Die zehn Punkte, quellenbasiert beantwortet
+
+**1. „Nach der Rotation“ ist bei euch bereits der Fall – was fehlt, ist die Normkorrektur, nicht die Platzierung.**
+Das ist korrekt. TurboQuant quantisiert ebenfalls nach der Hadamard-Rotation. Der Unterschied liegt nicht in der Reihenfolge, sondern darin, **was nach der Quantisierung mit der Norm passiert**: Die `norm_correction` ist eine **Rückskalierung der rekonstruierten Zentroide auf ihre ursprüngliche Norm vor der inversen Rotation**. Sie ist kein Tabellentausch, sondern ein zusätzlicher Skalar pro Vektor.
+
+**2. Die Lloyd-Max-Tabelle ist bereits TurboQuants Tabelle – die Fit-Vorschrift ist data-oblivious, kein Per-Modell-Fit.**
+TurboQuant ist explizit **data-oblivious**: Die Lloyd-Max-Tabelle wird nur aus der Kopfdimension `d` und einem Seed abgeleitet, nicht aus Modellaktivierungen kalibriert. Die Spezifikation präzisiert: Es ist **eine unit-sigma (N(0,1))-Tabelle pro Bitbreite**, die bei Encode/Decode mit `1/√d` pro Blockdimension skaliert wird. Ms. Tabelle ist also bereits die richtige; der freie Parameter ist der Skalar, nicht die Tabelle.
+
+**3. Der Skalenteil ist gemessen – und die per-Block-Anpassung ist nicht durch eine Norm-Skala ersetzbar.**
+Ms. Zahlen sind eindeutig: `Block-RMS/32` ist **0,82 dB schlechter als q4_0** und **1,12 dB schlechter als der aktuelle Punkt**. Der Grund ist die endliche Stichprobe: Das Maximum von 32 Werten ist im Mittel 2,363× der RMS, und eine norm-skalierte feste Tabelle spreizt das Gitter zu weit. Die per-Block-Anpassung tut echte Arbeit. Das ist ein starkes Argument dafür, den 18-Byte-Block **nicht** auf einen norm-skalierten 16-Byte-Block umzustellen.
+
+**4. Die radiale/tangentiale Zerlegung ist der richtige P0 – und die Literatur liefert die Formel dafür.**
+KVarN zerlegt den Fehler explizit in einen **radialen (Norm-)Anteil und einen tangentialen (Richtungs-)Anteil**: `||K − K_dq||² = (||K|| − ||K_dq||)² + 2||K||||K_dq||(1 − cos θ)`. Ms. P0 kann exakt diese Zerlegung auf den gecapturten Werten rechnen. Die entscheidende Frage – ob die Normkorrektur die radiale Lücke schließt – ist damit **offline und ohne GPU entscheidbar**. Das ist der billigste Test, den die Literatur stützt.
+
+**5. Die Bit-Rechnung: Der 16-Byte-Block ist der eigentliche Gewinn, aber er ist ein Formatwechsel.**
+Ms. Rechnung ist korrekt: `-0,4375 bit/Wert` nur bei Umpacken auf 16 Byte; bleibt der 18-Byte-Block, kostet die Norm `+0,0625 bit/Wert`. Die 84 MiB (bei 128K, 12 Layern) sind der Gewinn, der den Tail direkt angreifen würde – aber es ist ein **zweites Projekt**, kein Tabellentausch. Die minimale Version (18-Byte-Block + Normkorrektur) kostet **12 MiB** für K+V, nicht 6 MiB. Das ist genau die 0,06 bit/Wert, die L3 bepreist haben.
+
+**6. Die Norm wird pro Vektor (Token) gespeichert – nicht pro Block, nicht pro Ausgabe.**
+Die FAQ sagt explizit: `_nc` bedeutet **„per-token norm rescale“**. Die vLLM-Kernel-Dokumentation bestätigt: „The per-token K-norm lives in the per-block SoA metadata region“. Die Spezifikation zeigt `bytes_per_row = num_kv_heads × (4 (stored norm) + ceil(head_dim × bits / 8))` – also **eine Norm pro Kopf pro Token**, nicht pro 32-Elemente-Block. Für K und V sind das **12 MiB bei 128K**, wie M. berechnet. **Nicht** pro Query-Kopf-Ausgabe (24 Köpfe), sondern pro KV-Kopf (2 Köpfe). Die Korrektur erfolgt **vor der inversen Rotation** auf den rekonstruierten Zentroiden, nicht auf der Attention-Ausgabe.
+
+**7. Die Normierung ist L2 mit gespeicherter Norm – nicht RMS.**
+Die Spezifikation sagt: Jede K/V-Zeile wird als WHT-Rotation + Lloyd-Max-Quantisierung **„plus a stored scalar norm“** gespeichert. Der Codec-Vertrag ist auf **unit-norm vectors** definiert (Cosine ≥ 0,995 bei 4 Bit). Das ist **L2-Normierung mit gespeicherter Norm**, nicht RMS. Ms. Einwand, dass `1/√d` die Standardabweichung sei und die Tabelle um `√d` danebenliege, ist berechtigt – aber die Spezifikation sagt, die Tabelle werde **mit `1/√d` pro Blockdimension skaliert**, nicht dass die Tabelle für `N(0, 1/√d)` sei. Das ist eine Skalierung des Gitters, keine Annahme über die Varianz. Die Tabelle bleibt `N(0,1)`; der Skalar ist der einzige freie Parameter. TurboQuant speichert die **L2-Norm pro Vektor** und skaliert die Zentroide damit zurück.
+
+**8. „Per-coordinate“ heißt: eine feste Tabelle, unabhängig auf jede Koordinate angewandt – nicht eine Tabelle pro Dimension.**
+Die vLLM-Dokumentation ist eindeutig: „Hadamard rotation followed by **per-coordinate Lloyd-Max scalar quantization**“ – eine Tabelle, koordinatenweise angewandt. Die Qdrant-Erklärung präzisiert: „Quantize each coordinate independently with a **fixed lookup table** of representative values (Lloyd-Max codebook) for the standard normal distribution“. Es ist **keine** per-Dimension-Tabelle. Ms. Beobachtung, dass die Kanalachse nach der Rotation flach ist (Kurtosis −0,14 post), ist genau der Grund, warum eine per-Dimension-Tabelle keine endliche Stichprobenstruktur ausnutzen könnte – der Skalar tut es.
+
+**9. Es gibt keine p99-/Worst-Position-Zahl für die Normkorrektur – nur PPL. Das ist die Lücke, die M. selbst schließen muss.**
+Die 0,8 % sind eine **PPL-Zahl** (`turboquant_4bit_nc`: +2,71 % PPL gegenüber FP16). Die Suche nach Tail-Statistiken ergab **keine** p99- oder letzte-1.024-Zahl für die Normkorrektur. Die EDEN-Revisit-Notiz zeigt, dass die **WHT-Rotation** den p99-Tail um das 8-fache reduziert (0,144 → 0,018), aber das ist die Rotation, nicht die Normkorrektur. **Die eine Zahl, die Mittelwert-Bias von Tail-Fehler trennt, existiert in der Literatur nicht.** Ms. P0-Offline-Zerlegung ist der einzige Weg, sie zu bekommen.
+
+**10. KVarN normalisiert über beide Achsen (Token und Kanal) via Sinkhorn – es ist ein Cache-Format, kein reines Backend.**
+Die Gleichung ist `K_dq = (K_q + z) ⊙ s_chan ⊙ s_tok` mit **zwei FP8-Skalen pro Block** (eine per-channel, eine per-token), gelöst durch **alternierende Sinkhorn-Iteration im Log-Domain, online und kalibrierungsfrei**. Es ist ein **Cache-Format**: Die zweite Skala wird gespeichert. Der Mechanismus adressiert **Fehlerakkumulation über Timesteps**, weil die per-Token-Skala die Magnitude der Tokens über die Zeit erhält. Ms. Repeat-Confound ist damit **plausibel adressierbar**, aber nicht bewiesen: KVarN wurde auf Reasoning-Benchmarks (MATH500, AIME24) evaluiert, nicht auf frischen p99 bei 128K. Die Gleichung zeigt, dass es **Token-Magnitude-Fehler** korrigiert – das ist näher an Ms. „wiederholungsgetriebenem“ Tail als an einem uniformen Shift, aber es ist keine Garantie für den **frischen** p99.
+
+---
+
+### Was das für Ms. Plan bedeutet
+
+**P0 ist der richtige erste Schritt – und die KVarN-Fehlerzerlegung liefert die Formel.** Die radiale/tangentiale Zerlegung auf den gecapturten Werten beantwortet die Frage, ob die Normkorrektur die Lücke zwischen `Block-RMS/32` (3,547e-2) und `max|x|/87` (2,740e-2) schließen kann. Wenn die Orakel-Normkorrektur die RMS/32 unter 2,740e-2 drückt, ist der minimale Build (18-Byte-Block + per-Vektor-Normkorrektur, 12 MiB) gerechtfertigt. Wenn nicht, ist die Normkorrektur ohne Formatwechsel tot.
+
+**P1 (16/16-Baseline) muss **vor** P2 laufen, nicht danach.** Ms. Punkt ist korrekt: Der Tag-Arm hat 16/16 bei 128K nur auf dem Tail-Mittel gemessen; die drei Zielstatistiken (p99, letzte-1.024, Ganzsegment) fehlen. Ohne diese Baseline weiß niemand, ob die Normkorrektur überhaupt gegen den richtigen Kontrollarm antritt. Die 16/8-vs-16/16-Differenz bei 4K (−0,0040, t −2,99) zeigt, dass 16/16 der Produktkandidat ist – ein 128K-Lauf gegen 16/8 würde die Normkorrektur nicht isolieren.
+
+**Die ehrliche Einordnung der 0,8 %:** Es ist eine **Mittel-PPL-Zahl**. Sie ist interessant, aber sie ist **nicht** der Hebel für p99, solange keine Tail-Zahl existiert. Die minimale Version (18-Byte-Block + Normkorrektur, 12 MiB) ist billig genug, um sie zu bauen und auf 4K zu messen – aber das 5,0-Bit-Budget sollte erst dann darauf ausgegeben werden, wenn P0 zeigt, dass die radiale Lücke groß genug ist, oder wenn P1 zeigt, dass 16/16 allein den Tail nicht erreicht. **Die eine Zahl, die M. braucht, ist die radiale/tangentiale Zerlegung – nicht die PPL-Zahl aus vLLM.**

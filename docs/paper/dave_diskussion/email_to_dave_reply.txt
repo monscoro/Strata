@@ -1,0 +1,172 @@
+Subject: Re: Wo unser 4-bit-KV-Cache ein Plateau erreicht - die
+ Post-Rotations-Tabelle ist schon da; offen ist die Normkorrektur
+
+Hi Dave,
+
+danke - die Revision ist fuer uns brauchbarer als die erste Empfehlung, und sie
+invalidiert den Plan nicht; sie verschiebt Aufwand. Sie trifft aber einen Teil
+unserer Pipeline, der schon gemessen ist. Die erste Empfehlung (L3) ist bei uns
+A1; S2 hat sie gekillt. Die Revision ist insofern besser, als sie den Ort
+richtig verschiebt - aber bei uns ist der Ort schon da. Ich will deshalb genau
+trennen, was neu ist und was nicht.
+
+Die Punkte:
+
+1. Wir quantisieren bereits nach der Rotation. Das Hadamard liegt auf K und V,
+   bevor der 18-Byte-Block geschrieben wird; die Query wird identisch rotiert.
+   "Nach der Rotation" ist bei uns keine neue Platzierung. Die einzige
+   Anpassung vor der Quantisierung ist der Block-Skalar.
+
+2. Die Lloyd-Max-Tabelle ist bereits TurboQuants Tabelle. `kv_q4.hpp` benutzt
+   die 16 Rekonstruktionspunkte aus `tq_codebook.c`, mit 32 skaliert, damit sie
+   auf den int8-Pfad passen. Die Tabelle ist also nicht das fehlende Teil; der
+   Skalar ist es. Wenn TurboQuant dieselbe Tabelle benutzt, ist der Vergleich
+   direkt; wenn sie pro Modell nachgefittet wird, brauchen wir die
+   Fit-Vorschrift.
+
+3. Den Skalenteil deines Vorschlags haben wir gemessen - in der adaptivsten
+   Form, die eine Norm-Skala haben kann. Auf 498.688 rotierten Werten (15.584
+   Bloecke):
+
+       q4_0 (uniform)                  2,938e-2
+       16 Level, max|x|/87             2,740e-2   (-0,30 dB)
+       16 Level, least squares         2,551e-2   (-0,61 dB)
+       16 Level, konvergierter Fit     2,456e-2   (-0,78 dB)
+       16 Level, Block-RMS/32          3,547e-2   (+0,82 dB, schlechter)
+
+   Das sind 0,82 dB schlechter als q4_0 und 1,12 dB schlechter als unser
+   aktueller Punkt. Der Grund ist die endliche Stichprobe: das Maximum von 32
+   Werten ist im Mittel 2,363x der RMS, unter dem 2,72-Sigma-Aussenlevel der
+   Tabelle; max|x|/87 ist 0,869 von RMS/32. Eine norm-skalierte feste Tabelle
+   spreizt das Gitter zu weit. Die per-Block-Anpassung tut also echte Arbeit.
+   Die per-Block-RMS ist dabei die adaptivste Version einer Norm-Skala (8
+   Stuetzstellen pro Vektor); eine per-Vektor-Norm hat eine. Ob die Mittelung den
+   Adaptivitaetsverlust wettmacht, ist eine Offline-Frage - die per-Vektor-Norm
+   beginnt aber nicht besser.
+
+4. Aber deine Normkorrektur ist genau eine radiale Korrektur, und die haben wir
+   nicht gemessen. Die Luecke zwischen 3,547e-2 und 2,740e-2 koennte ueberwiegend
+   radial sein; dann holt die Rueckskalierung auf die wahre Norm sie zurueck.
+   Der entscheidende Test ist deshalb kein 128K-GPU-Lauf, sondern eine
+   Offline-Zerlegung auf den gecapturten Werten: MSE in radial (Norm) und
+   tangential (Richtung) trennen, und die Orakel-Normkorrektur fuer beide Skalen
+   rechnen. Liegt die korrigierte RMS/32 weiter ueber 2,740e-2, ist der Vorschlag
+   ohne Engine-Aenderung tot. Liegt sie darunter, haben wir einen billigen Arm.
+   Wir koennen das auf dem vorhandenen Capture rechnen und dir die Zahl schicken.
+
+5. Die Bit-Rechnung geht so nicht auf. Den fp16-Skalar wegzulassen spart 16 B
+   pro 144-B-Kopfzelle = 0,5 bit/Wert. Eine feste Tabelle braucht aber eine Norm
+   pro Vektor: 2 B pro 256 Werte = 0,0625 bit/Wert. Netto sind es also -0,4375
+   bit/Wert nur, wenn der 18-Byte-Block auf 16 Byte umgepackt wird; bleibt der
+   18-Byte-Block, kostet die Norm +0,0625. Bei 128K und 12 Layern sind -0,4375
+   = 56 B pro Token und Layer (1.024 Werte) = 84 MiB; +0,0625 = 12 MiB.
+   "0 zusaetzliche Bits" stimmt nicht. Die 84 MiB sind der eigentliche Gewinn:
+   3.584 Ringzeilen, oder 3.072 nach Bezahlung der Norm - das wuerde den Tail
+   direkt angreifen. Aber es ist ein Formatwechsel, kein Tabellentausch.
+
+6. Die Normkorrektur kostet 12 MiB fuer K und V (12 Layer x 2 Koepfe x 2
+   Tensoren x 128K x 2 B = 12,6 MB), nicht 6 MiB; 6 MiB ist ein Tensor. Das ist
+   genau die 0,06 bit/Wert, mit der wir L3 bepreist haben, also bei 5,0 nicht
+   vernachlaessigbar. Wenn nur V korrigiert wird, sind es 6 MiB, aber dann
+   bleibt der K-Norm-Bias stehen. Und die Granularitaet ist entscheidend: pro
+   KV-Vektor (2 Koepfe) sind es 12 MiB fuer K+V; pro Query-Kopf-Ausgabe (24
+   Koepfe) waeren es 72 MiB allein fuer V. Welche ist es?
+
+7. Die Varianz nach dem Hadamard ist erhalten, nicht 1/sqrt(d). H ist
+   orthonormal, also Var(Hx) = Var(x). Die 1/d-Zahl entsteht erst, wenn man den
+   Vektor auf L2-Norm 1 normiert. Unser K ist RMS-genormt, die Koordinaten
+   haben also Varianz O(1), nicht 1/256. Eine Tabelle "skaliert auf
+   N(0,1/sqrt(d))" ist um sqrt(d) daneben (wenn 1/sqrt(d) die
+   Standardabweichung ist), wenn der Vektor nicht explizit normiert wird. Die
+   Tabelle ist bereits N(0,1); der Skalar ist der einzige freie Parameter.
+   Welche Normierung benutzt TurboQuant - L2 mit gespeicherter Norm, oder RMS?
+
+8. "Per-coordinate" braucht eine Definition. Wenn es "eine Tabelle, unabhaengig
+   auf jede Koordinate angewandt" heisst, machen wir das bereits. Wenn es "eine
+   eigene Tabelle pro Dimension" heisst, sagt S2, dass die Kanalachse nach der
+   Rotation flach ist: 32.746 Zeilen/Layer, 3.072 Kanaele, Kurtosis -0,18 pre
+   vs -0,14 post, Crest 3,72 vs 3,93, 1.614/3.072 (52,5 %) pre schwerer, 70
+   Kanaele (2,3 %) mit pre-Kurtosis > +1, alle post <= +0,46. Die einzige
+   per-Kanal-Struktur ist der RMSNorm-Gewichtvektor, und der liegt vor der
+   Rotation und ist bereits angewandt. Eine feste per-Dimension-Tabelle kann
+   keine endliche Stichprobenstruktur ausnutzen; das tut der Skalar. Welche
+   Variante ist TurboQuant?
+
+9. Den Tail-Anspruch wuerde ich am staerksten pruefen. Die 0,8 % PPL sind eine
+   Mittel-/Perplexity-Zahl; p99 ist eine Worst-Case-Statistik. Wir erwarten den
+   groessten Effekt auf dem Ganzsegment, dann auf der letzten 1.024, am
+   kleinsten auf p99. Unsere 128K-Mittel werden von einer Handvoll Positionen
+   getragen; die gepaarten Differenzen sind robuster als die Mittel. Wir koennen
+   die vorhandene per-Position-KL in einen Shift- und einen Tail-Anteil
+   zerlegen. Ist der Defizit ein uniformer Shift, kann die Normkorrektur helfen;
+   sind es wenige Positionen, kann sie es nicht. Hast du fuer norm_correction
+   eine p99-/Worst-Position-Zahl, oder nur PPL? Das ist die eine Zahl, die mich
+   das bauen liesse.
+
+10. KVarN: Nach der Rotation ist die Kanalachse flach, also kollabiert dual
+    scaling auf die Vektorachse. Die Long-Decode-Akkumulation ist plausibel,
+    aber unsere Repeat-Kontrolle sagt, dass der 128K-Null von Wiederholung
+    getrieben ist: dieselbe Passage 32,8K frueher gelesen senkt
+    KL(fp16||int8) um 7,6x und dreht den Tag-Effekt von -0,00743 (frisch) auf
+    +0,00176 (wiederholt, signifikant). Wenn der Tail inhaltlich/
+    wiederholungsgetrieben ist, hilft eine Varianznormalisierung vielleicht dem
+    wiederholten Fall, aber nicht dem frischen p99. Wie lautet der Mechanismus
+    in einer Gleichung - was wird normalisiert, ueber welche Achse, gespeichert
+    oder zur Laufzeit, und aendert es das Cache-Format oder den Attention-Pfad?
+
+Was ich von dir wirklich brauche:
+
+- Ist die 0,8-%-Normkorrektur auf einer festen Tabelle ohne Skalar gemessen,
+  oder auf einer per-Block-Skala? Wenn Letzteres, koennte sie direkt auf
+  unseren 18-Byte-Block passen, ohne Formatwechsel.
+- Wird die Norm pro Vektor gespeichert, und fuer K, V oder beide? Vor oder nach
+  der inversen Rotation? Bei uns bleibt V rotiert und nur die Ausgabe wird
+  invers rotiert; eine Korrektur pro V-Vektor braucht die gespeicherte
+  V-Norm, eine Korrektur pro Ausgabe braucht die Ausgabe-Norm, die nicht im
+  Cache steht. Welche ist es?
+- Was genau ist "per-coordinate" - eine Tabelle pro Dimension oder eine
+  Tabelle, koordinatenweise angewandt?
+- Hast du eine Tail-Zahl (p99, letzte 1.024, Worst-Position) oder nur PPL?
+- Bei KVarN: eine Gleichung, welche Achse, und ist es ein Cache-Format oder ein
+  Runtime-Backend?
+
+Unser Plan, damit du siehst, wohin die Antwort einfliesst:
+
+P0 (offline, ohne GPU): radiale/tangentiale MSE-Zerlegung + Orakel-
+Normkorrektur; per-Block-max vs per-Vektor-Norm; per-Position-Shift vs Tail auf
+den vorhandenen 128K-Daten. Das killt oder bepreist die Revision, bevor wir
+Engine-Code anfassen. Die Revision zieht P0 vor P1, weil sie offline
+entscheidbar ist.
+
+P1 (GPU, aber erst nach P0): 128K, zwei Texte, 16/16 vs 16/8 vs int8 auf p99 /
+letzte-1.024 / Ganzsegment. Das ist die fehlende Baseline. Der Tag-Arm hat
+16/16 bei 128K nur auf dem Tail-Mittel gemessen (+0,00126 [+0,00033,
++0,00265]); die drei Zielstatistiken fehlen. Ohne diese Zahl wissen wir nicht,
+ob ueberhaupt ein Codec-Hebel noetig ist.
+
+P2 (GPU, nur wenn P0 die Normkorrektur am Leben laesst): 4K teacher-forced, 8
+Segmente, Arme 16/16+win / 16/16+win+norm / int8, Mittel + getrimmt + p99. 4K
+ist der einzige Ort mit echter Segment-CI; 128K ist ein Segment, und der
+Tail-Mittel hat zwischen T1 und T2 schon das Vorzeichen gedreht.
+
+Warum nicht dein 128K-Drei-Arm-Lauf zuerst: er ist teuer, und gegen q4lm8v
+mischt er L1 und L3. Der 16/8-vs-16/16-Unterschied ist bei 4K gemessen (-0,0040,
+t -2,99, 7/8), also wuerde ein 128K-Lauf gegen 16/8 die Normkorrektur nicht
+isolieren. Die 16/16-Baseline ist die richtige Kontrolle. Nebenbei: L1 ist nicht
+tot; 16/16 ist bei identischen Bytes 0,0040 nats besser als 16/8. Das ist der
+Produktkandidat, gegen den deine Revision antreten muss.
+
+Der minimale Build, falls P0 ueberlebt: 18-Byte-Block und per-Block-max
+behalten, eine Normkorrektur pro Vektor (12 MiB) ergaenzen, zuerst 4K messen.
+Das testet den Mechanismus ohne Formatwechsel. Der 16-Byte-Block (0,4375
+bit/Wert) ist ein zweites Projekt und sollte getrennt bepreist werden.
+Einverstanden mit der Trennung?
+
+Es geht mir nicht darum, TurboQuant zu widerlegen; ich will die eine Zahl, die
+Mittelwert-Bias von Tail-Fehler trennt. Wenn die Normkorrektur ein
+Mittel-PPL-Hebel ist, ist sie trotzdem interessant, aber nicht der Hebel fuer
+unseren p99, und dann sollten wir das 5,0-Budget nicht darauf ausgeben. Wenn sie
+den Tail bewegt, bauen wir die minimale Version und messen sie.
+
+Best,
+M.

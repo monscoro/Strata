@@ -1,0 +1,226 @@
+Subject: Where our 4-bit KV cache plateaus (Qwen3.8-Flash-Next, one 16 GB
+ consumer GPU) - I need one lever, not a menu
+
+Hi Dave,
+
+Short version: we ship an opt-in 4-bit KV cache for a 48-layer MoE hybrid on
+a single consumer GPU. It works, it is 36 % smaller than our int8 default at
+128K, and it has plateaued. Five measured context lengths, no point where our
+pre-registered rule says the last idea carries; and the byte budget says a
+larger exact window is arithmetically closed. The remaining error sits in the
+4-bit bulk and in the cells immediately outside the exact window. I would
+like you to name ONE concrete change to this cache that has a real chance of
+reaching int8 parity at <=5.0 bit/cell on this specific model, plus the
+cheapest measurement that would kill it.
+
+Everything numeric below is measured unless marked (static).
+
+
+1. THE SYSTEM
+-------------
+
+Strata runs Qwen3.8-Flash-Next on one PC. Experts live in RAM, the KV cache
+in VRAM, and an adaptive expert cache fills the rest of the card. The whole
+point of compressing KV is to free VRAM for experts: at 128K, int8 KV costs
+1,584 MiB, our window 1,016 MiB - 568 MiB freed, 416 more expert slots.
+
+Measurement machine: Ryzen 9 3900X, 64 GB DDR4-3000, RX 9060 XT 16 GB
+(gfx1200), Windows, ROCm/HIP 7.1 for the numbers below (runtime is now 7.2),
+engine 0.1.47. Quality corpus: RULER complex-word-extraction (cwe),
+teacher-forced, paired per position, KL against an fp16-KV reference over its
+top-64 (or top-256) tokens, renormalized. 4K has 8 segments; 128K/256K are
+one segment each with a moving-block bootstrap.
+
+
+2. THE MODEL, AS FAR AS THE CACHE IS CONCERNED (static)
+--------------------------------------------------------
+
+- 48 layers; every fourth (3, 7, ..., 47) is a full-attention QSA layer - 12
+  layers carry the KV cache this is about. The other 36 keep a fixed
+  recurrent (GDN) state and no growing cache.
+- 2 KV heads, head_dim 256. RoPE covers 64 of the 256 dims; 192 are not
+  rotated.
+- A QSA query never reads the whole cache: an indexer selects at most 2,048
+  cells per query (plus block rounding; selection width min(n_kv, 2048+3)).
+  The indexer has 4 query heads, 128-dim keys, and pools one key per 4 cells.
+  Its store is separate fp32, never normed or rotated - about 192 MiB at
+  128K, i.e. ~1.0 bit per KV value. We do NOT count it in the KV bit/cell
+  budget, and compressing it is a different question with a different
+  correctness contract.
+- 24,576 experts total (512 x 48). The deployed 2-bit weight set loads
+  ~33 GiB of experts into RAM.
+- Context 262,144. There is an MTP draft layer; speculation does not touch
+  the cache format.
+
+Consequence: only 12 layers matter, and the selection is sparse and
+data-dependent. Dropping cells or replacing the selection is not an option -
+a cell the indexer selects that is no longer present is a silent failure we
+treat as a bug.
+
+
+3. WHAT q4lm8v IS
+-----------------
+
+Bulk. A Walsh-Hadamard rotation (256-point, orthonormal, self-inverse) is
+applied to K and V before quantization; the query is rotated identically, so
+scores are unchanged and the output is rotated back. The storage unit is
+ggml's 18-byte block_q4_0: one fp16 scale + 16 bytes of nibbles = 32 values.
+head_dim 256 -> 8 blocks -> 144 B per head per cell; 2 heads x K and V ->
+576 B/cell = 4.50 bit/value. int8 is 1,056 B/cell = 8.25 bit (8 bits + 0.25
+scale share).
+
+Levels. We keep the 18-byte block and change only the nibble->value map. K
+uses Max-Lloyd's 16-level table for N(0,1), V an 8-level table (that is what
+the "8v" means - 8 levels on V, not 8 bits). Both tables are scaled by 32 and
+rounded to int8, so they ride the existing int8 MMA path. Scales: max|x|/87
+(16-level) and max|x|/69 (8-level). Measured on 498,688 rotated values: q4_0
+MSE 2.938e-2, 16-level Lloyd 2.740e-2, least-squares scale 2.551e-2. The
+level table is worth 0.30 dB, the per-block fit another 0.31 dB.
+
+Exact-cell window. The first R=64 cells (sinks) and the most recent S=256
+cells of each of the 12 layers are kept in fp16 in a resident side pool;
+everything else is the 4-bit bulk. The pool is a ring of R+S+B rows, B = the
+prefill chunk (capped at 6,144 by a scan limit). One row costs 2,048 B per
+layer (2 heads x 256 dim x 2 B x K and V), plus 4 B tags. Rows carry the cell
+they hold, so a stale row reads quantized, never as the wrong cell.
+
+Byte model (validated exactly against two measured anchors):
+
+    bit/cell ~= 4.50 + 16*(R+S+B)/L
+
+At L=131,072, R+S+B=6,464 -> 5.289 bit/cell, 1,016 MiB, ring 158.9 MB
+(~152 MiB). At 32K the same window is 7.66 bit/cell - still cheaper than
+int8's 8.25; break-even is ~27,600 cells.
+
+
+4. WHAT WE MEASURED
+-------------------
+
+cwe-4k, mean KL (lower is better): int8 0.01688, window 0.02090, plain 4-bit
+0.03182 -> 73 % of the gap closed. At 2K the window is statistically
+indistinguishable from int8 (t=-1.92, window ahead in 2/8 segments). Needles
+6/6 at 32K and 6/6 at 128K.
+
+At 128K (text T1, last 4,096 positions): window 0.00663, int8 0.00959, plain
+0.01587 - the window BEATS int8 on that statistic. But int8 keeps the p99
+(0.01655 vs 0.02977), the last 1,024 positions (0.00265 vs 0.00444) and the
+whole segment (0.10715 vs 0.13312). A second text reverses the tail-mean sign
+but keeps the p99/last-1,024/whole-segment ordering. So the deficit is not
+uniform: it is a tail-quantile and whole-segment deficit, produced by cells
+IMMEDIATELY OUTSIDE the exact overlay (256 of the last 1,024 are exact, 768
+are 4-bit).
+
+
+5. THE PLATEAU, IN ONE TABLE
+----------------------------
+
+We pre-registered the last idea as a pure READ POLICY: same ring, same bytes,
+same selection - just read the resident fp16 copy whenever the cell tag still
+names that cell (STRATA_KV_WINDOW_TAG=1). It is free (0 bytes) and it lifts
+exact coverage at 128K from 8.55 % to 48.6 % of indexer selections. Quality,
+paired tag - window (negative = tag better), 95 % CI:
+
+    Point        delta        95 % CI                     carries?
+    ---------------------------------------------------------------------
+    4K decode    -0.00198     [-0.00458; +0.00061]        no
+    32K          -0.01008     [-0.03335; +0.01238]        no
+    64K          -0.00953     [-0.01877; +0.00049]        no
+    128K         -0.00001     [-0.00066; +0.00069]        no
+    256K         -0.000302    [-0.000905; +0.0000001]     no
+
+The rule required CI excluding 0 AND |mean| > 0.0013 nats. At 4K the tag
+reaches int8 parity (+0.00051 [-0.00068; +0.00170], top-1 48/48); at 256K
+KL(int8||tag) is 0.000103. In between it buys nothing. Coverage counter at
+128K: 8.55 % of selections land in R+S, 40.8 % in the current chunk, 50.6 %
+outside; recall R 20.3 %, S 63.4 %; the outside share grows with horizon
+(0 -> 3.4 -> 18.0 -> 50.6 %). Pushing S to 8,192 would be needed for ~52 %
+coverage and would make the ring cost more than the product point. MORE
+WINDOW IS NOT THE LEVER.
+
+One confound we can quantify: repetition, not length, drives the 128K null.
+Reading the same passage 32.8K earlier lowers KL(fp16||int8) by 7.6x (mean)
+and flips the tag effect from -0.00743 (fresh) to +0.00176 (repeated,
+significant). The 128K tail is a second reading; the 256K tail is a fourth.
+
+
+6. ALREADY CLOSED - PLEASE DON'T SEND US BACK HERE
+--------------------------------------------------
+
+- Clipping after the Hadamard: worse at 2K (+34 % KL, t=-2.29).
+- Hadamard on/off as a quality arm: tie at 2K and 4K.
+- "K needs more bits than V": falsified on this model (t=+0.05, McNemar
+  p=1.000). The 16/8 split is a byte/codebook choice, not a measured
+  sensitivity.
+- 3-bit base without the window: worse.
+- R=8 sinks: too small. R=64 is the short-context knee.
+- A larger fp16 ring: measured (512/128 at 4K) ties 256/64 (t=+0.02) and
+  costs 7 MiB more at 128K.
+- Eviction / dropping cells: not allowed (silent failure).
+- Replacing the indexer selection: not allowed (changes the model).
+- The S/R knee sweep: deliberately not run - the coverage counter says the
+  positional overlay is the wrong place to spend bytes.
+
+
+7. CONSTRAINTS ANY ANSWER MUST SATISFY
+--------------------------------------
+
+1. Opt-in only. The int8 default path stays byte-identical (dump-logits SHA
+   gate).
+2. <=5.0 bit/cell at 128K. The ring may spend 0.50 bit/cell: 4,096 fp16
+   cells, or 7,943 with an int8 ring (8.25 bit/cell), or 5,461 at 12 bit.
+   With S+R=320 that leaves B<=3,776 in fp16 - and the one measured small-ring
+   arm (B=512) ran at 105 vs 528 tok/s prefill (-80 %). Prefill may lose at
+   most 10 %.
+3. Quality floor: cwe-4k paired mean vs int8 <=0 with upper 95 % bound
+   < +0.001 and int8 ahead in at most 4/8 segments; 128K whole segment, p99
+   and last-1,024 <= int8 on both texts.
+4. One GPU, 16 GB VRAM, Windows/HIP. CUDA, SYCL and Metal were NOT built -
+   the code is backend-agnostic by argument, not by measurement.
+5. Every cell stays addressable; a promised exact cell that left the pool is
+   a fault.
+
+
+8. THE QUESTION
+---------------
+
+Given this geometry, what is the SINGLE change you would make - to the codec
+inside the 18-byte block, to the ring tier, or to where the exact bytes go -
+that has the best chance of moving the last-1,024 / p99 / whole-segment
+statistics to int8 parity at <=5.0 bit/cell?
+
+Please pick one, not a menu. For that one, I need: the mechanism in a
+paragraph, the bit cost (bytes first), why it should move THOSE statistics
+and not just the 4K mean, and the cheapest measurement that would kill it.
+The axes we currently have on the list, with their costs, are:
+
+    Lever  Change                                          Cost
+    -------------------------------------------------------------------
+    L1     16 levels on K AND V (same block)               0
+    L2     a different 16-level table (same block)         0
+    L3     per-channel K scale BEFORE the Hadamard         0.06 bit/cell
+    L4     int8 or 12-bit ring tier instead of fp16        -7.75 / -4.0 bit
+    L6     low-rank or sparse residual on the bulk (GEAR)  residual bits
+
+If you think one of these is dead on arrival, say which and why. If you think
+the 5.0 target is wrong for this geometry, say that instead - a documented
+negative result is a valid deliverable for us.
+
+
+9. WHERE THE DATA IS
+--------------------
+
+Everything is in-repo and reproducible: the two papers
+(docs/paper/KV-Window-Hardening.pdf, docs/paper/KV-int8-quality-below-5bit-
+quantization.pdf), the measured series (bench/results/2026-11-03-tag-arm/,
+...-deploy-range/, ...-256k/, ...-repeat-control/), the coverage counter
+(bench/results/2026-11-01-e1-128k/), the byte model
+(bench/results/2026-11-01-b4-byte-model/), and the format code
+(include/strata/kernels/kv_q4.hpp, qsa.hpp, qsa_decode_attn.hpp). Raw TSVs
+and per-position logits are kept outside the repo; I can package the 4K and
+128K pairs if that helps.
+
+Thanks - I'd rather have one sharp idea with a kill criterion than five
+maybes.
+
+Best,
+M.
