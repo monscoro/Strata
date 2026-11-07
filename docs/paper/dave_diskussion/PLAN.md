@@ -111,6 +111,36 @@ Positionen aus P0a.
 - **P2** (4K teacher-forced, 8 Segmente, Arme 16/16 / 16/16+Norm / int8) nur nach
   einem "ueberlebt". P0b entscheidet den Codec, P2 den Produkt-KL.
 
+## Nachtrag nach Daves dritter Antwort (vor dem Lauf)
+
+Drei Punkte aus `daves_thanks_reply.md` aendern den Lauf, keinen Schwellenwert:
+
+1. **Die gesuchte Zahl existiert nicht.** Es gibt keine veroeffentlichte p99-,
+   letzte-1.024- oder Worst-Position-Zahl fuer `turboquant_4bit_nc`, nur PPL. P0b
+   produziert sie; der Plan bleibt.
+2. **Der Qwen-Worst-Case-Kollaps.** Villines' Per-Head-Minimum-Cosine-Sonde
+   berichtet fuer uniformes TurboQuant einen minimalen Cosinus nahe null oder
+   negativ auf Qwen - bei nominalem Mittelwert. Deshalb misst das Werkzeug
+   zusaetzlich den **minimalen Cosinus pro (Layer, Kopf, K/V)**, einmal ueber
+   alle 6.144 Positionen (die Sonde) und einmal an den Top-Gap-Positionen. Das
+   ist ein Befund, keine neue Entscheidungsregel: der Cosinus sagt, ob die
+   Richtung kollabiert, `r` sagt, ob eine Normkorrektur das beheben koennte.
+3. **Die Schwelle gilt an den Top-Gap-Positionen.** `r` wird primaer an den 18
+   Positionen mit dem groessten P0a-Abstand gelesen, nicht als Mittel ueber
+   6.144. Die Werte bleiben 5 % / 20 %; die Tail-Klausel von oben wird damit zur
+   Hauptregel statt zur Nachbemerkung. Das Mittel wird weiter berichtet.
+
+**KVarN-Per-Token-Skalierung ist schon im Capture.** Einen Vektor vor der
+Quantisierung auf RMS 1 zu normieren, mit der festen Tabelle und `d = 1/32` zu
+quantisieren und die gespeicherte Skala danach zurueckzumultiplizieren, ergibt
+`code * RMS/32` - genau den `RMS/32`-Arm. Der mechanistisch andere Hebel ist
+damit ohne weiteren Arm gemessen; er unterscheidet sich von der Normkorrektur
+darin, dass die Skala **vor** der Quantisierung bekannt ist, nicht danach
+geschaetzt wird.
+
+Vor dem 128K-Lauf steht ein 32K-Smoke (`p32k.ids.json`, Dump 26.756...32.755):
+er prueft Format, Chunking und den Analysepfad, bevor der grosse Lauf startet.
+
 ## Was P1 jetzt ist
 
 `p99` und `letzte 1.024` liegen bereits in den 6.144 Tail-Positionen; sie brauchen
@@ -122,13 +152,26 @@ Kontrolle, falls P0b Codec und Lesepfad trennen muss; er ist nicht P0b.
 
 ```powershell
 $out = 'C:\Users\krone\git\Strata-data\bench\2026-11-07-p0b'
+# 32K-Smoke (Format und Chunking)
+python tools\quant_quality.py run --config bench\configs\cwe4k-swift-iq3_xxs.json `
+    --ids C:\Users\krone\git\Strata-data\bench\2026-11-03-deploy-range\p32k.ids.json `
+    --kv q4lm32 --short-read 0 --prefill auto --topk 256 --allow-no-positions `
+    --env STRATA_KV_Q4_DUMP=$out\kv32k.bin `
+    --env STRATA_KV_Q4_DUMP_FROM=26756 --env STRATA_KV_Q4_DUMP_TO=32756 `
+    --out $out\probe32k.tsv
+# 128K-Capture
 python tools\quant_quality.py run --config bench\configs\cwe4k-swift-iq3_xxs.json `
     --ids C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\p128k.ids.json `
     --kv q4lm32 --short-read 0 --prefill auto --topk 256 --allow-no-positions `
     --env STRATA_KV_Q4_DUMP=$out\kv.bin `
     --env STRATA_KV_Q4_DUMP_FROM=124877 --env STRATA_KV_Q4_DUMP_TO=131021 `
     --out $out\probe.tsv
-python tools\kv_p0b_radial.py --dump $out\kv.bin --json $out\p0b.json
+# Zerlegung; die Top-Gap-Positionen kommen aus P0a (win gegen int8)
+python tools\kv_p0b_radial.py --dump $out\kv.bin --top-n 18 `
+    --arm-tsv C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\128k\win.tsv `
+    --ref-tsv C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\128k\fp16.tsv `
+    --base-tsv C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\128k\int8.tsv `
+    --json $out\p0b.json
 ```
 
 Der Lauf braucht die GPU; er startet erst nach dem ausdruecklichen OK.

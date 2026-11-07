@@ -10,7 +10,8 @@ Die Unterhaltung mit Dave über den 4-bit-KV-Cache, in der Reihenfolge des Threa
 | `email_to_dave_reply.txt` | Unsere Antwort auf die Revision: Skalenteil gemessen, Normkorrektur offen, P0/P1/P2. |
 | `daves_second_reply.md` | Daves Korrektur (L1 ist nicht tot, `turboquant_4bit_nc` ist 16/16) und die Antworten zur Spezifikation. |
 | `email_to_dave_thanks.txt` | Unsere Dankesmail: L1/16/16 akzeptiert, P0a gemessen, P0b als radiale/tangentiale Zerlegung angekündigt. |
-| `PLAN.md` | Der Plan nach der zweiten Antwort: P0a-Ergebnis, P0b-Capture, Arme und die Entscheidungsregel vor dem Lauf. |
+| `daves_thanks_reply.md` | Daves dritte Antwort: keine p99-Zahl in der Literatur, der Qwen-Worst-Case-Kollaps (min. Cosinus) und die Ergänzungen zu P0b. |
+| `PLAN.md` | Der Plan nach der zweiten Antwort: P0a-Ergebnis, P0b-Capture, Arme und die Entscheidungsregel vor dem Lauf, mit Nachtrag zur dritten Antwort. |
 
 Das ist Arbeitskorrespondenz, keine veröffentlichten Docs. Die Messzahlen stehen in
 `bench/results/`; die Formatfakten in `include/strata/kernels/kv_q4.hpp`.
