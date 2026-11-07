@@ -200,16 +200,63 @@ Tail ist also nicht gemessen. Die Aussage gilt fuer den KV-Fehler an diesen
 Positionen, nicht fuer die Behauptung, der reine Arm habe dort keinen
 Logit-Tail. Genau das ist die verbleibende P1-Kontrolle.
 
-## Was P1 jetzt ist
+## P1 - Ergebnis (gemessen 2026-11-07)
 
-`p99` und `letzte 1.024` liegen bereits in den 6.144 Tail-Positionen; sie brauchen
-keinen neuen GPU-Lauf. P0b hat den **Codec** entschieden (Normkorrektur tot,
-16-Byte-Format schlechter), aber nicht den Tail des **reinen** Arms: die 18
-Positionen stammen aus dem gefensterten `win`-Lauf. Der reine 16/16-Lauf **ohne
-Fenster** (`--kv q4lm32`, `--short-read 6144`, kein `STRATA_KV_WINDOW`) ist
-damit die naechste und einzige fehlende Kontrolle: er sagt, ob der P0a-Tail ein
-Codec-Effekt oder ein Effekt des Lesepfads (exaktes Fenster plus q4-Bulk) ist.
-Er aendert keinen Default und oeffnet kein 5,0-bit-Budget.
+**Lauf.** Reines 16/16 ohne Fenster: `--kv q4lm32`, `--short-read 6144`, kein
+`STRATA_KV_WINDOW`, `--pin 124877`, `--prompt-cache 3`, dieselben 6.144
+Positionen (124.877...131.020), 1.015,3 s. Der `win`-Lauf vom 2026-11-03 hatte
+exakt dieselben Flags plus `STRATA_KV_WINDOW=1`, `S=256`, `R=64`; der
+Paarvergleich ist also sauber.
+
+**KL gegen fp16 (top-256):**
+
+| Arm | mean | median | p99 | max | mean ohne top 1 % |
+|---|---:|---:|---:|---:|---:|
+| `pure` (16/16, kein Fenster) | 0,001817 | 0,000010 | 0,003669 | 2,7261 | 0,000054 |
+| `int8` | 0,000847 | 0,000002 | 0,001506 | 2,4931 | 0,000021 |
+| `win` (16/16 + Fenster) | 0,002108 | 0,000023 | 0,003214 | 3,2112 | 0,000075 |
+
+**Gepaart.** `pure - int8`: +0,000971 im Mittel (648 besser, 5.496 schlechter),
+ohne die 1 % Positionen mit dem groessten Abstand -0,000096. Der Unterschied
+sitzt also fast vollstaendig in 1 % der Positionen. `pure - win`: -0,000290
+(4.274 besser, 1.870 schlechter), ohne top 1 % -0,000856.
+
+**Top-18 nach `pure - int8`** (das P0a-Analogon, nicht der absolute KL-Rang):
+130954, 130972, 130951, 124891, 130943, 127887, 128883, 130952, 130942, 126924,
+130973, 128583, 128547, 130945, 128793, 128516, 128533, 126867. Überlappung mit
+P0a: **12/18**; die fünf groessten tragen 48,5 % des positiven Gaps; Mittel an
+P0a's 18 Positionen **+0,2536**. Für `win - int8`: 18/18 (per Konstruktion),
+top 5 48,9 %, Mittel an P0a's 18 **+0,4152**.
+
+**Die gemeinsame Spitze.** Position 130952 ist in jedem Arm schlecht: `pure`
+2,7261, `win` 3,2112, `int8` 2,4931, `tag` 2,8811. Sie traegt nur 3,9 % des
+summierten `pure - int8`-Gaps. Ein 8,25-bit-Arm mit 22,9 dB kleinerem KV-Fehler
+hat dort 2,49 nats - das ist Modell- bzw. Referenz-Empfindlichkeit, keine
+4-bit-Frage.
+
+**Lesart.** Der Tail ist **ohne Fenster da**: `pure` hat eigene Spitzen (max
+2,73), die fünf schlimmsten tragen 53,3 % der Gesamt-KL, 12 von P0a's 18
+Positionen kehren wieder. Also kein reiner Lesepfad-Artefakt. Aber das Fenster
+**verstaerkt** ihn: an P0a's 18 Positionen ist der `pure`-Gap +0,254 gegen
+`win` +0,415 (1,6x), im Mittel +0,000971 gegen +0,001261. P0a hat den Tail des
+reinen Arms damit ueberschaetzt. Zusammen mit P0b (KV-Fehler an diesen
+Positionen normal) heisst das: der Tail ist die Empfindlichkeit des Modells auf
+das 16/16-Fehlerniveau, kein lokalisierter Codec-Fehler; das Fenster legt einen
+Teil darauf.
+
+**Nebenbefund.** `pure` ist im Mittel und im Bulk besser als `win` (14 % bzw.
+28 % niedriger), `win` hat das bessere p99 (0,003214 gegen 0,003669) und in den
+letzten 1.024 das bessere Bulk-Verhalten (ohne top 1 % 0,000199 gegen 0,000342,
+p99 0,017742 gegen 0,048994), aber die schlechteren Extrempositionen (130952
+3,21 gegen 2,73, 130973 1,27 gegen 0,60). Das Fenster tauscht moderate
+Tail-Positionen gegen extremere Spitzen; ein Gewinn fuer den Tail insgesamt ist
+es nicht.
+
+**Entscheidung.** Unveraendert: Normkorrektur tot, kein 16-Byte-Format, kein
+18-Byte-Build, kein P2, B1 zu. P1 aendert keinen Default. Die verbleibende
+Frage ist nicht mehr Codec gegen Lesepfad, sondern ob ein anderer Hebel (mehr
+Bits an einzelnen Zellen, int8, eine andere Skalierung) den Tail senkt - das
+waere eine neue, vorab zu registrierende Frage, kein P1-Nachtrag.
 
 ## Reproduktion (gelaufen 2026-11-07)
 
@@ -236,6 +283,22 @@ python tools\kv_p0b_radial.py --dump $out\kv.bin --top-n 18 `
     --base-tsv C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\128k\int8.tsv `
     --json $out\p0b.json
 ```
+
+P1, derselbe Prompt ohne Fenster (kein `STRATA_KV_WINDOW`), plus Auswertung:
+
+```powershell
+$p1 = 'C:\Users\krone\git\Strata-data\bench\2026-11-07-p1-pure16'
+python tools\quant_quality.py run --config bench\configs\cwe4k-swift-iq3_xxs.json `
+    --ids C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\p128k.ids.json `
+    --kv q4lm32 --short-read 6144 --prefill auto --topk 256 --pin 124877 `
+    --prompt-cache 3 --out $p1\p1-pure16.tsv
+python tools\kv_p1_pure.py --run $p1 --json $p1\p1.json
+```
+
+Der Wrapper endet bei einem `--short-read`-Lauf mit Code 1 und schreibt die
+`seg.json` nicht ("only 6144 positions were scored"), obwohl alle 6.144
+Positionen da sind. Die `seg.json` wurde hier aus den tatsaechlichen Argumenten
+des Laufs nachgetragen; an den Messwerten wurde nichts geaendert.
 
 Der Dump (`kv.bin`) und die Zahlen (`p0b.json`) liegen in
 `Strata-data\bench\2026-11-07-p0b`; der 32K-Smoke dort als `kv32k.bin` und

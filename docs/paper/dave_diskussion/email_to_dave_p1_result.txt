@@ -1,0 +1,57 @@
+Subject: P1 result: the tail is there without the window, and the window makes it worse
+
+Hi Dave,
+
+the control I flagged in the last mail is done: the pure 16/16 arm, same
+prompt, no window (--kv q4lm32, --short-read 6144, no STRATA_KV_WINDOW), same
+6,144 positions (124,877...131,020), 1,015 s. The windowed run had identical
+flags plus STRATA_KV_WINDOW=1/S=256/R=64, so the pair is clean.
+
+KL(fp16 || arm), fp16's top-256:
+
+    arm      mean      median    p99       max      mean no top 1%
+    pure     0.001817  0.000010  0.003669  2.7261   0.000054
+    int8     0.000847  0.000002  0.001506  2.4931   0.000021
+    win      0.002108  0.000023  0.003214  3.2112   0.000075
+
+Paired: pure - int8 +0.000971 mean (648 better, 5,496 worse), -0.000096
+without the 1 % largest differences. pure - win -0.000290 (4,274 better,
+1,870 worse), -0.000856 without the top 1 %.
+
+Top-18 by pure - int8 (the P0a analogue, not the absolute rank): 130954,
+130972, 130951, 124891, 130943, 127887, 128883, 130952, 130942, 126924,
+130973, 128583, 128547, 130945, 128793, 128516, 128533, 126867. Overlap with
+P0a: 12/18, top five carry 48.5 % of the positive gap, mean gap at P0a's 18
+positions +0.254. For win - int8: 18/18, 48.9 %, +0.415.
+
+So the tail is there without the window: pure has its own spikes (max 2.73),
+its five worst carry 53.3 % of the total KL, and 12 of P0a's 18 positions
+recur. It is not a read-path artifact. But the window amplifies it: at P0a's
+18 positions the pure gap is +0.254 against win's +0.415 (1.6x). Pure is
+better than win on the mean and in the bulk (14 % / 28 % lower), while win has
+the better p99 and the better last-1,024 bulk, at the cost of worse extremes
+(130952 3.21 against 2.73, 130973 1.27 against 0.60). The window trades
+moderate tail positions for more extreme spikes; it does not help the tail
+overall.
+
+One position is bad in every arm: 130952 is 2.73 in pure, 3.21 in win, 2.49
+in int8 and 2.88 in tag. An 8.25-bit arm with 22.9 dB lower vector MSE still
+has 2.49 nats there, so that one is model/reference sensitivity, not
+quantization. It carries only 3.9 % of the summed pure - int8 gap, so it does
+not drive the mean.
+
+Together with P0b (the KV error at the top-gap positions is normal), the tail
+is the model's sensitivity to the 16/16 error level, not a localized codec
+failure. The window adds to it, which means P0a overstated the pure arm's tail
+by about 1.6x at those positions.
+
+Decision unchanged: norm correction dead, no 16-byte format, no 18-byte build,
+no P2, B1 closed. No default changed.
+
+The open question is no longer codec against read path. If you want to push on
+the tail, it is: more bits at specific cells, int8, or a different scaling -
+each a new pre-registered question. Do you see a lever I am missing that does
+not just lower the error everywhere?
+
+Best,
+M.

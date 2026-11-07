@@ -12,7 +12,8 @@ Die Unterhaltung mit Dave über den 4-bit-KV-Cache, in der Reihenfolge des Threa
 | `email_to_dave_thanks.txt` | Unsere Dankesmail: L1/16/16 akzeptiert, P0a gemessen, P0b als radiale/tangentiale Zerlegung angekündigt. |
 | `daves_thanks_reply.md` | Daves dritte Antwort: keine p99-Zahl in der Literatur, der Qwen-Worst-Case-Kollaps (min. Cosinus) und die Ergänzungen zu P0b. |
 | `email_to_dave_p0b_result.txt` | Unsere Ergebnis-Mail: radiale 0,6 %, min. Cosinus 0,9949, Normkorrektur tot. |
-| `PLAN.md` | Der Plan nach der zweiten Antwort: P0a-Ergebnis, P0b-Capture, Arme und die Entscheidungsregel vor dem Lauf, mit Nachtrag zur dritten Antwort und dem P0b-Ergebnis. |
+| `email_to_dave_p1_result.txt` | Unsere P1-Mail: der Tail ist ohne Fenster da (12/18), das Fenster verstärkt ihn (1,6x), 130952 ist in jedem Arm schlecht. |
+| `PLAN.md` | Der Plan nach der zweiten Antwort: P0a-Ergebnis, P0b-Capture, Arme und die Entscheidungsregel vor dem Lauf, mit Nachtrag zur dritten Antwort, dem P0b-Ergebnis und dem P1-Ergebnis. |
 
 Das ist Arbeitskorrespondenz, keine veröffentlichten Docs. Die Messzahlen stehen in
 `bench/results/`; die Formatfakten in `include/strata/kernels/kv_q4.hpp`.
