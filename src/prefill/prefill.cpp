@@ -51,6 +51,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <map>
 #include <string>
@@ -3358,6 +3359,40 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             s2_row_energy(s2_host.data(), T * 2, 256, false);
                             s2_acc[(size_t) l].tokens += T;
                             if (s2_acc[(size_t) l].tokens >= 500) strata::core::s2::flush(s2path, s2_acc);
+                        }
+                        // P0b probe (debug only, opt-in): K and V here are rotated and not yet quantized, which
+                        // is exactly what the radial/tangential split needs.  Nothing is copied unless
+                        // STRATA_KV_Q4_DUMP names a file; STRATA_KV_Q4_DUMP_FROM/_TO clip it to a position
+                        // range, so a 128K prompt writes only the tail.  One record per layer and chunk:
+                        // magic, layer, p0, T, NKV, HD, pad (32 bytes), then K (T*NKV*HD floats), then V.
+                        if (const char* q4dump = std::getenv("STRATA_KV_Q4_DUMP");
+                            q4dump != nullptr && st.kv_q4 && st.kv_rot) {
+                            struct DumpCfg { std::FILE* f; int64_t from, to; };
+                            static DumpCfg dc = [&] {
+                                DumpCfg c{std::fopen(q4dump, "wb"), 0, (int64_t) 1 << 62};
+                                if (c.f == nullptr)
+                                    std::fprintf(stderr, "strata prefill: STRATA_KV_Q4_DUMP: cannot write %s\n", q4dump);
+                                if (const char* v = std::getenv("STRATA_KV_Q4_DUMP_FROM")) c.from = std::atoll(v);
+                                if (const char* v = std::getenv("STRATA_KV_Q4_DUMP_TO")) c.to = std::atoll(v);
+                                return c;
+                            }();
+                            const int64_t lo = std::max<int64_t>(p0, dc.from), hi = std::min<int64_t>(p0 + T, dc.to);
+                            if (dc.f != nullptr && hi > lo) {
+                                struct RecHdr { int32_t magic, layer; int64_t p0; int32_t T, nkv, hd, pad; };
+                                const RecHdr h{(int32_t) 0x51345042, (int32_t) l, lo, (int32_t) (hi - lo),
+                                               (int32_t) g.n_head_kv, (int32_t) g.head_dim, 0};
+                                const size_t off = (size_t) (lo - p0) * (size_t) g.n_head_kv * (size_t) g.head_dim;
+                                const size_t cnt = (size_t) (hi - lo) * (size_t) g.n_head_kv * (size_t) g.head_dim;
+                                static std::vector<float> buf;
+                                buf.resize(cnt);
+                                cudaStreamSynchronize((cudaStream_t) m.cs);   // the copy must read what the stream wrote
+                                std::fwrite(&h, sizeof h, 1, dc.f);
+                                cudaMemcpy(buf.data(), m.Kc + off, cnt * sizeof(float), cudaMemcpyDeviceToHost);
+                                std::fwrite(buf.data(), sizeof(float), cnt, dc.f);
+                                cudaMemcpy(buf.data(), m.Vc + off, cnt * sizeof(float), cudaMemcpyDeviceToHost);
+                                std::fwrite(buf.data(), sizeof(float), cnt, dc.f);
+                                std::fflush(dc.f);
+                            }
                         }
                         if (st.kv_q4) {
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
