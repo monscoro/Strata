@@ -258,6 +258,76 @@ Frage ist nicht mehr Codec gegen Lesepfad, sondern ob ein anderer Hebel (mehr
 Bits an einzelnen Zellen, int8, eine andere Skalierung) den Tail senkt - das
 waere eine neue, vorab zu registrierende Frage, kein P1-Nachtrag.
 
+## Bisektion - Frage, Regel und Ergebnis (gemessen 2026-11-08)
+
+**Frage (Dave).** Statt mehr Bits ueberall: Bits pro Schicht zuteilen - q4 auf
+einer Haelfte der QSA-Schichten, fp16 auf der anderen. Die Offline-Zerlegung aus
+P0b kann das nicht beantworten (der KV-Fehler je Schicht ist fast gleich,
+6,3...12,9 %), also zwei GPU-Laeufe bei 128K.
+
+**Regel, vor den Laeufen festgelegt.** Gepaarter Abstand zu `int8`
+(`KL_Arm - KL_int8`) an P1's Top-18-Positionen:
+
+    max(Abstand_A, Abstand_B) / (Abstand_A + Abstand_B) >= 0,65
+
+dann traegt eine Haelfte den Tail und wird verfeinert; sonst bleibt B1 zu.
+
+**Der Schalter.** `STRATA_KV_Q4_LAYERS=3,7,...` (nur CUDA/HIP, nur Messung): die
+genannten Modellschichten bekommen q4, alle anderen QSA-Schichten fp16. Ohne die
+Variable laeuft der unveraenderte Standardpfad - gemessen: ein 128K-Lauf ohne
+die Variable auf diesem Build ist bit-identisch mit P1's `pure`-Referenz vom
+7.11. (6.144 von 6.144 Positionen). Die Arena wird dabei fp16-gross
+gerechnet (das groesste Layout), damit ein Schritt beide Formate haelt; das
+kostet bei 128K ~3,2 GiB statt ~1,1 GiB KV-Arena.
+
+**Laeufe.** Alle mit `--kv q4lm32 --short-read 6144 --pin 124877
+--prompt-cache 3`, kein `STRATA_KV_WINDOW`, dieselben 6.144 Positionen
+(124.877...131.020), je ~19-20 min.
+
+| Arm | Maske | mean | median | p99 | max | mean ohne top 1 % |
+|---|---|---:|---:|---:|---:|---:|
+| `int8` | - | 0,000847 | 0,000002 | 0,001506 | 2,4931 | 0,000021 |
+| `pure` (16/16) | alle | 0,001817 | 0,000010 | 0,003669 | 2,7261 | 0,000054 |
+| A spaet 6 | 27,31,35,39,43,47 | 0,001290 | 0,000002 | 0,002473 | 1,2221 | 0,000022 |
+| C nur L3 | 3 | 0,001241 | 0,000002 | 0,001636 | 2,1808 | 0,000021 |
+| D nur L47 | 47 | 0,000008 | 0,000000 | 0,000035 | 0,0070 | 0,000001 |
+| E frueh 6 | 3,7,11,15,19,23 | 0,001172 | 0,000005 | 0,001714 | 1,3198 | 0,000031 |
+| F frueh 6, Build ohne Instrument | 3,7,11,15,19,23 | 0,001172 | 0,000005 | 0,001714 | 1,3198 | 0,000031 |
+
+**Ein Ausreisser, ausgeschlossen.** Der erste Lauf der frueh-Maske (B) lieferte
+mean 1,048770, median 0,199054, top-1 76,40 % - 577x der reine 16/16-Arm, obwohl
+B weniger Schichten quantisiert. Dieselbe Maske wurde zweimal wiederholt: E mit
+einem Messinstrument, das die Pools aller 12 Zustaende prueft, F auf dem Build
+ohne Instrument. E und F sind auf allen 6.144 Positionen bit-identisch und
+liegen im Mittel 1,55x unter dem reinen 16/16-Arm. Das Instrument fand bei 128K
+alle 12 Zustaende korrekt (Format-Flags, Zeiger innerhalb ihres eigenen Slots,
+Pools voll geschrieben, keine 4-MiB-Luecken, Page-Tables und RoPE-Tabelle
+unveraendert). B ist damit ein einmalig korrumpierter Lauf, keine Eigenschaft der
+Maske; er wird nicht verwendet.
+
+**Einzelne Schichten.** C (nur L3, die erste QSA-Schicht) ist sauber
+(0,001241), D (nur L47) praktisch identisch mit `int8` (0,000008). Eine einzelne
+q4-Schicht ist also ueberall unauffaellig - die Zuteilung ist keine Frage von
+"eine Schicht kaputt".
+
+**Gate.**
+
+| Arm | Abstand zu `int8` im Mittel | an P1's 18 | an P0a's 18 | von `pure`s Gap entfernt |
+|---|---:|---:|---:|---:|
+| A spaet 6 | +0,000443 | +0,086958 | +0,098750 | 73,2 % |
+| F frueh 6 | +0,000326 | +0,082001 | +0,047904 | 74,7 % |
+
+`max/(A+F) = 0,086958 / 0,168958 = 0,515` (Schwelle 0,65).
+
+**Lesart.** Beide Haelften entfernen am Tail fast denselben Anteil (73 % bzw.
+75 %); keine Haelfte traegt den Tail. Die 16/16-Kosten sind gleichmaessig ueber
+die Tiefe verteilt, wie schon der Offline-KV-Fehler.
+
+**Entscheidung.** B1 bleibt zu. Kein 5,0-bit-Format, keine
+Schichtzuteilung, kein Default geaendert. Der Schalter
+`STRATA_KV_Q4_LAYERS` bleibt als Messwerkzeug im Baum, ist ohne die Variable
+wirkungslos und wird nicht als Produktfeature dokumentiert.
+
 ## Reproduktion (gelaufen 2026-11-07)
 
 ```powershell
@@ -303,3 +373,23 @@ des Laufs nachgetragen; an den Messwerten wurde nichts geaendert.
 Der Dump (`kv.bin`) und die Zahlen (`p0b.json`) liegen in
 `Strata-data\bench\2026-11-07-p0b`; der 32K-Smoke dort als `kv32k.bin` und
 `p0b32k.json`. Die Analyse braucht keine GPU.
+
+Bisektion, derselbe Prompt und dieselben Flags wie P1, je Arm eine Maske:
+
+```powershell
+$bi = 'C:\Users\krone\git\Strata-data\bench\2026-11-08-bisect'
+python tools\quant_quality.py run --config bench\configs\cwe4k-swift-iq3_xxs.json `
+    --ids C:\Users\krone\git\Strata-data\bench\2026-11-03-tag-arm\p128k.ids.json `
+    --kv q4lm32 --short-read 6144 --prefill auto --topk 256 --pin 124877 `
+    --prompt-cache 3 --env STRATA_KV_Q4_LAYERS=27,31,35,39,43,47 --out $bi\A-late.tsv
+# C nur L3, D nur L47, E frueh 6 (3,7,11,15,19,23), F dieselbe Maske auf dem Build ohne Instrument
+python tools\kv_bisect_layers.py --b $bi\F-early6-rerun.tsv --json $bi\bisect.json
+```
+
+Die Gegenprobe zum Standardpfad: derselbe Lauf ohne `--env` (`G-pure-nomask.tsv`)
+ist bit-identisch mit `2026-11-07-p1-pure16\p1-pure16.tsv`.
+
+`--env` reicht die Variable an den Engine-Prozess; ohne `STRATA_KV_Q4_LAYERS`
+laeuft der unveraenderte Standardpfad. Auch diese `--short-read`-Laeufe enden mit
+Code 1 und ohne `seg.json`; die Dateien wurden wie bei P1 aus den tatsaechlichen
+Argumenten des Laufs nachgetragen, an den Messwerten wurde nichts geaendert.
