@@ -330,6 +330,10 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// Measurement-only (STRATA_KV_Q4_LAYERS): tells the next qsa_state_init which model layer it is building, so the
+/// q4 blocks can be kept on a subset of the QSA layers and the rest stored as fp16. -1 (the default, and what the
+/// drafter passes) follows qsa_kv_q4(). CUDA/HIP only; the SYCL copy ignores the variable.
+void qsa_set_kv_q4_layer(int layer);
 /// `--kv q4lm32` / `--kv q4lm32s`: Q4_0's blocks and rotation with Max-Lloyd's levels instead of ggml's uniform
 /// grid (kv_q4.hpp). kUniform here is plain q4_0 (use qsa_set_kv_q4); anything else sets that too.
 void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode);
@@ -345,18 +349,23 @@ inline int qsa_kv_format(const QsaState& st) {
     // format whatever level table its blocks carry. The movers only ever see q4 bytes (kv_fmt_q4) and the
     // reader's table travels in the pools (q4_mode), not here - so one format covers the window on any mode.
     if (st.k_win != nullptr || st.v_win != nullptr) return strata::kernels::kKvQ4lmW;
-    // q4lm32 / q4lm32s: kKvQ4's blocks with another nibble -> value map (and, for q4lm32s, another scale rule) - a
-    // block is silent about both, so the format has to carry them.
-    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydLs) return strata::kernels::kKvQ4lmS;
-    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd) return strata::kernels::kKvQ4lm;
-    // WP-2 3-bit probe: the same blocks, the 8-level table on both tensors / on K only / on V only.
-    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8) return strata::kernels::kKvQ4lm8;
-    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8K) return strata::kernels::kKvQ4lm8K;
-    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8V) return strata::kernels::kKvQ4lm8V;
-    // kLloydWin with S + R = 0 allocates no side pool (qsa_win_wanted), so the pool check at the top already
-    // caught every state that has one, and such a state is a plain kLloyd cache: kLloydWin's writer IS kLloyd's
-    // (kv_q4.cu) and its table is the 16-level one, so it is labelled kKvQ4lm and can be snapshotted.
-    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydWin) return strata::kernels::kKvQ4lm;
+    // The level table is a property of the q4 blocks: a state that stores fp16 (STRATA_KV_Q4_LAYERS keeps the
+    // q4 blocks on a subset of the layers while the process-wide mode stays kLloyd) has no q4 blocks to label.
+    // Without the check such a state reports kKvQ4lm and every mover reads its fp16 rows as q4 blocks.
+    if (st.kv_q4) {
+        // q4lm32 / q4lm32s: kKvQ4's blocks with another nibble -> value map (and, for q4lm32s, another scale rule) -
+        // a block is silent about both, so the format has to carry them.
+        if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydLs) return strata::kernels::kKvQ4lmS;
+        if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd) return strata::kernels::kKvQ4lm;
+        // WP-2 3-bit probe: the same blocks, the 8-level table on both tensors / on K only / on V only.
+        if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8) return strata::kernels::kKvQ4lm8;
+        if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8K) return strata::kernels::kKvQ4lm8K;
+        if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8V) return strata::kernels::kKvQ4lm8V;
+        // kLloydWin with S + R = 0 allocates no side pool (qsa_win_wanted), so the pool check at the top already
+        // caught every state that has one, and such a state is a plain kLloyd cache: kLloydWin's writer IS kLloyd's
+        // (kv_q4.cu) and its table is the 16-level one, so it is labelled kKvQ4lm and can be snapshotted.
+        if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydWin) return strata::kernels::kKvQ4lm;
+    }
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

@@ -205,6 +205,30 @@ void layer_set_native_flash_attn_short(bool enabled) { native_flash_attn_short =
 namespace {
 bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false;
 strata::kernels::Q4Mode g_kv_q4_mode = strata::kernels::Q4Mode::kUniform;
+// Measurement-only, opt-in: STRATA_KV_Q4_LAYERS=3,7,... keeps the q4 blocks on those model layers and stores
+// every other QSA layer as fp16. Unset: all layers follow g_kv_q4, the default path, unchanged. The arena is
+// sized as if every layer were fp16 (the largest layout), so one stride still holds both. CUDA/HIP only.
+uint64_t g_kv_q4_mask = 0;
+bool g_kv_q4_mask_active = false;
+int g_kv_q4_layer = -1;   // the model layer whose QSA state is being built; -1 = follow g_kv_q4
+void kv_q4_mask_parse() {
+    static const bool once = [] {
+        const char* e = std::getenv("STRATA_KV_Q4_LAYERS");
+        if (e == nullptr) return true;
+        g_kv_q4_mask_active = true;
+        for (const char* p = e; *p != '\0';) {
+            char* end = nullptr;
+            const long v = std::strtol(p, &end, 10);
+            if (end == p) break;
+            if (v >= 0 && v < 64) g_kv_q4_mask |= (uint64_t) 1 << v;
+            p = (*end == ',') ? end + 1 : end;
+        }
+        std::fprintf(stderr, "strata: STRATA_KV_Q4_LAYERS=%s: q4 only on those layers, fp16 on the rest "
+                             "(measurement build; the arena is fp16-sized)\n", e);
+        return true;
+    }();
+    (void) once;
+}
 // WP-2a window: exact cells, recent S + R sinks (STRATA_KV_WINDOW_S/_R, defaults 128/8). S + R = 0 is exactly
 // the base mode (the arm's identity check). The overlay is orthogonal to the level table: `--kv q4lm32w`
 // (kLloydWin) turns it on for kLloyd and `STRATA_KV_WINDOW=1` for any other q4 mode (e.g. `--kv q4lm8v` +
@@ -247,9 +271,11 @@ void qsa_set_kv_int8_rotate(bool enabled) { g_kv_int8_rot = enabled; }
 bool qsa_kv_int8() { return g_kv_int8; }
 void qsa_set_kv_q4(bool enabled) { g_kv_q4 = enabled; }
 bool qsa_kv_q4() { return g_kv_q4; }
+void qsa_set_kv_q4_layer(int layer) { g_kv_q4_layer = layer; }
 void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
     g_kv_q4_mode = mode;
     g_kv_q4 = g_kv_q4 || (mode != strata::kernels::Q4Mode::kUniform);
+    kv_q4_mask_parse();
     // Window overlay (kv_q4.hpp), orthogonal to the level table: `--kv q4lm32w` (kLloydWin) is the overlay on
     // kLloyd, `STRATA_KV_WINDOW=1` turns it on for any other q4 mode (`--kv q4lm8v` + the env is the production
     // point). Grid via STRATA_KV_WINDOW_S/_R (defaults 128/8); the recent ring's extra rows
@@ -838,13 +864,13 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     }
     return p;
 }
-uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8) {
+uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8, bool q4) {
     if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
         const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2 +
                rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
     }
-    if (g_kv_q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
+    if (q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
     return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
@@ -893,10 +919,13 @@ void qsa_set_kv_win(bool on) { g_kv_win = on; }
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    kv_q4_mask_parse();
+    // With the per-layer mask the arena must hold the largest layout (fp16) so one stride fits every layer.
+    const bool q4_size = g_kv_q4 && !g_kv_q4_mask_active;
     uint64_t n = 0;
     if (!(g_kv_elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
-                           g_kv_int8 || g_kv_hybrid) + 4 * 16;   // K/V pools (the VRAM slots)
+                           g_kv_int8 || g_kv_hybrid, q4_size) + 4 * 16;   // K/V pools (the VRAM slots)
     n += (uint64_t) p.pages * 4;                                               // page_table
     if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
@@ -917,8 +946,14 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
-    st.kv_int8 = g_kv_int8 && !g_kv_q4;
-    st.kv_q4 = g_kv_q4;
+    kv_q4_mask_parse();
+    // STRATA_KV_Q4_LAYERS: q4 only where the mask says. Without the variable (or outside a main-layer init, the
+    // drafter passes -1) this is exactly g_kv_q4, the default path.
+    const bool q4 = (g_kv_q4_mask_active && g_kv_q4 && g_kv_q4_layer >= 0)
+                        ? ((g_kv_q4_mask >> g_kv_q4_layer) & 1ull) != 0
+                        : g_kv_q4;
+    st.kv_int8 = g_kv_int8 && !q4;
+    st.kv_q4 = q4;
     st.kv_q4_mode = g_kv_q4_mode;   // a q4lm32/q4lm32s state is a q4_0 state with another nibble -> value map
     // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
     // mtp.cpp). A streamed one keeps its host copy in the same three runs (kv_stream.cu, kKvHybrid).
