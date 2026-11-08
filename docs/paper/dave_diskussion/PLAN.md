@@ -393,3 +393,36 @@ ist bit-identisch mit `2026-11-07-p1-pure16\p1-pure16.tsv`.
 laeuft der unveraenderte Standardpfad. Auch diese `--short-read`-Laeufe enden mit
 Code 1 und ohne `seg.json`; die Dateien wurden wie bei P1 aus den tatsaechlichen
 Argumenten des Laufs nachgetragen, an den Messwerten wurde nichts geaendert.
+
+## STRATA_HIP_WMMA - Regel fuer kuenftige Laeufe (gemessen 2026-11-08)
+
+Laufzeitvariable, kein Build-Flag. Auf Windows bleibt der Matrix-Core-Prompt aus,
+bis `STRATA_HIP_WMMA=1` gesetzt ist. Die Engine sagt das einmal beim ersten
+Prompt. Der Kernel nimmt nur int8-Pools. q4lm32 und q4lm8v laufen weiter ueber
+den FP32-Kernel, auch wenn die Variable auf 1 steht.
+
+**Qualitaet, q4lm32.** Zwei 128K-Laeufe, derselbe Prompt wie die Bisektion, einer
+ohne die Variable, einer mit `=1`: bit-identisch auf 6.144 von 6.144 Positionen.
+Das ist kein Qualitaetsbeweis fuer den Matrix-Core-Kernel. Er ist bei diesen
+Pools nie gelaufen. Die Startzeile des An-Laufs war trotzdem
+`STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1200)`.
+
+**Qualitaet, int8.** Hier nicht gemessen. Die offizielle Doku sagt: nicht
+bitwise, Greedy-Text weicht ab etwa Token 50 ab, KL gegen den alten Kernel
+0,0003 (6.024 Positionen) bzw. 0,0014. Die bisherige Kette (P0, P1, Bisektion)
+lief ohne den Schalter. Modi innerhalb eines Vergleichs nicht mischen.
+
+**Performance, int8.** Suite `standard-v1`, Swift IQ3_XXS, `--kv int8`, Kontext
+32.768, ROCm 7.2, Engine 0.1.47, RX 9060 XT (gfx1200). Der Benchmark-Bericht
+nennt faelschlich eine RX 470; die Engine-Zeile sagt RX 9060 XT. Median, n=3:
+Prompt 4K 479 -> 538 tok/s (x1,12; eine Wiederholung ohne den Schalter lag bei
+613, also ueber dem An-Arm), Prompt 16K 565 -> 670 tok/s (x1,18, Bereiche
+ueberlappen nicht). Decode im Streubereich (etwa 42 gegen 44-48 tok/s). Weniger
+als die R9700-Zahlen in `docs/AMD_HIP.md` (4K x1,36, 16K x1,50): auf dieser
+16-GB-Karte kommt ein grosser Teil der Prompt-Zeit vom Nachladen der Experten.
+
+**Regel.** Performance-Laeufe mit `--kv int8`: `STRATA_HIP_WMMA=1`. Die
+q4lm32-Qualitaetskette: Variable nicht setzen. Sie aendert die Zahlen nicht, der
+Log wuerde aber "on" sagen, obwohl der Kernel nicht laeuft, und die Kette soll
+mit P1 vergleichbar bleiben. Ein int8-Qualitaetslauf mit dem Schalter waere eine
+neue Kette, kein Nachtrag zu P1.
