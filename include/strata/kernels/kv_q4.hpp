@@ -135,6 +135,21 @@ __device__ __forceinline__ const int8_t* q4l_map_v(Q4Mode m) { return q4_l8_v(m)
 void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream);
 inline void fwht256_inplace_cuda(float* data, int64_t n_rows, void* stream) { fwht256_cuda(data, data, n_rows, stream); }
 
+/// The rotation of the KV rows **with the centering** (bench/results/2026-11-10-centering/): the
+/// per-(KV head, channel) offset is subtracted before the transform, in the channel space, so the
+/// quantizer's scale (a maximum statistic) sees the signal without its fixed part.  The rows of the
+/// buffer are (position, KV head, channel), so the head of a row is (row / 256) % n_heads.
+/// `offsets` null means the plain rotation - every writer site calls this one function, so none of
+/// them can forget the centering.
+void fwht256_kv_inplace_cuda(float* data, int64_t n_rows, int n_heads, const float* offsets, void* stream);
+
+/// The V add-back on the attention output: the stored V rows are (V - m_V) rotated and the attention
+/// weights sum to one, so the output carries -m_V.  The output rows are (position, QUERY head,
+/// channel) and the query heads are grouped per KV head (G query heads per KV head), so the row's KV
+/// head is (query head) / G.  `offsets` null does nothing.
+void add_center_offsets_cuda(float* data, int64_t n_rows, int n_q_heads, int g, const float* offsets,
+                             void* stream);
+
 /// Append the (already rotated) cell at step[kStepPos]. With a host copy (KV streaming) it is written there too,
 /// and to VRAM only if its block is resident.
 void kv_append_q4_step(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, const int32_t* step,

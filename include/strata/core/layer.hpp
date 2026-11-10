@@ -341,6 +341,20 @@ strata::kernels::Q4Mode qsa_kv_q4_mode();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
+/// ---- The centering (bench/results/2026-11-10-centering/) ----
+/// The per-(KV head, channel) offsets of the K and of the V rows, subtracted before the rotation so
+/// that the quantizer's scale (a maximum statistic) sees the signal without its fixed part.  Measured:
+/// the bias cost 1.9 to 2.6 dB of block MSE, and removing it is worth more than the level table or
+/// the per-block scale.  K and V have their own table (their offsets differ), every head its own (the
+/// S2 probe merges the heads and measures K only).  The tables live on the device: one block per
+/// layer, [n_heads][head_dim] floats, K first then V.  Off (null pointers) until the offsets are
+/// loaded; the int8 path stays byte-identical.
+void qsa_set_kv_center(const float* k_offsets, const float* v_offsets, int layers, int heads, int dim);
+bool qsa_kv_center();
+/// The K offsets of one layer (null when the centering is off).
+const float* qsa_kv_center_k_offsets(int layer);
+/// The V offsets of one layer (null when the centering is off).
+const float* qsa_kv_center_v_offsets(int layer);
 /// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvQ4lm /
 /// kKvQ4lmS / kKvQ4lm8 / kKvQ4lm8K / kKvQ4lm8V / kKvQ4lmW / kKvHybrid).
 inline int qsa_kv_format(const QsaState& st) {

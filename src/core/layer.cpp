@@ -269,6 +269,36 @@ uint64_t qsa_win_bytes(const strata::kernels::QsaShapes& s) {
 void qsa_set_kv_int8(bool enabled) { g_kv_int8 = enabled; }
 void qsa_set_kv_int8_rotate(bool enabled) { g_kv_int8_rot = enabled; }
 bool qsa_kv_int8() { return g_kv_int8; }
+// ---- The centering (bench/results/2026-11-10-centering/) ----
+// The per-(KV head, channel) offsets of the K and of the V rows, subtracted before the rotation.
+// K and V have their own table (measured: their offsets differ), and every head its own (the S2
+// probe merges the heads and measures K only - see the mini-project). The tables live on the device:
+// one block per layer, [n_heads][head_dim] floats, K first then V.
+namespace {
+const float* g_kv_center_k = nullptr;
+const float* g_kv_center_v = nullptr;
+int g_kv_center_layers = 0;
+int g_kv_center_heads = 0;
+int g_kv_center_dim = 0;
+}  // namespace
+void qsa_set_kv_center(const float* k_offsets, const float* v_offsets, int layers, int heads, int dim) {
+    g_kv_center_k = k_offsets;
+    g_kv_center_v = v_offsets;
+    g_kv_center_layers = layers;
+    g_kv_center_heads = heads;
+    g_kv_center_dim = dim;
+}
+bool qsa_kv_center() { return g_kv_center_k != nullptr && g_kv_center_layers > 0; }
+/// The K offsets of one layer (null when the centering is off): [n_heads][head_dim].
+const float* qsa_kv_center_k_offsets(int layer) {
+    if (!qsa_kv_center() || layer < 0 || layer >= g_kv_center_layers) return nullptr;
+    return g_kv_center_k + (size_t) layer * g_kv_center_heads * g_kv_center_dim;
+}
+/// The V offsets of one layer (null when the centering is off).
+const float* qsa_kv_center_v_offsets(int layer) {
+    if (!qsa_kv_center() || layer < 0 || layer >= g_kv_center_layers) return nullptr;
+    return g_kv_center_v + (size_t) layer * g_kv_center_heads * g_kv_center_dim;
+}
 void qsa_set_kv_q4(bool enabled) { g_kv_q4 = enabled; }
 bool qsa_kv_q4() { return g_kv_q4; }
 void qsa_set_kv_q4_layer(int layer) { g_kv_q4_layer = layer; }
@@ -1468,9 +1498,11 @@ if (st.kv_rot && s2path) {
                 acc_before[li][c] += v;
                 acc2_before[li][c] += v * v;
             }
-        // FWHT on K and V
-        strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
-        strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+        // FWHT on K and V (with the centering: the per-(head, channel) offset is subtracted first)
+        strata::kernels::fwht256_kv_inplace_cuda(b.kcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_k_offsets((int) layer), stream);
+        strata::kernels::fwht256_kv_inplace_cuda(b.vcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_v_offsets((int) layer), stream);
         // after
         cudaMemcpy(host.data(), b.kcur, (size_t) nhead * nchan * 4, cudaMemcpyDeviceToHost);
         cudaStreamSynchronize((cudaStream_t) stream);
@@ -1504,13 +1536,17 @@ if (st.kv_rot && s2path) {
             }
         }
     } else {
-        // layer out of range: normal FWHT
-        strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
-        strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+        // layer out of range: normal FWHT (with the centering)
+        strata::kernels::fwht256_kv_inplace_cuda(b.kcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_k_offsets((int) layer), stream);
+        strata::kernels::fwht256_kv_inplace_cuda(b.vcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_v_offsets((int) layer), stream);
     }
 } else if (st.kv_rot) {
-    strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
-    strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+    strata::kernels::fwht256_kv_inplace_cuda(b.kcur, g.n_head_kv, g.n_head_kv,
+                                             qsa_kv_center_k_offsets((int) layer), stream);
+    strata::kernels::fwht256_kv_inplace_cuda(b.vcur, g.n_head_kv, g.n_head_kv,
+                                             qsa_kv_center_v_offsets((int) layer), stream);
 }
 if (st.kv_q4) {
     strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host,
@@ -1585,7 +1621,15 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     }
 } else qsa_attend_step(b.qcur, b.k_scratch, b.v_scratch, st.step, cap, s, b.attn, nullptr, stream);
     }
-    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);   // the output back: H is self-inverse
+    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);
+    // The centering: the V offsets come back on the output (the attention weights sum to one, so the
+    // output carries -m_V in the rotated domain).  Only when the V was centered - the hybrid rotates
+    // its V without the centering.
+    if (st.kv_rot) {
+        const float* vo = qsa_kv_center_v_offsets((int) layer);
+        if (vo != nullptr)
+            strata::kernels::add_center_offsets_cuda(b.attn, g.n_head, g.n_head, g.n_head / g.n_head_kv, vo, stream);
+    }   // the output back: H is self-inverse
     dump_slot(dump, g, layer, b.attn, (uint64_t) 2 * g.n_embd + 2 * g.hc,                            (uint64_t) g.n_head * g.head_dim, stream);    {        const uint64_t vs = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim +                            (uint64_t) 2 * g.n_head_kv * g.head_dim;        dump_slot(dump, g, layer, (const float*) b.v_scratch, vs,                            (uint64_t) g.n_head_kv * g.head_dim / 2, stream);        dump_slot(dump, g, layer, (const float*) b.ids, vs + (uint64_t) g.n_head_kv * g.head_dim / 2, 4, stream);        dump_slot(dump, g, layer, (const float*) st.step,                            vs + (uint64_t) g.n_head_kv * g.head_dim / 2 + 4, 4, stream);    }
 // ---- 9. Gate the attention output before its projection. Native CUDA keeps F32
 // sigmoid/multiply arithmetic and uses Q8_1 for the native quantized projection.

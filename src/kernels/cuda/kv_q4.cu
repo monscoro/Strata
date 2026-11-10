@@ -319,6 +319,106 @@ void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream) {
     check("fwht256 launch");
 }
 
+// The rotation of the KV rows with the centering: `offsets` null means the plain rotation, so every
+// writer site can call this one function and none of them can forget the centering.
+__global__ void fwht256_centered_kernel(float* __restrict__ data, int64_t n_rows, int n_heads,
+                                         const float* __restrict__ offsets, float scale);
+__global__ void add_center_offsets_kernel(float* __restrict__ data, int64_t n_rows, int n_q_heads, int g,
+                                          const float* __restrict__ offsets);
+void fwht256_kv_inplace_cuda(float* data, int64_t n_rows, int n_heads, const float* offsets, void* stream) {
+    if (n_rows <= 0) return;
+    if (offsets == nullptr) {
+        fwht256_inplace_cuda(data, n_rows, stream);
+        return;
+    }
+    const int rows_per_block = 4;
+    const int64_t num_blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    fwht256_centered_kernel<<<dim3((unsigned) num_blocks), dim3(32, rows_per_block), 0, (cudaStream_t) stream>>>(
+        data, n_rows, n_heads, offsets, 1.0f / 16.0f);
+    check("fwht256_centered launch");
+}
+
+// The V add-back on the attention output (see add_center_offsets_kernel).
+void add_center_offsets_cuda(float* data, int64_t n_rows, int n_q_heads, int g, const float* offsets,
+                             void* stream) {
+    if (data == nullptr || offsets == nullptr || n_rows <= 0) return;
+    const int rows_per_block = 4;
+    const int64_t num_blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    add_center_offsets_kernel<<<dim3((unsigned) num_blocks), dim3(32, rows_per_block), 0, (cudaStream_t) stream>>>(
+        data, n_rows, n_q_heads, g, offsets);
+    check("add_center_offsets launch");
+}
+
+// The centering (bench/results/2026-11-10-centering/): the per-(KV head, channel) offset of the K
+// (or V) rows is subtracted BEFORE the rotation, in the channel space, so the quantizer's scale
+// (a maximum statistic) sees the signal without its fixed part.  The rows of the buffer are
+// (position, KV head, channel), so the head of a row is (row / N) % n_heads.
+__global__ void fwht256_centered_kernel(float* __restrict__ data, int64_t n_rows, int n_heads,
+                                         const float* __restrict__ offsets, float scale) {
+    constexpr int warp_size = 32;
+    constexpr int N = 256;
+    constexpr int el_w = N / warp_size;
+
+    const int64_t r = (int64_t) blockIdx.x * blockDim.y + threadIdx.y;
+    if (r >= n_rows) return;
+    // the rows are (position, KV head, channel) in that order: the head of a row is r % n_heads
+    const int head = (int) (r % n_heads);
+    const float* __restrict__ off = offsets + (int64_t) head * N;
+    float* __restrict__ row = data + r * N;
+    const int lane = threadIdx.x;
+
+    float reg[el_w];
+#pragma unroll
+    for (int i = 0; i < el_w; ++i)
+        reg[i] = (row[i * warp_size + lane] - off[i * warp_size + lane]) * scale;
+
+    // the low 5 index bits live across lanes
+#pragma unroll
+    for (int h = 1; h < warp_size; h *= 2) {
+#pragma unroll
+        for (int j = 0; j < el_w; ++j) {
+            const float val = reg[j];
+            const float val2 = __shfl_xor_sync(0xffffffffu, val, h, warp_size);
+            reg[j] = (lane & h) == 0 ? val + val2 : val2 - val;
+        }
+    }
+    // the high 3 bits across each lane's registers
+#pragma unroll
+    for (int h = warp_size; h < N; h *= 2) {
+        const int step = h / warp_size;
+#pragma unroll
+        for (int j = 0; j < el_w; j += 2 * step) {
+#pragma unroll
+            for (int k = 0; k < step; ++k) {
+                const float x = reg[j + k];
+                const float y = reg[j + k + step];
+                reg[j + k] = x + y;
+                reg[j + k + step] = x - y;
+            }
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < el_w; ++i) row[i * warp_size + lane] = reg[i];
+}
+
+// The add-back of the V offsets on the attention output: the stored V rows are (V - m_V) rotated,
+// and the attention weights sum to one, so the output is (out - m_V) in the rotated domain.  The
+// output rows are (position, QUERY head, channel) and the query heads are grouped per KV head (G
+// query heads per KV head), so the row's KV head is (query head) / G.
+__global__ void add_center_offsets_kernel(float* __restrict__ data, int64_t n_rows, int n_q_heads, int g,
+                                          const float* __restrict__ offsets) {
+    constexpr int N = 256;
+    const int64_t r = (int64_t) blockIdx.x * blockDim.y + threadIdx.y;
+    if (r >= n_rows) return;
+    // the rows are (position, QUERY head, channel): the query head of a row is r % n_q_heads
+    const int q_head = (int) (r % n_q_heads);
+    const int kv_head = g > 0 ? q_head / g : q_head;
+    const float* __restrict__ off = offsets + (int64_t) kv_head * N;
+    float* __restrict__ row = data + r * N;
+    const int lane = threadIdx.x;
+    for (int i = lane; i < N; i += 32) row[i] += off[i];
+}
+
 // The append kernels are templated on the write side's full Q4Mode; the wrappers pick the variant so that no caller
 // has to know which kernel a format needs.
 #define STRATA_KV_Q4_APPEND(M)                                                                   \

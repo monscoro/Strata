@@ -4385,8 +4385,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             s2_row_energy(s2_host.data(), T * 2, 256, true);
                         }
                         if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
-                            strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
-                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                            // with the centering: the per-(head, channel) offset is subtracted before the rotation
+                            strata::kernels::fwht256_kv_inplace_cuda(m.Kc, T * 2, (int) g.n_head_kv,
+                                                                     core::qsa_kv_center_k_offsets((int) l), m.cs);
+                            strata::kernels::fwht256_kv_inplace_cuda(m.Vc, T * 2, (int) g.n_head_kv,
+                                                                     core::qsa_kv_center_v_offsets((int) l), m.cs);
                         }
                         if (s2_on) {
                             cudaStreamSynchronize((cudaStream_t) m.cs);   // the copy must read what the stream wrote
@@ -4847,6 +4850,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                    s, m.attn_scratch, m.attn + t0 * kQW, nb, m.cs);
                         }
                     if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * kNHead, m.cs);
+                    // The centering: the V offsets come back on the output (the attention weights sum to
+                    // one, so the output carries -m_V in the rotated domain).  Only when the V was centered.
+                    if (st.kv_rot) {
+                        const float* vo = core::qsa_kv_center_v_offsets((int) l);
+                        if (vo != nullptr)
+                            strata::kernels::add_center_offsets_cuda(m.attn, T * kNHead, (int) kNHead,
+                                                                       (int) (kNHead / g.n_head_kv), vo, m.cs);
+                    }
                     pt.mark(kPfQsa, cs);
                     if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs, ld_a);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err, 0, ld_a)) return false;
@@ -7927,8 +7938,11 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                                           mirror ? &hv : nullptr, staged ? &sv : nullptr);
                         } else {
                             if (st.kv_rot) {
-                                strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, cs);
-                                strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, cs);
+                                // with the centering: the per-(head, channel) offset is subtracted before the rotation
+                                strata::kernels::fwht256_kv_inplace_cuda(m.Kc, T * 2, (int) g.n_head_kv,
+                                                                         core::qsa_kv_center_k_offsets((int) l), cs);
+                                strata::kernels::fwht256_kv_inplace_cuda(m.Vc, T * 2, (int) g.n_head_kv,
+                                                                         core::qsa_kv_center_v_offsets((int) l), cs);
                             }
                             if (st.kv_q4)
                                 strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
@@ -8003,6 +8017,13 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                                                        s, m.attn_scratch, m.attn + q0 * kQW, nb, cs);
                             }
                         if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * kNHead, cs);
+                    // The centering: the V offsets come back on the output (see the other prompt path).
+                    if (st.kv_rot) {
+                        const float* vo = core::qsa_kv_center_v_offsets((int) l);
+                        if (vo != nullptr)
+                            strata::kernels::add_center_offsets_cuda(m.attn, T * kNHead, (int) kNHead,
+                                                                       (int) (kNHead / g.n_head_kv), vo, cs);
+                    }
                         pt.mark(kPfQsa, cs);
                         if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, T, cs);
                         if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;

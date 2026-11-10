@@ -64,7 +64,12 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         return false;
     }
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
-    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
+    // The centering (bench/results/2026-11-10-centering/) is another format (+32): a centered state's bytes
+    // mean nothing to a state that does not center, so a snapshot or prompt checkpoint taken with the
+    // centering never restores into one without it, nor the reverse.  The hybrid rotates its V without
+    // the centering, so it keeps the uncentered format.
+    const int centered = (st.kv_rot && !st.kv_hybrid && qsa_kv_center()) ? 32 : 0;
+    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated + centered, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,

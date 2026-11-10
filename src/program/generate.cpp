@@ -4351,6 +4351,57 @@ int main(int argc, char** argv) {
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
     strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
+    // STRATA_KV_CENTER=<file>: the centering offsets (bench/results/2026-11-10-centering/). The file holds,
+    // per model layer, the per-(KV head, channel) offsets of the K and of the V rows; they are subtracted
+    // before the rotation, so the quantizer's scale (a maximum statistic) sees the signal without its fixed
+    // part. Measured: the bias cost 1.9 to 2.6 dB of block MSE. Opt-in: without the file every path stays
+    // byte-identical.
+    if (const char* cpath = std::getenv("STRATA_KV_CENTER")) {
+        const strata::core::ModelGeometry& cg = strata::core::kCompiledGeometry;
+        std::FILE* cf = std::fopen(cpath, "rb");
+        if (cf == nullptr) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: cannot read %s\n", cpath);
+            return 2;
+        }
+        char cmagic[4] = {0, 0, 0, 0};
+        int32_t cver = 0, centries = 0, cheads = 0, cdim = 0;
+        const bool chead = std::fread(cmagic, 1, 4, cf) == 4 && std::fread(&cver, 4, 1, cf) == 1 &&
+                           std::fread(&centries, 4, 1, cf) == 1 && std::fread(&cheads, 4, 1, cf) == 1 &&
+                           std::fread(&cdim, 4, 1, cf) == 1;
+        if (!chead || std::memcmp(cmagic, "STKC", 4) != 0 || cver != 1 || cheads != (int) cg.n_head_kv ||
+            cdim != (int) cg.head_dim || centries < 0 || centries > (int) cg.n_layers) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: %s is not a centering table for %d KV heads x %d channels\n",
+                         cpath, (int) cg.n_head_kv, (int) cg.head_dim);
+            std::fclose(cf);
+            return 2;
+        }
+        const size_t cper = (size_t) cg.n_head_kv * cg.head_dim;
+        std::vector<float> chost((size_t) cg.n_layers * cper * 2, 0.0f);
+        bool cok = true;
+        for (int e = 0; e < centries && cok; ++e) {
+            int32_t clayer = -1;
+            if (std::fread(&clayer, 4, 1, cf) != 1 || clayer < 0 || clayer >= (int) cg.n_layers ||
+                std::fread(&chost[(size_t) clayer * cper], 4, cper, cf) != cper ||
+                std::fread(&chost[(size_t) cg.n_layers * cper + (size_t) clayer * cper], 4, cper, cf) != cper)
+                cok = false;
+        }
+        std::fclose(cf);
+        if (!cok) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: %s is truncated or names a layer outside the model\n",
+                         cpath);
+            return 2;
+        }
+        float* cdev = nullptr;
+        if (cudaMalloc(&cdev, chost.size() * sizeof(float)) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: the offsets do not fit into VRAM\n");
+            return 2;
+        }
+        cudaMemcpy(cdev, chost.data(), chost.size() * sizeof(float), cudaMemcpyHostToDevice);
+        strata::core::qsa_set_kv_center(cdev, cdev + (size_t) cg.n_layers * cper, (int) cg.n_layers,
+                                         (int) cg.n_head_kv, (int) cg.head_dim);
+        std::fprintf(stderr, "strata generate: the centering is on: %d layers' offsets from %s (K and V, per KV head and channel)\n",
+                     centries, cpath);
+    }
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
         return 2;
