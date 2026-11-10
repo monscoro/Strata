@@ -37,8 +37,8 @@ IDS = REPO / "data" / "quant_quality" / "cwe-4k" / "set.ids.json"
 WINDOW = ["STRATA_KV_WINDOW_S=256", "STRATA_KV_WINDOW_R=64", "STRATA_KV_WINDOW_BATCH=512"]
 
 ARMS = [
-    ("q4lm32w", ["--kv", "q4lm32w"] + [], False),
-    ("q4lm32w-center", ["--kv", "q4lm32w"], True),
+    ("q4lm32w", "q4lm32w", False),
+    ("q4lm32w-center", "q4lm32w", True),
 ]
 
 
