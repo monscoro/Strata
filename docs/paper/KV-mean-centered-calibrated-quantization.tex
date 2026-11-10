@@ -1,8 +1,16 @@
-﻿% ---------------------------------------------------------------------------
+% ---------------------------------------------------------------------------
 % Version history (visible on page 1 and in the PDF metadata; one line per
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.6  2026-11-10  the provisional quality comparison with and without the
+%                     mean-centered calibration, as two tables: the arms on cwe-4k
+%                     (mean KL, top-1, p99, perplexity, the paired difference
+%                     against int8) and the calibration alone, paired (the same
+%                     arm with and without the offset).  The caption says that
+%                     the comparison is in-sample and that the 128K
+%                     out-of-sample run is open.  No number of the 5.0-bit point
+%                     changes
 %   v0.5  2026-11-10  renamed to the work's subject: mean-centered calibrated KV
 %                     quantization.  The title, the abstract and the sections now carry
 %                     the one lever we measured (the per-channel offset, removed
@@ -82,7 +90,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.5, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.6, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -97,7 +105,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.4 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.6 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -170,9 +178,46 @@ Two readings of Table~\ref{tab:point} shape everything that follows. First, the 
 
 One lever of this plan has since been measured rather than proposed. The merged engine (0.1.59.1 --- the build every arm of the re-evaluation runs on) can subtract a calibrated per-channel offset from the K and V rows before the rotation. The offset is what the channel moments show: the standardized channel mean has median 0.2673 before the rotation, against a sampling expectation of 0.0044 at that token count, and the rotation does not remove it --- it turns a fixed offset per channel into a fixed bias in every rotated coordinate. Our block scale is a maximum statistic ($d = \mathrm{amax}/l_{\max}$, the shuffle maximum over the 32 values of a block), so that bias is paid for by every value of the block. Measured on the engine's own cells (the cell dump of 2026-11-10: 12 layers $\times$ 32,746 cells $\times$ 2 KV heads), removing it cuts the block error by 1.9\,dB on the uniform grid and 2.6\,dB on the \texttt{q4lm8v} codec --- more than the level table (0.30\,dB) and the per-block scale (0.31\,dB) together.
 
-On the quality side the same change moves the window arm on cwe-4k from mean KL 0.02090 to 0.01871 against \texttt{int8}'s 0.01688: the paired difference falls from $+0.00402$ to $+0.00184$ and is no longer statistically significant ($t = -1.85$; the per-position interval $[-0.00429, +0.00062]$ includes zero). The plain 4-bit arm falls from 0.03182 to 0.02505. K1 is therefore two of its three conditions met --- the upper bound ($+0.00062 < +0.001$) holds, while the difference stays positive and \texttt{int8} still leads in 6 of 8 segments --- and the honest reading is that the arm is no longer statistically behind \texttt{int8} but not yet level with it.
+On the quality side the same change moves the window arm on cwe-4k from mean KL 0.02090 to 0.01871 against \texttt{int8}'s 0.01688: the paired difference falls from $+0.00402$ to $+0.00184$ and is no longer statistically significant ($t = -1.85$; the per-position interval $[-0.00429, +0.00062]$ includes zero). The plain 4-bit arm falls from 0.03182 to 0.02505. K1 is therefore two of its three conditions met --- the upper bound ($+0.00062 < +0.001$) holds, while the difference stays positive and \texttt{int8} still leads in 6 of 8 segments --- and the honest reading is that the arm is no longer statistically behind \texttt{int8} but not yet level with it. Table~\ref{tab:center} is the full comparison, with and without the calibration; Table~\ref{tab:center-effect} isolates the calibration itself, paired.
 
 The correction is exact, not an approximation: centering the keys shifts every logit of one query by the same constant, so the softmax does not move, and the values are shifted back by one vector add on the attention output. The offsets must be calibrated per model and per side (K and V differ, and so do the two KV heads); the stability that makes that affordable was measured over a second text and a second length (correlation 0.9489, mean deviation 0.0799\,sd). Two things stay open: the effect at 128K on texts the offsets were not calibrated on, and the value side's level table, which the same measurement argues should carry 16 levels rather than 8 --- the 8-level ladder costs 1.10\,dB of block error and saves no byte.
+
+Table~\ref{tab:center} is the provisional comparison the plan has been waiting for: the same arms with and without the calibration, on one text, one length, one build. Table~\ref{tab:center-effect} isolates the calibration itself, paired.
+
+\begin{table*}[t]
+\centering
+\footnotesize
+\caption{Provisional quality comparison, with and without the mean-centered calibration. cwe-4k, 32,746 positions, top-64 KL against the fp16 reference, the merged engine (0.1.59.1), the same ids and the same build for every arm; the offsets come from a calibration run on this same text. The comparison is therefore \emph{in-sample}: it says what the calibration does to the arms, not that the offsets transfer to texts they were not calibrated on (the 128K out-of-sample run is open, Section~\ref{sec:target}). The last three columns are the paired difference against \texttt{int8} over the eight segments; a positive value means the arm is behind \texttt{int8}. The arms use the 8-level value table of the \texttt{q4lm8v} mode; the product codec (16 levels on both sides) is a separate measurement and is not in this table.}
+\label{tab:center}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Arm & Mean KL & Top-1 & KL p99 & PPL & $\Delta$KL vs \texttt{int8} & $t$ & \texttt{int8} ahead \\
+\midrule
+\texttt{int8} & 0.01688 & 99.05\,\% & 0.1888 & 2.860 & --- & --- & --- \\
+\texttt{q4lm8v} & 0.03182 & 98.40\,\% & 0.5785 & 2.888 & $+0.01495$ & $-4.58$ & 8/8 \\
+\quad + calibration & 0.02505 & 98.75\,\% & 0.4127 & 2.871 & $+0.00818$ & $-3.95$ & 8/8 \\
+\texttt{q4lm8v} + window & 0.02090 & 98.84\,\% & 0.2811 & 2.858 & $+0.00402$ & $-3.55$ & 7/8 \\
+\quad + calibration & 0.01871 & 98.87\,\% & 0.2665 & 2.862 & $+0.00184$ & $-1.85$ & 6/8 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{The calibration alone, paired: the same arm with and without the offset, the same positions. The value is the improvement (uncalibrated minus calibrated), the segment mean over the eight segments; $t$ is the paired $t$ on that mean, the next column counts the segments in which the uncalibrated arm is worse, and the interval is the 95\,\% interval of the per-position difference.}
+\label{tab:center-effect}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Arm & Gain & $t$ & Segs. & 95\,\% interval \\
+\midrule
+plain & $+0.00677$ & $+3.81$ & 8/8 & $[+0.00350, +0.01003]$ \\
++ window & $+0.00416$ & $+2.68$ & 8/8 & $[+0.00113, +0.00718]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three readings. First, the calibration helps where it is applied: in **8 of 8 segments** in both arms, and the per-position interval excludes zero in both. Second, it does not close the gap to \texttt{int8}, it narrows it: the plain arm goes from $+0.01495$ to $+0.00818$, the window arm from $+0.00402$ to $+0.00184$, and in the window arm the remaining difference is no longer significant ($t = -1.85$; the per-position interval $[-0.00429, +0.00062]$ includes zero) --- the arm is not statistically behind \texttt{int8} any more, and it is not level with it either (\texttt{int8} still leads in 6 of 8 segments). Third, the calibration's effect is **not the same size on both arms**: $+0.00677$ nats on the plain arm, $+0.00416$ on the window arm. Which cells the overlay already protects was not measured, so the two numbers stand side by side and no decomposition is claimed.
 
 \subsection{The target, fixed before the first run}
 
