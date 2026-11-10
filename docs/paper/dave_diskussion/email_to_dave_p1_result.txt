@@ -13,10 +13,28 @@ KL(fp16 || arm), fp16's top-256:
     pure     0.001817  0.000010  0.003669  2.7261   0.000054
     int8     0.000847  0.000002  0.001506  2.4931   0.000021
     win      0.002108  0.000023  0.003214  3.2112   0.000075
+    q4_0     0.001350  0.000015  0.002691  1.2348   0.000056
 
 Paired: pure - int8 +0.000971 mean (648 better, 5,496 worse), -0.000096
 without the 1 % largest differences. pure - win -0.000290 (4,274 better,
 1,870 worse), -0.000856 without the top 1 %.
+
+The q4_0 arm is the same prompt and build (6,144 positions, WMMA off, no
+window): mean 0.001350, median 0.000015, p99 0.002691, max 1.2348, 0.000056
+without the top 1 %. Against int8 it is +0.000503 mean (953 better, 5,191
+worse) but -0.000518 without the top 1 %; against win it is -0.000758 (3,940
+better, 2,204 worse), -0.001543 without the top 1 %. In the last 1,024
+positions its mean is 0.003139 against int8's 0.004141, but that is one int8
+spike at 130952 (2.49 against q4_0's 0.59); without the top 1 % int8 is still
+better there (0.000115 against 0.000253). The mean gap against win is five
+positions, though: 130952 alone is -2.62 of the -4.66 nats and the top five
+are 48 % of the absolute difference. Offline, on 24,000 of the same blocks,
+q4_0's MSE is 0.32 dB worse than q4lm32's (9.99e-3 against 9.29e-3, and q4_0
+wins 41 % of the blocks), so the plain grid is not the better quantizer - the
+mean is a tail statistic. What the pair does show is that the window costs:
+pure to win is worse on the mean, the median (0.000010 to 0.000023), the bulk
+(0.000054 to 0.000075) and the max (2.73 to 3.21), and win loses to pure at
+4,274 of 6,144 positions.
 
 Top-18 by pure - int8 (the P0a analogue, not the absolute rank): 130954,
 130972, 130951, 124891, 130943, 127887, 128883, 130952, 130942, 126924,
