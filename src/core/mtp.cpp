@@ -856,7 +856,7 @@ void mtp_list_nodes(cudaGraph_t graph, const char* what) {
         if (ty == hipGraphNodeTypeKernel) {
             hipKernelNodeParams kp{};
             if (hipGraphKernelNodeGetParams(nd, &kp) == hipSuccess && kp.func != nullptr) {
-                const char* fn = hipKernelNameRefByPtr(kp.func, nullptr);
+                const char* fn = nullptr;   // temporary local build: ROCm 7.1 import library lacks this symbol
                 if (fn != nullptr) name = fn;
             }
         }
