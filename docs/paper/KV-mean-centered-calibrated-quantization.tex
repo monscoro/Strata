@@ -3,6 +3,14 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.7  2026-11-10  the method of the new measurements as a section of their
+%                     own (build, harness, the effectiveness gate, the paired
+%                     statistics, the calibration table), the runtime of the same
+%                     arms as a table (the level table's price is the missing
+%                     prompt fast path, 2.25x; the calibration 1.8 %; the window
+%                     overlay free), the stock 4-bit cache as a row of the
+%                     comparison table, and the correction of the paragraph that
+%                     still called the offset's effect unmeasured
 %   v0.6  2026-11-10  the provisional quality comparison with and without the
 %                     mean-centered calibration, as two tables: the arms on cwe-4k
 %                     (mean KL, top-1, p99, perplexity, the paired difference
@@ -90,7 +98,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.6, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.7, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -105,7 +113,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.6 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.7 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -174,6 +182,42 @@ Gates & SHA, 12/12, 6/6+6/6 & same & green \\
 
 Two readings of Table~\ref{tab:point} shape everything that follows. First, the window's deficit is not uniform: it is a whole-segment and tail-quantile deficit, while the tail \emph{mean} favors each arm on one text and reverses sign between texts. Second, the deficit survives even where 256 of the last 1,024 positions are held exactly (the window's $S{=}256$): the remaining 768 positions are 4-bit, and \texttt{int8} is ahead on that statistic on both texts. A larger exact overlay is the obvious response, and the next section shows why it is not available at five bits.
 
+\subsection{How the new numbers were measured}
+
+The numbers in Tables~\ref{tab:center} and~\ref{tab:center-effect} are this paper's own. They were measured after the plan was written, on a re-evaluation of the merged engine (0.1.59.1 --- the upstream merge of the quantization branch, so that every arm runs on the build the rest of the project runs on). Four properties of the protocol matter for reading them.
+
+\emph{The harness is the predecessor's.} One GPU (RX~9060~XT, gfx1200), Windows, ROCm/HIP 7.2, Swift~1.5 IQ3\_XXS, \texttt{-{}-spec 4}. The quality arms are teacher-forced against the fp16 KV reference over the reference's top-64 tokens, renormalized, exactly as the predecessor scored them, so the two generations of numbers are comparable. The corpus is cwe-4k: 32,746 positions in eight segments.
+
+\emph{The gates are effectiveness gates, not only quality gates.} Every arm's transcript is hashed. The \texttt{int8} arm is byte-identical to the reference run, and an arm that is supposed to change something must produce a \emph{different} hash. This is not a formality: the first run of the calibrated arm produced an identical transcript --- the verification path rotated the rows on its own, so the arm did nothing --- and a quality table alone would have shown a plausible number for it. A number that does not move because the arm did nothing is the failure mode a hash catches and a KL does not.
+
+\emph{The statistics are paired.} The comparison of two arms is a paired per-segment difference over the eight segments (the text cancels), with a paired $t$, and per position a 95\,\% interval. ``Not behind'' is only claimed where the interval allows it.
+
+\emph{The calibration table.} The offsets are per layer, per KV head and per channel, with K and V separate: 3,072 values per side, 12\,KB in fp16. They are read from a dump of the engine's own rows (12 layers $\times$ 32,746 cells $\times$ 2 KV heads); the dump holds the rotated rows and the table lives in the channel space, so the transform is undone once --- the Walsh--Hadamard is an involution. The table is opt-in through a loader switch, the \texttt{int8} path stays byte-identical, and the values are added back on the output path with one vector add per token and head, because the attention weights sum to one. The corrections are subtracted before the rotation and added back after it, in that order.
+
+\subsection{The runtime of the same arms}
+
+Table~\ref{tab:runtime} measures the same arms on the same build. The measure is the prompt read time of a 32K needle in the predecessor's needle harness: a 32,782-token haystack with the needle at 10\,\%, 50\,\% and 90\,\% depth, one engine at a time, the machine otherwise idle; the decode is nine to ten tokens and negligible, so the number is the prompt read.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{Prompt read time per 32K needle (three depths, 10/50/90\,\%, all three found in every arm), one engine at a time on an otherwise idle machine, the same build in every arm. The rate is the prompt tokens per second. The last column is the factor against the \texttt{int8} path.}
+\label{tab:runtime}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Arm & Read (s) & tok/s & vs.\ \texttt{int8} \\
+\midrule
+\texttt{int8} & 51.7 & 596 & $1.00\times$ \\
+\texttt{q4\_0} & 50.0 & 616 & $0.97\times$ \\
+\texttt{q4lm8v} & 116.4 & 265 & $2.25\times$ \\
+\quad + calibration & 118.5 & 260 & $2.29\times$ \\
+\quad + window & 116.5 & 264 & $2.25\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three readings. First, the price of the level table is a \textbf{missing fast path}, not a slower codec: the prompt fast path declines the Lloyd modes structurally (it computes $\sum_i q_i(\text{code}-8)$ in the tensor core and applies the scale afterwards, which a non-affine level table cannot do), so the decode kernel runs instead --- and the log shows it, the \texttt{int8} arm reading through in 6,144-token chunks while the Lloyd arm stands on the full 30,782 tokens and only then starts working in chunks. The 2.25$\times$ is the cost of that fallback, and it is why the plan's level-table lever is a quality lever and not a runtime one. Second, the \textbf{calibration is cheap in time}: it costs 2.1\,s, or 1.8\,\%, on the prompt read --- a subtraction of 256 offsets per row in the writer and one vector add per token and head in the reader. Third, the \textbf{window overlay is free here}: the arm with the exact-cell pool reads the prompt in the same 116.5\,s as the arm without it, inside the spread of the three depths.
+
 \subsection{What the merged engine adds: the per-channel offset}
 
 One lever of this plan has since been measured rather than proposed. The merged engine (0.1.59.1 --- the build every arm of the re-evaluation runs on) can subtract a calibrated per-channel offset from the K and V rows before the rotation. The offset is what the channel moments show: the standardized channel mean has median 0.2673 before the rotation, against a sampling expectation of 0.0044 at that token count, and the rotation does not remove it --- it turns a fixed offset per channel into a fixed bias in every rotated coordinate. Our block scale is a maximum statistic ($d = \mathrm{amax}/l_{\max}$, the shuffle maximum over the 32 values of a block), so that bias is paid for by every value of the block. Measured on the engine's own cells (the cell dump of 2026-11-10: 12 layers $\times$ 32,746 cells $\times$ 2 KV heads), removing it cuts the block error by 1.9\,dB on the uniform grid and 2.6\,dB on the \texttt{q4lm8v} codec --- more than the level table (0.30\,dB) and the per-block scale (0.31\,dB) together.
@@ -187,13 +231,14 @@ Table~\ref{tab:center} is the provisional comparison the plan has been waiting f
 \begin{table*}[t]
 \centering
 \footnotesize
-\caption{Provisional quality comparison, with and without the mean-centered calibration. cwe-4k, 32,746 positions, top-64 KL against the fp16 reference, the merged engine (0.1.59.1), the same ids and the same build for every arm; the offsets come from a calibration run on this same text. The comparison is therefore \emph{in-sample}: it says what the calibration does to the arms, not that the offsets transfer to texts they were not calibrated on (the 128K out-of-sample run is open, Section~\ref{sec:target}). The last three columns are the paired difference against \texttt{int8} over the eight segments; a positive value means the arm is behind \texttt{int8}. The arms use the 8-level value table of the \texttt{q4lm8v} mode; the product codec (16 levels on both sides) is a separate measurement and is not in this table.}
+\caption{Provisional quality comparison, with and without the mean-centered calibration. cwe-4k, 32,746 positions, top-64 KL against the fp16 reference, the merged engine (0.1.59.1), the same ids and the same build for every arm; the offsets come from a calibration run on this same text. The comparison is therefore \emph{in-sample}: it says what the calibration does to the arms, not that the offsets transfer to texts they were not calibrated on (the 128K out-of-sample run is open, Section~\ref{sec:target}). The last three columns are the paired difference against \texttt{int8} over the eight segments; a positive value means the arm is behind \texttt{int8}. The \texttt{q4\_0} row is the stock 4-bit cache (the uniform grid after the rotation, no window, no calibration); the other 4-bit rows are the level-table family with its 8-level value table, which is a measurement probe that saves no byte.}
 \label{tab:center}
 \begin{tabular}{@{}lrrrrrrr@{}}
 \toprule
 Arm & Mean KL & Top-1 & KL p99 & PPL & $\Delta$KL vs \texttt{int8} & $t$ & \texttt{int8} ahead \\
 \midrule
 \texttt{int8} & 0.01688 & 99.05\,\% & 0.1888 & 2.860 & --- & --- & --- \\
+\texttt{q4\_0} (stock) & 0.02530 & 98.71\,\% & 0.3955 & 2.863 & $+0.00843$ & $-3.99$ & 8/8 \\
 \texttt{q4lm8v} & 0.03182 & 98.40\,\% & 0.5785 & 2.888 & $+0.01495$ & $-4.58$ & 8/8 \\
 \quad + calibration & 0.02505 & 98.75\,\% & 0.4127 & 2.871 & $+0.00818$ & $-3.95$ & 8/8 \\
 \texttt{q4lm8v} + window & 0.02090 & 98.84\,\% & 0.2811 & 2.858 & $+0.00402$ & $-3.55$ & 7/8 \\
@@ -217,7 +262,9 @@ plain & $+0.00677$ & $+3.81$ & 8/8 & $[+0.00350, +0.01003]$ \\
 \end{tabular}
 \end{table}
 
-Three readings. First, the calibration helps where it is applied: in **8 of 8 segments** in both arms, and the per-position interval excludes zero in both. Second, it does not close the gap to \texttt{int8}, it narrows it: the plain arm goes from $+0.01495$ to $+0.00818$, the window arm from $+0.00402$ to $+0.00184$, and in the window arm the remaining difference is no longer significant ($t = -1.85$; the per-position interval $[-0.00429, +0.00062]$ includes zero) --- the arm is not statistically behind \texttt{int8} any more, and it is not level with it either (\texttt{int8} still leads in 6 of 8 segments). Third, the calibration's effect is **not the same size on both arms**: $+0.00677$ nats on the plain arm, $+0.00416$ on the window arm. Which cells the overlay already protects was not measured, so the two numbers stand side by side and no decomposition is claimed.
+Three readings. First, the calibration helps where it is applied: in \textbf{8 of 8 segments} in both arms, and the per-position interval excludes zero in both. Second, it does not close the gap to \texttt{int8}, it narrows it: the plain arm goes from $+0.01495$ to $+0.00818$, the window arm from $+0.00402$ to $+0.00184$, and in the window arm the remaining difference is no longer significant ($t = -1.85$; the per-position interval $[-0.00429, +0.00062]$ includes zero) --- the arm is not statistically behind \texttt{int8} any more, and it is not level with it either (\texttt{int8} still leads in 6 of 8 segments). Third, the calibration's effect is \textbf{not the same size on both arms}: $+0.00677$ nats on the plain arm, $+0.00416$ on the window arm. Which cells the overlay already protects was not measured, so the two numbers stand side by side and no decomposition is claimed.
+
+A fourth reading comes from the stock row, and it is the one that puts the work in proportion. The shipped 4-bit cache sits $+0.00843$ behind \texttt{int8}; the exact-cell window brings that to $+0.00402$, and the calibration on top of the window to $+0.00184$ --- the two together a factor of 4.6 below the stock cache. But the same table also shows something the plan did not expect: the level table \textbf{without} the window is \emph{worse} than the stock grid ($+0.01495$ against $+0.00843$), because the level-table family measured here carries the 8-level value table, and that probe costs 1.10\,dB of block error for no byte. The 16-level-on-both-sides codec is the measurement that settles this, and it is the arm the product path uses.
 
 \subsection{The target, fixed before the first run}
 
@@ -297,9 +344,9 @@ The predecessor's measurements answer, partially, where the remaining error live
 
 \paragraph{2K is saturated.} The window is already indistinguishable from \texttt{int8} at 2K ($t{=}-1.92$, window ahead in 2 of 8 segments). A target statistic that no arm can fail is not a test; 2K is reported, not used.
 
-\paragraph{A fixed per-channel offset rides along with the rotation.} The channel statistics measured before and after the transform (the S2 probe of 2026-10-27, in-repo) carry a mean that the plan has not read yet. The standardized channel mean $|\mathrm{mean}|/\mathrm{sd}$ has median 0.2673 before the transform and 0.2825 after it, against 0.0044 as the sampling expectation at this token count: the offset is real, and the transform does not remove it --- it turns a fixed per-channel offset into a fixed bias in every rotated coordinate, because the same offsets add up with the Hadamard signs. The offsets are channel-specific rather than a common mode (the mean of the channel means is 0.007 to 0.068 of the typical channel standard deviation, layer by layer). This matters here because the block scale is a maximum statistic, $d = \mathrm{amax}/l_{\max}$, with $\mathrm{amax}$ the shuffle maximum over the 32 values of a block: a fixed bias inflates that maximum, and the inflation is paid in resolution by every value of the block. Centering the keys before the transform is exactly preserving --- $\langle q, m\rangle$ shifts every logit of one query by the same constant, so the softmax does not move, and centering the values shifts the output by $m$, because the attention weights sum to one --- and it is the lever the 2026 literature opens\,\cite{optr}. The size of the effect on this codec is not measured: from the moments alone the block scale looks 15\% to 30\% too large, which would be one to two decibels of mean-squared error, more than the level table and the per-block scale have delivered together (0.61\,dB). The cheap test exists --- the block-level parity harness, on the same cells --- and the offset's stability across texts and lengths is itself unmeasured.
+\paragraph{A fixed per-channel offset rides along with the rotation.} The channel statistics measured before and after the transform (the S2 probe of 2026-10-27, in-repo) carry a mean that the plan had not read yet. The standardized channel mean $|\mathrm{mean}|/\mathrm{sd}$ has median 0.2673 before the transform and 0.2825 after it, against 0.0044 as the sampling expectation at this token count: the offset is real, and the transform does not remove it --- it turns a fixed per-channel offset into a fixed bias in every rotated coordinate, because the same offsets add up with the Hadamard signs. The offsets are channel-specific rather than a common mode (the mean of the channel means is 0.007 to 0.068 of the typical channel standard deviation, layer by layer). This matters here because the block scale is a maximum statistic, $d = \mathrm{amax}/l_{\max}$, with $\mathrm{amax}$ the shuffle maximum over the 32 values of a block: a fixed bias inflates that maximum, and the inflation is paid in resolution by every value of the block. Centering the keys before the transform is exactly preserving --- $\langle q, m\rangle$ shifts every logit of one query by the same constant, so the softmax does not move, and centering the values shifts the output by $m$, because the attention weights sum to one --- and it is the lever the 2026 literature opens\,\cite{optr}. From the moments alone the block scale looks 15\% to 30\% too large, which would be one to two decibels of mean-squared error; measured on the engine's own cells, the effect is 1.9\,dB (2.6\,dB for the \texttt{q4lm8v} codec), and the offset is stable across a second text and a second length (correlation 0.9489, mean deviation 0.0799\,sd), so the table it needs is a per-model artifact rather than a per-run one.
 
-\paragraph{And a third source sits inside the bulk: a fixed per-channel offset.} The deficit is not only a coverage question. The bulk's own codec spends part of its range on something that is not signal: the cached K and V rows carry a fixed per-channel offset (the standardized channel mean has median 0.2673 before the rotation, against a sampling expectation of 0.0044), and the scale is a maximum statistic, so that offset inflates the scale of every block and is paid for by every value in it. Removing it before the rotation is worth 1.9\,dB of block error (Section~\ref{sec:target}) --- more than the level table and the per-block scale together --- and it moves the window arm from $+0.00402$ to $+0.00184$ against \texttt{int8}. This is the one lever of this paper that is measured rather than proposed, and it is orthogonal to the window: the overlay buys exact cells, the offset buys back the range the bulk wastes.
+\paragraph{And a third source sits inside the bulk: a fixed per-channel offset.} The deficit is not only a coverage question. The bulk's own codec spends part of its range on something that is not signal: the cached K and V rows carry a fixed per-channel offset, and the scale is a maximum statistic, so that offset inflates the scale of every block and is paid for by every value in it. Removing it before the rotation is worth 1.9\,dB of block error (Section~\ref{sec:target}) --- more than the level table and the per-block scale together --- and it moves the window arm from $+0.00402$ to $+0.00184$ against \texttt{int8}. This is the one lever of this paper that is measured rather than proposed, and it is orthogonal to the window: the overlay buys exact cells, the offset buys back the range the bulk wastes.
 
 Together these facts point one way: the bulk must become a better code than 4-bit Lloyd --- and stop spending range on a fixed offset --- and the ring must become cheaper per protected cell. Neither alone reaches 5.0: a smaller fp16 ring loses the statistics \texttt{int8} wins, and a better bulk without the byte side stays above the ceiling.
 
@@ -328,7 +375,7 @@ L6 residual correction & a low-rank or sparse residual on the 4-bit bulk (GEAR f
 \end{tabularx}
 \end{table*}
 
-\paragraph{L1 and L2: the code inside the block.} The 4-bit block holds K at 16 levels and V at 8. Giving V 16 levels costs no bytes and is the cheapest quality experiment in the plan; a tie kills it, and a tie is the likely outcome given that the predecessor's K-versus-V contrast did not support an asymmetry. A different 16-level table (L2) is the same experiment with a different codebook and the same kill. Neither touches the byte budget, which is why they come first: if the bulk cannot be improved inside 4 bits, the plan's remaining levers all cost bytes. The block-level measurement of this paper answers the first half of the question: the 8-level value ladder is a measurement probe --- a 3-bit codebook inside 4-bit bytes --- so it saves no byte, and it costs 1.10\,dB of block error against the 16-level ladder. The product codec therefore carries 16 levels on both sides, which makes ``give V 16 levels'' a correction to the shipped mode rather than an experiment; the open part of L2 is the codebook itself.
+\paragraph{L1 and L2: the code inside the block.} The 4-bit block holds K at 16 levels and V at 8. Giving V 16 levels costs no bytes and is the cheapest quality experiment in the plan; a tie kills it, and a tie is the likely outcome given that the predecessor's K-versus-V contrast did not support an asymmetry. A different 16-level table (L2) is the same experiment with a different codebook and the same kill. Neither touches the byte budget, which is why they come first: if the bulk cannot be improved inside 4 bits, the plan's remaining levers all cost bytes. The block-level measurement of this paper answers the first half of the question: the 8-level value ladder is a measurement probe --- a 3-bit codebook inside 4-bit bytes --- so it saves no byte, and it costs 1.10\,dB of block error against the 16-level ladder. The product codec therefore carries 16 levels on both sides, which makes ``give V 16 levels'' a correction to the shipped mode rather than an experiment; the open part of L2 is the codebook itself. The runtime belongs to the same paragraph, because it is the price of the level table as such and not of the 8-level variant: the level table is what the prompt fast path declines (Section~\ref{sec:target}), and the arm pays 2.25$\times$ the prompt read time for it (Table~\ref{tab:runtime}). The decision taken here is quality first --- the table stays, the fast path for it is a separate project --- but the price is named, because a plan that hides it cannot be weighed.
 
 \paragraph{L3: the channel axis before the rotation.} The writer quantizes after the Walsh--Hadamard, which mixes the 64 rotated with the 192 unrotated dimensions. KIVI's per-channel key quantization assumes channels survive to the quantizer\,\cite{kivi}; here they do not, unless the scale is applied before the transform. The lever is a per-channel scale on the K half before the transform, at 0.06 bit/cell. Its gate is a measurement, not an argument: the second moments of the K channels before and after the transform, split into the two slices. If the pre-rotation channels are not the heavier tail, the lever is not built. Per-channel scales after the transform are not this lever --- the transform has already mixed the channels. The gate ran on 2026-10-27 and killed the tail half: the pre-rotation channels are not the heavier tail (mean excess kurtosis $-0.18$ before against $-0.14$ after, mean crest 3.72 before against 3.93 after), so a per-channel \emph{scale} is not built. The same probe carries a mean the plan had not read, and that half is not killed: the standardized channel mean is 0.2673 (median) against a sampling expectation of 0.0044, and the transform spreads it into a fixed bias (Section~\ref{sec:error}). A per-channel \emph{offset} before the transform is therefore the surviving form of this axis --- exact, cheap, and measurable in the block harness before anything is built. It has since been built and measured (Section~\ref{sec:target}): 1.9\,dB of block error, the window arm from 0.02090 to 0.01871 on cwe-4k, the paired difference against \texttt{int8} from $+0.00402$ to $+0.00184$ and no longer significant. Its price is a calibrated table (3,072 values per side, 12\,KB per model), a basis discipline (a snapshot of a centered state must not restore into an uncentered one) and a second, still open, question: whether the offsets hold at 128K on texts they were not calibrated on.
 
