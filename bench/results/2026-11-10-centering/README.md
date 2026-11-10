@@ -169,6 +169,34 @@ Der `llama.cpp`-Guard existiert genau deshalb. Für uns heißt das:
 gebaut wird. **C0 ist der eigentliche Kill**: ein Offset, der mit dem Text wandert, ist kein
 Offset, sondern Rauschen — und dann hilft auch die schönste Tabelle nichts.
 
+### Stufe D1 (vorregistriert, 2026-11-10): 128K **out of sample**
+
+**Die Frage, die C3 offen lässt.** Die Offset-Tabelle ist auf **cwe-4k** kalibriert (ein Text, eine
+Länge). C3 misst auf **denselben** Ids — das ist ein **In-Sample**-Test: er zeigt, dass der Offset
+auf dem Kalibriertext hilft, **nicht**, dass er auf fremden Texten hilft. **D1 ist der einzige Test,
+der die Kalibrierungs-Artefakt-Hypothese prüft**, und er ist billiger als er aussieht, weil die
+Offsets unverändert bleiben (der Test misst die Übertragbarkeit, nicht die Tabelle).
+
+**Material:** die Offsets aus cwe-4k (`center-table.bin`), die Texte aus den 128K-Draws
+(`data/quant_quality/cwe-128k/t1.ids.json` und `t2.ids.json` — zwei Texte, jeder 128K; die Dateien
+liegen **außerhalb** des Tracked-Bereichs, weil sie 1,8 MB je Text sind). **Arme:** `int8`
+(Referenz), der Produktarm `q4lm32w` **mit** Centering, und derselbe Arm **ohne** Centering — der
+Paar-Arm gegen den Paar-Arm isoliert die Übertragbarkeit des Offsets, der Arm gegen `int8` die
+K2/K3-Bedingungen der Leiter (Ganzsegment-KL ≤ `int8` auf **beiden** Texten, p99 ≤ `int8` auf
+beiden Texten und beiden Statistiken).
+
+**Gatter (vor dem Lauf festgelegt):**
+- **G7 (die Übertragbarkeit):** der Arm **mit** Centering muss auf **beiden** Texten besser sein als
+  derselbe Arm **ohne** Centering (gepaartes ΔKL < 0 je Text). Fällt der Vorteil auf einem Text ins
+  Negative, ist der Offset ein Artefakt des Kalibriertexts und **nicht** als Produktpfad zu
+  führen.
+- **G8 (K2/K3):** Ganzsegment-KL ≤ `int8` auf beiden Texten **und** p99 ≤ `int8` auf beiden Texten.
+- **Der 128K-Lauf startet nur bei einem 4K-Unterschied** (Leiter §7, S4). Fällt C4 auf 4K durch,
+  entfällt D1 — und das wird im Protokoll so festgehalten.
+
+**Kosten:** zwei 128K-Läufe je Arm (Prefill + Scoring der 128K-Positionen) — der teuerste Test des
+Projekts. Deshalb die Vorab-Registrierung und der 4K-Trigger.
+
 ### Ergebnis (2026-11-10): der Bias kostete ein Drittel des Fehlers
 
 Auf den **echten** Zellen (C1a/C1b: 12 QSA-Layer × 32.746 Zellen × 2 KV-Köpfe, Block-MSE auf
