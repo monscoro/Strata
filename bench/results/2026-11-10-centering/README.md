@@ -1,7 +1,7 @@
 # Miniprojekt „Centering": die systematischen Momente vor der Rotation entfernen
 
-**Status: vorregistriert (2026-11-10). Kein Arm gelaufen, kein Kernel gebaut.** Dieses Dokument
-steht vor dem ersten Lauf; die Gatter stehen fest. Anlass ist die Recherche in
+**Status: vorregistriert (2026-11-10). C0, C1, C2 und C3 sind gelaufen; die Ergebnisse stehen unten.**
+Dieses Dokument stand vor dem ersten Lauf; die Gatter standen fest. Anlass ist die Recherche in
 `docs/research/KV_ROTATION_SURVEY.md` und die Auswertung der S2-Rohdaten aus
 `bench/results/2026-10-27-s2-channels/` (Rohdaten: `Strata-data/bench/2026-10-27-s2-channels.txt`).
 Katalogzeile: `docs/paper/Ansatz_Improvements.md`, **A6** (Per-Kanal-Offset vor der Rotation); die
@@ -65,6 +65,10 @@ Block ≈ 0,6 · sd → die Skala ist um grob **15 bis 30 %** zu groß, der MSE 
 +1 bis +2 dB**. Zum Vergleich: der Rest der Bulk-Seite bis zum konvergierten per-Block-Fit ist
 **0,17 dB** (`kv_q4_parity`: q4_0 2,938e-02 = 0 dB, kLloyd 2,740e-02 = −0,30 dB, kLloydLs
 2,551e-02 = −0,61 dB, konvergierter Fit 2,456e-02 = −0,78 dB).
+
+**Die Messung (C1) bestätigt die Schätzung:** der gemessene Gewinn ist **−1,9 dB** beim Anker und
+**−2,6 dB** beim `q4lm8v`-Codec — in der Größenordnung der Schätzung und **größer** als die
+Level-Tabelle (0,30 dB) und die per-Block-Skala (0,31 dB) zusammen.
 
 **Was die Literatur sagt (Belege in `docs/research/KV_ROTATION_SURVEY.md`).** OptR (arXiv:2608.02691)
 zentriert die Keys vor der Rotation; ein öffentlicher `llama.cpp`-Fork hat ein K-Cache-Mean-Centering
@@ -190,7 +194,7 @@ Korrelation der Kanalmittelwerte bei **0,9489** und die mittlere Abweichung bei 
 (0.1.59.1) ist **exakt null** (Korrelation 1,0000, Abweichung 0,0000 sd) — der Merge hat die
 K-Verteilung nicht bewegt.
 
-**Stand der Umsetzung (C2 ist gebaut, die KL-Messung C3 läuft):** die zentrierte Rotation und der
+**Stand der Umsetzung (C2 ist gebaut, C3 ist gelaufen):** die zentrierte Rotation und der
 V-Add-Back als Kernel (`src/kernels/cuda/kv_q4.cu`), alle Rotationsstellen über **eine** Writer-
 Funktion (damit keine sie vergessen kann), der Loader `STRATA_KV_CENTER=<datei>` in `generate.cpp`,
 der Generator `tools/kv_center_table.py` (aus dem Dump; der Dump hält die rotierten Zellen, die
@@ -198,6 +202,45 @@ Tabelle braucht den Kanalraum → der FWHT ist selbstinvolvierend), das Snapshot
 `conversation_snapshot.cpp`. **Nicht umfasst und als Grenze zu nennen:** die Draft-Layer (der MTP
 rotiert seine eigenen K/V; der Draft-Layer ist keiner der 12 QSA-Layer → seine Offsets sind
 ungemessen, er bleibt unzentriert) und der Hybrid (rotiert V ohne Centering → kein Add-Back).
+
+### Ergebnis C3 (2026-11-10): die Wirkung im Engine — der Abstand zu `int8` halbiert sich
+
+Der Arm ist **cwe-4k**, 32.746 Positionen, top-64-KL gegen fp16, gepaart gegen `int8`:
+
+| Arm | KL (alle) | Top-1 | KL p99 | PPL |
+|---|---:|---:|---:|---:|
+| `int8` | 0,01688 | 99,05 % | 0,1888 | 2,860 |
+| `q4lm8v` (plain) | 0,03182 | 98,40 % | 0,5785 | 2,888 |
+| **`q4lm8v` + Centering** | **0,02505** | 98,75 % | 0,4127 | 2,871 |
+| `q4lm8v` + Window | 0,02090 | 98,84 % | 0,2811 | 2,858 |
+| **`q4lm8v` + Window + Centering** | **0,01871** | 98,87 % | 0,2665 | 2,862 |
+
+plain −21 % KL, Window −10,5 % KL. Die gepaarte Differenz `int8 − Arm` (Segmentmittel, 8 Segmente):
+
+| Paar | ΔKL | t | Segmente „up" | 95-%-Intervall (per Position) |
+|---|---:|---:|---:|---|
+| `int8` − win (ohne Centering) | −0,00402 | −3,55 | 1/8 | [−0,00677, −0,00127] |
+| **`int8` − win + Centering** | **−0,00184** | **−1,85** | 2/8 | **[−0,00429, +0,00062]** |
+| `int8` − plain + Centering | −0,00818 | −3,95 | 0/8 | [−0,01125, −0,00510] |
+
+**G5 (die gepaarte KL verbessert sich) ist erfüllt.** Der Abstand zu `int8` fällt von +0,00402 auf
++0,00184 (−54 %) und ist **statistisch nicht mehr signifikant** (t = −1,85; das per-Position-Intervall
+schließt 0 ein). **K1 (Leiter §7) ist zwei von drei Bedingungen erfüllt:** obere Grenze +0,00062 <
++0,001 ✓; Differenz ≤ 0 ✗ (positiv, aber halb so groß wie der Anker); `int8` führt in höchstens 4 von
+8 Segmenten ✗ (6 von 8, der Anker 7 von 8). **Der ehrliche Satz: der Arm ist `int8` statistisch nicht
+mehr unterlegen, aber noch nicht gleichauf.**
+
+**Ein verworfener Lauf, im Protokoll benannt:** der erste Centering-Arm war **byte-identisch** zum
+unzentrierten (SHA gleich) — der Verify-Pfad rotierte selbst (`verify.cpp:2010`) und hatte weder die
+zentrierten Stellen noch den V-Add-Back. Das ist der Grund, warum die SHA-Gatter in dieser Kampagne
+**Wirksamkeitsgatter** sind und nicht nur Qualitätsgatter: ein Arm, der „erfolgreich" läuft und dabei
+nichts tut, fällt nur im Zahlenvergleich auf. Die wiederholten Läufe haben verschiedene SHAs.
+
+**Der nächste Hebel, den C3 sichtbar macht:** die 8-Stufen-V-Tabelle unseres `q4lm8v`-Arms ist ein
+**Messarm ohne Byte-Gewinn** (ein 3-Bit-Codebook in 4-Bit-Bytes: +1,10 dB MSE für dasselbe Bytebudget).
+Der Produktcodec braucht **16 Stufen auf beiden Seiten** (`q4lm32w` + Fenster + Centering) — das ist
+der Arm **C4**. Danach: 128K **out of sample** (die Offsets aus cwe-4k, die Texte aus den 128K-Draws),
+weil die Kalibrierung bisher nur auf einem Text und einer Länge geprüft ist (G1: cwe-4k gegen cwe-8k).
 
 **Der Rotations-Vergleich läuft im selben Harness mit** (H·D, drei Vorzeichenzüge; A7), weil der
 Harness ihn für einen Bruchteil der Kosten mitmessen kann — aber **G2 und G3 gehören dem
@@ -207,20 +250,28 @@ Anteil nicht entfernt, sondern nur anders verteilt.
 
 ## 5. Was dieses Projekt nicht ist
 
-- Kein Ergebnis. C0 bis C3 sind nicht gelaufen; die Schätzung in §1 ist eine Schätzung.
+- **Kein 5,0-Bit-Ziel.** Der Byte-Budget wird durch das Centering **nicht** berührt (kein zusätzliches
+  Bit im Cache; die 12 KB liegen im Modell, nicht im KV).
 - Kein Ersatz für die Level-Tabelle (0,30 dB) und nicht für die per-Block-Skala (0,31 dB). Das
   Centering ist eine **dritte, orthogonale** Hebelwirkung auf derselben Bulk-Seite — wenn es
   trägt, verschiebt es den Rest (0,17 dB) nicht, es kommt dazu.
+- **Kein Ersatz für den Window-Overlay.** Das Fenster lieferte den großen Sprung (KL 0,0318 → 0,0209
+  auf cwe-4k, gemessen 2026-11-10); das Centering ist eine Bulk-Hebelwirkung. Beide zusammen tragen
+  0,0318 → 0,0187.
+- **Kein „bias-free".** Entfernt ist der **erste** Moment (der Kanal-Mittelwert). Die Schiefe (3.
+  Moment) bleibt systematisch (Median 0,1050 vor der Rotation), die Ausreißer bleiben (die Rotation
+  flacht sie ab), und die Bias der Max-Statistik (das ist die per-Block-Skala) ist eine *andere*
+  Bias-Entfernung. Das Centering braucht zudem ein **kalibriertes Artefakt** (3.072 Werte je Seite,
+  12 KB) — es ist „mean-centered **calibrated**", nicht bias-frei.
 - **Kein Ersatz für die Randomisierung, sondern ihre Voraussetzung.** Ein zufälliger Hadamard (A7)
   entfernt einen systematischen Anteil nicht, er verteilt ihn: für einen gegebenen Sign-Zug ist
   S·μ ein **fester** Vektor mit fester Energie (‖H·S·μ‖ = ‖μ‖). Deshalb wird A7 **erst nach** dem
   Centering gemessen, und die Erwartung an A7 bleibt ≈ 0: nach der Rotation stehen Mittel (0,2825),
   Schiefe (0,0836) und Kurtosis (0,1295) nahe an Gauss, aber nicht an Null — ein RHT verteilt diese
-  Restanteile nur anders, er nimmt sie nicht weg.
-- Kein 5.0-Bit-Ziel. Der Byte-Budget wird durch das Centering **nicht** berührt (kein zusätzliches
-  Bit im Cache; die 12 KB liegen im Modell, nicht im KV).
-- Kein Ersatz für den Window-Overlay. Das Fenster lieferte den großen Sprung (KL 0,0318 → 0,0209
-  auf cwe-4k, gemessen 2026-11-10); das Centering ist eine Bulk-Hebelwirkung.
+  Restanteile nur anders, er nimmt sie nicht weg. **Die Messung schließt A7 für dieses Modell:** drei
+  Züge innerhalb 0,01 dB, auf den zentrierten Daten −0,18 dB (RHT) gegen −0,20 dB (uniform + LS). Das
+  Regime-Gate ist die **prä-Rotation-Exzesskurtosis** (−0,18, leichter als Gauß) — die Versicherung
+  gegen schwere Ränder wird hier nicht gebraucht (Belege: `docs/research/KV_ROTATION_SURVEY.md`).
 
 ## 6. Reproduktion (nach dem Bau)
 
@@ -245,17 +296,22 @@ Rohdaten (TSVs, stderr, `seg.json`, S2-Dateien) liegen außerhalb des Repos unte
 
 ## 7. Grenzen, die schon jetzt gelten
 
-- Die Stabilität des Offsets über Texte und Längen ist **ungeprüft** (G1).
+- Die Wirkung auf die **128K**-Statistiken ist offen; der Plan (K2/K3 der Leiter) misst 128K erst,
+  wenn ein 4K-Unterschied vorliegt. **Bis dahin gilt der Umfang von C3: ein Text, eine Länge**
+  (cwe-4k). Der geplante 128K-**out-of-sample**-Lauf (Offsets aus cwe-4k, Texte aus den 128K-Draws)
+  ist die einzige Probe, die die *Kalibrierungs-Artefakt*-Hypothese prüft.
 - Die **Schiefe** ist systematisch, aber nur **kanalspezifisch** (kein Layer-Schieft: der Mittelwert
   je Layer liegt bei 0,2 bis 2,0× Rauschen). Ihre Entfernung bräuchte dieselbe kanalspezifische
   Tabelle wie die Offsets (12 KB je Layer und Kopf) — ob sie nach dem Versatz überhaupt noch Stufen
   kostet, entscheidet die Spannungsnutzung u in C1, nicht dieses Dokument.
 - Ob der Offset aus dem Modellgewicht ableitbar ist (Variante c), ist **ungeprüft**; ohne (c)
-  bleibt ein Artefakt oder eine Onlineschätzung.
-- Der Schätzwert der Skaleninflation (15 bis 30 %) ist eine **Rechnung aus Momenten**, keine
-  Messung; G2/G3 sind die Messung.
-- Die Wirkung auf die **128K**-Statistiken ist offen; der Plan (K2/K3 der Leiter) misst 128K erst,
-  wenn ein 4K-Unterschied vorliegt.
+  bleibt ein Artefakt (Variante a, der aktuelle Stand) oder eine Onlineschätzung (Variante b).
 - Die Basis-Regeln (Snapshot-Kennzeichen, Streaming, `m_V`-Add-Back in der richtigen Reihenfolge)
   sind **statisch** abgeleitet; ihre Prüfung ist Teil von C2 (Parität und ein Test, der die
-  Reihenfolge absichtlich bricht und das Ergebnis prüft).
+  Reihenfolge absichtlich bricht und das Ergebnis prüft). Der Verifikations-Pfad ist dabei eine eigene
+  Rotationsstelle — sie ist im Fix mit erfasst (`verify.cpp:2010`ff., Ausgabe `verify.cpp:2204`ff.).
+- **Die Zeitmessungen dieser Kampagne sind zurückgezogen** (Fremd-GPU-Last, Abweichung 7 im
+  Kampagnen-Protokoll). Für das Centering heißt das: es gibt **noch keine** Laufzeitmessung mit
+  Offset — der Loader liest eine 12-KB-Tabelle einmal, der Writer zieht 256 Werte je Zeile ab, der
+  Leser addiert einen Vektor je Token und Kopf. Das ist eine **Rechnung, keine Messung**, und wird
+  erst mit dem belastbaren Laufzeitvergleich berichtet.
