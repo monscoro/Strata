@@ -37,17 +37,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import platform
 import re
 import shutil
 import stat
 import tarfile
 import time
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
 
@@ -532,6 +530,8 @@ class ComponentStore:
         acquisition.require(f"the download of {artifact.name}", "strata install")
         import urllib.error
         import urllib.request
+        from strata_control import tls
+        tls.install()
         partial = self.root / "partial" / artifact.name
         have = partial.stat().st_size if partial.exists() else 0
         if have > artifact.bytes:
@@ -553,6 +553,8 @@ class ComponentStore:
                             break
                         out.write(block)
         except (urllib.error.URLError, OSError) as e:
+            if tls.is_certificate_error(e):
+                raise ComponentError(f"the download of {artifact.name} stopped. " + tls.explain(tls.host_of(artifact.url))) from e
             raise ComponentError(
                 f"the download of {artifact.name} was interrupted after "
                 f"{partial.stat().st_size if partial.exists() else 0} of {artifact.bytes} bytes; "

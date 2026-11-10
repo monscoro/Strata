@@ -84,7 +84,7 @@ def _supported() -> None:
     POSIX uses an owner-private ``AF_UNIX`` socket. Windows uses a loopback-only TCP listener whose
     authority rests on the 256-bit control token plus a ``0700`` state directory, because the Python
     standard library cannot create a named pipe with a security descriptor; the difference is
-    recorded in ``owner_transport`` and in ``docs/work/IMPLEMENTATION_STATUS.md`` rather than being
+    recorded in ``owner_transport`` and in ``history/docs/work/IMPLEMENTATION_STATUS.md`` rather than being
     presented as equivalent. Anything else is refused.
     """
     if os.name == "nt" or (os.name == "posix" and hasattr(socket, "AF_UNIX")):
@@ -222,6 +222,8 @@ def _read_state(name: str) -> dict | None:
         raise ProfileError("runtime state file is not private or is invalid", 5)
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None                 # the owner left between the look and the read: there is no state any more
     except (OSError, UnicodeError, ValueError):
         raise ProfileError("runtime state file is unreadable", 5) from None
     # POSIX: the address is the one derived from the profile. Windows: the port is chosen when the owner binds, so
@@ -254,13 +256,25 @@ def _pid_exists(pid: int, started: int | None = None) -> bool:
     return True
 
 
-def _child_present(child: dict) -> bool:
+_MARKER_SLACK = 2.0   # seconds: the child starts before its marker is written; this much of clock rounding is allowed
+
+
+def _child_present(child: dict, written: float | None = None) -> bool:
     """Whether the child recorded in an owner marker is still there. A marker without a creation time (Windows could not
     read it when the child started) cannot tell the recorded server from a later process that reused the number, so
-    a live process that is not a Python or Strata executable is a reused number: the child is gone (#3488)."""
+    a live process that is not a Python or Strata executable is a reused number: the child is gone (#3488).
+
+    `written` is when the marker was written (its file time). The child was started before that, so a process that was created
+    AFTER it cannot be the child, whatever its image: the number was reused. This is what clears a marker left by a force-killed app
+    when the number now belongs to another Python program (2026-10-22: every load said "still present", and removing the marker by
+    hand was the only way out)."""
     started = child.get("started") if type(child.get("started")) is int else None
     if not _pid_exists(child["pid"], started):
         return False
+    if started is None and written is not None:
+        created = procs.started_epoch(child["pid"])
+        if created is not None and created > written + _MARKER_SLACK:
+            return False
     if WINDOWS and started is None:
         image = winproc.process_image(child["pid"])
         if image is not None:
@@ -303,27 +317,36 @@ def _recover_stale(name: str, *, wait: float) -> bool:
             child = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise ProfileError("lost host has no valid child ownership record; inspect before recovery", 6) from None
-        if not isinstance(child, dict) or child.get("host_token") != state["token"] or \
-                child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
+        if not isinstance(child, dict) or child.get("host_token") != state["token"]:
             raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
-        deadline = time.monotonic() + min(45.0, max(5.0, wait))
-        while _child_present(child) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        if _child_present(child):
-            raise ProfileError("lost host child is still present; retry after it exits", 6)
-        if not isinstance(child.get("ready"), str):
-            raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
-        ready = Path(child["ready"])
-        if ready.parent != runtime_dir() or not ready.name.startswith(name + "-") or \
-                not ready.name.endswith(".ready.json"):
-            raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
-        try:
-            details = ready.lstat()
-            if not stat.S_ISREG(details.st_mode) or not _is_private(details, ready):
-                raise ProfileError("lost host ready file is invalid; inspect before recovery", 6)
-            ready.unlink()
-        except FileNotFoundError:
-            pass
+        # #4250: the owner writes {"phase": "no_child"} before it publishes its state, and "launching" before it starts a server. A host
+        # lost in between has no server by that exact record (this host's token, nothing else in it); a missing or other record proves nothing.
+        prelaunch = child.get("phase") == "no_child"
+        if prelaunch:
+            if set(child) != {"host_token", "phase"}:
+                raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
+        else:
+            if child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
+                raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
+            deadline = time.monotonic() + min(45.0, max(5.0, wait))
+            written = details.st_mtime
+            while _child_present(child, written) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if _child_present(child, written):
+                raise ProfileError("lost host child is still present; retry after it exits", 6)
+            if not isinstance(child.get("ready"), str):
+                raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
+            ready = Path(child["ready"])
+            if ready.parent != runtime_dir() or not ready.name.startswith(name + "-") or \
+                    not ready.name.endswith(".ready.json"):
+                raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
+            try:
+                details = ready.lstat()
+                if not stat.S_ISREG(details.st_mode) or not _is_private(details, ready):
+                    raise ProfileError("lost host ready file is invalid; inspect before recovery", 6)
+                ready.unlink()
+            except FileNotFoundError:
+                pass
         if not owner_transport.WINDOWS:
             # POSIX: the endpoint is a filesystem socket, so it can be inspected directly. A socket
             # that is still accepting means a live owner, and nothing may be recovered over it.
@@ -349,6 +372,8 @@ def _recover_stale(name: str, *, wait: float) -> bool:
         # inspect and none to clean up. Recovery rests on the state file, the owner pid and the
         # token, all of which the caller has already validated.
         snapshots = list(runtime_dir().glob(f"{name}-{state['token']}-*.rollback.json"))
+        if prelaunch and snapshots:
+            raise ProfileError("lost host prelaunch state has config snapshots; inspect before recovery", 6)
         if len(snapshots) > 64:
             raise ProfileError("too many lost-host config snapshots; inspect before recovery", 6)
         for snapshot in snapshots:
@@ -468,6 +493,30 @@ def _engine_preflight(plan: dict) -> None:
         raise ProfileError(str(exc), exc.exit_code) from None
 
 
+def _ready_pid_is_child(ready_pid, child_pid: int) -> bool:
+    """Is the process named in the ready file the one this host started?
+
+    Normally the pids are equal. A Windows venv (the python.exe of a source checkout's .venv) starts its real interpreter as a
+    CHILD of the launcher it was given, so the server that writes the ready file is one process below the pid ``Popen`` returned
+    (#3683: the staged engine was ready, this check never matched, and the start waited out its whole deadline). Only on Windows,
+    and only for a process that sits within three parents of the process this host started, so another process cannot pass."""
+    if type(ready_pid) is not int or ready_pid <= 0:
+        return False
+    if ready_pid == child_pid:
+        return True
+    if not WINDOWS:
+        return False
+    current = ready_pid
+    for _ in range(3):
+        parent = procs.parent_of(current)
+        if parent is None or parent <= 0:
+            return False
+        if parent == child_pid:
+            return True
+        current = parent
+    return False
+
+
 def _check_start_candidate(name: str, expected_profile_revision: str | None,
                            expected_source_sha256: str | None) -> tuple[dict, str]:
     plan, digest = _start_candidate(name)
@@ -478,11 +527,72 @@ def _check_start_candidate(name: str, expected_profile_revision: str | None,
     return plan, digest
 
 
+def _repair_config_paths(name: str) -> tuple[str | None, str | None]:
+    """Before a start: every path of the saved run configs that names a version folder of Strata's own that an update removed (the Control bundle
+    that ran setup: cwd, --expert-profile; an engine package: the picture reader, library folders; the DeepSeek package) is pointed at the current
+    version and written once (strata_control/cfg_paths.py; the same resolver the config reader applies in memory).  One line of what it did goes to
+    the profile's host log.  Returns (the profile's own run config digest before, after) when it changed that file, for a caller that planned the
+    start on the old digest.  A path that exists in no current version stops the start with the file named."""
+    try:
+        from strata_control import cfg_paths, dsv41_paths
+        profile, _ = profiles.load(name)
+        own = Path(profile["source_config"])
+        before = hashlib.sha256(own.read_bytes()).hexdigest()
+        configs = [own, *[c for c in dsv41_paths.saved_configs() if c != own]]
+        notes, problems = cfg_paths.repair(configs)
+        if notes:
+            _, _, log_path = _paths(name)
+            if log_path.parent.is_dir():
+                with open(log_path, "ab") as stream:
+                    for note in notes:
+                        stream.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} config: {note}\n".encode("utf-8"))
+        mine = [p for p in problems if p.startswith(own.name + ":")]
+        after = hashlib.sha256(own.read_bytes()).hexdigest()
+        if mine:
+            raise ProfileError(mine[0], 6)
+        return (before, after) if after != before else (None, None)
+    except ProfileError:
+        raise
+    except Exception:                                    # noqa: BLE001 - a start never fails because of this
+        return None, None
+
+
+def _repair_dsv41_paths(name: str) -> None:
+    """Before a start: a saved profile that runs the DeepSeek engine from an engine-dsv41/ folder an update has replaced is pointed at the newest
+    installed package of its own kind (every saved profile's run config, so the next start of another one is repaired too).  Local only: it never
+    looks at the feed and fetches nothing - engine updates are the explicit `strata update` / the app's "Update engine".  Never fails a start;
+    one line of what it did goes to the profile's host log."""
+    try:
+        from strata_control import dsv41_paths
+        profile, _ = profiles.load(name)
+        configs = [Path(profile["source_config"]), *[c for c in dsv41_paths.saved_configs() if c != Path(profile["source_config"])]]
+        notes = dsv41_paths.repair_missing(configs)
+        if notes:
+            _, _, log_path = _paths(name)
+            if log_path.parent.is_dir():
+                with open(log_path, "ab") as stream:
+                    for note in notes:
+                        stream.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} engine: {note}\n".encode("utf-8"))
+    except Exception:                                    # noqa: BLE001 - a start never fails because of this
+        pass
+
+
+CHILD_EXIT_GRACE = 10.0     # seconds a host whose server ended on its own keeps answering "failed" (a waiting client reads why), then leaves (#4574 #4824)
+DIE_WITH_MISSES = 3         # consecutive looks, a second apart, at a process that cannot be found before the owner calls it gone (#4973)
+STATUS_RPC_TIMEOUT = 10.0   # seconds one status question may take; a busy owner is asked again until the start's wait is over (#5177)
+VERIFY_BUDGET = 180.0       # seconds an engine that says it is up may take to answer its first token, whatever is left of the load wait (#5177 #5059)
+MAX_START_WAIT = 1800     # seconds a start may wait for the model: a 250 GB DeepSeek set on a slow disk needs more than 10 minutes (#3949)
+
+
 def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
           expected_profile_revision: str | None = None,
           expected_source_sha256: str | None = None,
-          die_with_pid: int | None = None) -> dict:
+          die_with_pid: int | None = None, on_status=None) -> dict:
     """Start the saved profile under a new owner host.
+
+    ``on_status`` (optional) is called with each status answer while the start waits (about every 0.2 s; the caller throttles), so a
+    caller can show progress. The result of a wait that ran out names the last phase (``loading``, ``verifying_generation``,
+    ``ready_file_not_matched``).
 
     The owner host is a background service: it is not tied to the terminal or the process that ran this command and
     keeps serving after they end. It stops on `runtime stop`, when its server ends, or - only if `die_with_pid`
@@ -494,16 +604,21 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
         if token is None:
             raise ProfileError("the process to follow with --die-with-pid is not running")
         die_with = (die_with_pid, token)
-    if not 0 <= wait <= 600 or not 0 <= shutdown_timeout <= 300:
-        raise ProfileError("start wait must be 0..600 and shutdown timeout 0..300 seconds")
+    if not 0 <= wait <= MAX_START_WAIT or not 0 <= shutdown_timeout <= 300:
+        raise ProfileError(f"start wait must be 0..{MAX_START_WAIT} and shutdown timeout 0..300 seconds")
     if expected_profile_revision is not None and (not isinstance(expected_profile_revision, str) or
             not re.fullmatch(r"[0-9a-f]{16}", expected_profile_revision)):
         raise ProfileError("expected profile revision must be 16 lowercase hex characters")
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
             not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source digest must be 64 lowercase hex characters")
+    changed_from, changed_to = _repair_config_paths(name)
+    if changed_from is not None and expected_source_sha256 == changed_from:
+        expected_source_sha256 = changed_to              # (the caller planned on the file as it was; Strata rewrote it, the caller did not)
+    _repair_dsv41_paths(name)
     plan, _ = _check_start_candidate(name, expected_profile_revision, expected_source_sha256)
-    _engine_preflight(plan)
+    on_status = _progress(on_status, {"ok": True, "profile": name, "state": "starting", "phase": "checking_engine"})
+    _engine_preflight(plan)                # hashes every engine file (1.4 GB or more): minutes on a slow disk, no owner exists yet
     _, _, log_path = _paths(name)
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
     if hasattr(os, "O_NOFOLLOW"):
@@ -541,15 +656,62 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
             raise ProfileError("runtime host failed to start; inspect " + str(log_path), 6)
     if wait == 0:
         return {"ok": True, "profile": name, "state": "starting", "plan": plan}
+    return _await_start(name, wait, on_status)
+
+
+def _await_start(name: str, wait: float, on_status=None) -> dict:
+    """Ask the owner how the start is going until it is ready, failed, or `wait` seconds have passed."""
     deadline = time.monotonic() + wait
-    while time.monotonic() < deadline:
-        result = _rpc(name, "status")
+    result: dict = {}
+    while True:
+        now = time.monotonic()
+        # The wait is the time for the model to LOAD. An engine that has said it is up is being checked with its first token, which has
+        # its own budget in the owner (VERIFY_BUDGET): the wait does not end under it (#5177 #5059 #4293)
+        limit = deadline + VERIFY_BUDGET if result.get("phase") == "verifying_generation" else deadline
+        if now >= limit:
+            break
+        try:
+            result = _rpc(name, "status", timeout=min(STATUS_RPC_TIMEOUT, max(1.0, limit - now)))
+        except ProfileError as exc:
+            # An owner that is busy does not answer for a while (its first imports, a slow disk, a virus scan of the engine). One
+            # missed answer is not a failed start: keep asking until the wait is over, as long as the owner is still alive. A lost
+            # owner (its lease is free, or nothing listens any more) is a failure now.
+            if exc.exit_code not in (3, 8) or not _owner_alive(name):
+                raise
+            result = {**result, "state": "starting", "phase": result.get("phase") or "owner_not_answering"}
+            time.sleep(0.2)
+            continue
+        if on_status is not None:
+            try:
+                on_status(result)
+            except Exception:                                   # noqa: BLE001 - progress must never break a start
+                on_status = None
         if result.get("state") in ("ready", "failed"):
             return {**result, "ok": result["state"] == "ready",
                     "exit_code": 6 if result["state"] == "failed" else 0}
         time.sleep(0.2)
     return {"ok": False, "profile": name, "state": "starting", "error": "startup_wait_expired",
-            "exit_code": 8}
+            "phase": result.get("phase"), "exit_code": 8}
+
+
+def _progress(on_status, first: dict):
+    """`on_status` after one more answer is shown now: the phase before the owner exists."""
+    if on_status is not None:
+        try:
+            on_status(first)
+        except Exception:                                       # noqa: BLE001 - progress must never break a start
+            return None
+    return on_status
+
+
+def _owner_alive(name: str) -> bool:
+    """Whether the owner host of this profile is still running (its lease is held), without asking it anything."""
+    try:
+        if _read_state(name) is None:
+            return False
+        return _host_lease_active(name)
+    except (ProfileError, OSError):
+        return False
 
 
 def plan_stop(name: str) -> dict:
@@ -659,9 +821,9 @@ def restart(name: str, *, timeout: float = 1000, startup_wait: float = 300,
             allow_source_switch: bool = False,
             allow_source_migration: bool = False,
             expected_source_sha256: str | None = None) -> dict:
-    if (not 1 <= timeout <= 1800 or not 1 <= startup_wait <= 600 or
+    if (not 1 <= timeout <= 1800 or not 1 <= startup_wait <= MAX_START_WAIT or
             type(allow_source_switch) is not bool or type(allow_source_migration) is not bool):
-        raise ProfileError("restart wait must be 1..1800 and startup wait 1..600 seconds")
+        raise ProfileError(f"restart wait must be 1..1800 and startup wait 1..{MAX_START_WAIT} seconds")
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
                                                not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source SHA-256 must be 64 lowercase hex characters")
@@ -719,6 +881,12 @@ class Host:
         self.owner_write_fd: int | None = None
         self.owner_write = None            # Windows: the server's stdin pipe, whose EOF asks it to drain and stop
         self.probe_timeout = startup_wait
+        self.gone_at: float | None = None  # when the server was first seen ended (the host leaves CHILD_EXIT_GRACE seconds later)
+        self.exit_status = 0
+        self.die_misses = 0
+        self.starting = False              # the plan and the launch run in a thread (_startup): the owner answers status meanwhile (#5177)
+        self.phase: str | None = None      # what that thread is doing: preparing | launching
+        self._launch_lock = threading.Lock()   # held while the server is being started or stopped, so a stop never races the launch
         self.probe_deadline = 0.0
         self.probe_key: tuple[int, str] | None = None
         self.probe_result: dict | None = None
@@ -846,13 +1014,14 @@ class Host:
             self.child.wait(timeout=10)
             self._close_owner_pipe()
             raise
-        self.ready_path = ready
+        # (the status answer reads these from another thread: the ready path comes last, it is what makes the rest be read)
         self.args, self.source, self.source_bytes, self.revision = list(args), source, source_bytes, revision
         self.expected_attestation = expected_attestation
         self.last_error = None
         self.probe_deadline = time.monotonic() + self.probe_timeout
         self.probe_key = None
         self.probe_result = None
+        self.ready_path = ready
 
     def _verify_ready(self, ready: dict, key: tuple[int, str], host: str, source_bytes: bytes,
                       expected_attestation: str, timeout: float) -> None:
@@ -890,6 +1059,8 @@ class Host:
                 "child_pid": child.pid if child else None, "profile_revision": self.revision,
                 "shutdown_timeout": self.shutdown_timeout}
         if child is None:
+            if self.starting:
+                return {**base, "state": "starting", "phase": self.phase or "preparing"}
             if self.last_error is not None:
                 return {**base, "ok": False, "state": "failed", "error": self.last_error, "exit_code": 6}
             return {**base, "state": "stopped"}
@@ -901,7 +1072,7 @@ class Host:
         if self.ready_path is not None:
             try:
                 ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
-                if ready.get("pid") == child.pid and isinstance(ready.get("instance_id"), str):
+                if _ready_pid_is_child(ready.get("pid"), child.pid) and isinstance(ready.get("instance_id"), str):
                     key = (child.pid, ready["instance_id"])
                     if self.probe_key != key:
                         self.probe_key, self.probe_result = key, None
@@ -909,7 +1080,7 @@ class Host:
                         threading.Thread(target=self._verify_ready,
                                          args=(ready, key, host, self.source_bytes,
                                                self.expected_attestation,
-                                               max(0.1, self.probe_deadline - time.monotonic())),
+                                               max(VERIFY_BUDGET, self.probe_deadline - time.monotonic())),
                                          name="strata-generation-probe", daemon=True).start()
                     if self.probe_result is None:
                         return {**base, "state": "starting", "phase": "verifying_generation",
@@ -920,16 +1091,24 @@ class Host:
                     return {**base, "state": "ready", "instance_id": ready["instance_id"],
                             "model_state": ready.get("model_state"),
                             **self.probe_result}
+                if isinstance(ready, dict):
+                    # the server published its ready file but it is not the process this host started: say so, so a wait that
+                    # ends can name it (before #3683 this looked exactly like a model that was still loading)
+                    return {**base, "state": "starting", "phase": "ready_file_not_matched"}
             except (OSError, ValueError):
                 pass
-        return {**base, "state": "starting"}
+        return {**base, "state": "starting", "phase": "loading"}
 
     def _wait_ready(self, timeout: float) -> dict:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while True:
             current = self._status()
             if current["state"] in ("ready", "failed"):
                 return current
+            # an engine that has said it is up is being checked with its first token, which has its own budget (VERIFY_BUDGET)
+            limit = deadline + VERIFY_BUDGET if current.get("phase") == "verifying_generation" else deadline
+            if time.monotonic() >= limit:
+                break
             time.sleep(0.15)
         current = self._status()
         if current["state"] in ("ready", "failed"):
@@ -1139,7 +1318,7 @@ class Host:
                 return {"ok": False, "state": current["state"], "error": "runtime_not_ready", "exit_code": 6}
             try:
                 ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
-                if ready.get("pid") != self.child.pid or ready.get("instance_id") != current["instance_id"]:
+                if not _ready_pid_is_child(ready.get("pid"), self.child.pid) or ready.get("instance_id") != current["instance_id"]:
                     raise readiness.ReadinessError("probe_instance_mismatch")
                 host = self.args[self.args.index("--host") + 1]
                 result = readiness.verify(ready, self.source_bytes, expected_host=host,
@@ -1168,12 +1347,13 @@ class Host:
                 return {"ok": False, "error": "owner_changed_after_stop_plan", "exit_code": 6}
             if instance is not None and self._status().get("instance_id") != instance:
                 return {"ok": False, "error": "instance_changed_after_stop_plan", "exit_code": 6}
-            result = self._stop_child()
-            self.running = False
+            self.running = False                   # (a launch that has not begun will not)
+            with self._launch_lock:
+                result = self._stop_child()
             return {**result, "profile": self.name}
         if command == "restart":
             startup_wait = request.get("startup_wait", 300)
-            if type(startup_wait) not in (int, float) or not 1 <= startup_wait <= 600:
+            if type(startup_wait) not in (int, float) or not 1 <= startup_wait <= MAX_START_WAIT:
                 return {"ok": False, "error": "invalid_startup_wait", "exit_code": 2}
             revision = request.get("expected_profile_revision")
             if revision is not None and (not isinstance(revision, str) or
@@ -1212,6 +1392,65 @@ class Host:
             return self._plan_restart(allow_source_switch, allow_source_migration)
         return {"ok": False, "error": "unsupported_runtime_command", "exit_code": 2}
 
+    def _say(self, line: str) -> None:
+        """One line to the host log (the host's stderr is that file), so a host that ends says why."""
+        try:
+            print(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [strata runtime] profile {self.name}: {line}", file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+
+    def _husk(self) -> bool:
+        """Whether this host has nothing left to supervise: its server ended, or the start failed before one existed."""
+        child = self.child
+        if child is not None:
+            return child.poll() is not None
+        return not self.starting and self.last_error is not None
+
+    def _die_with_gone(self) -> bool:
+        """Whether the process this instance lives for (the desktop app's host) is gone. A look that cannot read the process (the macOS
+        `ps` that timed out, a handle that was refused) is not an answer: the engine used to be stopped on it, cleanly and without a word,
+        hours into an idle session (#4973). A different start time is a later process with that number: gone at once. Nothing found is
+        confirmed against a plain liveness check, and has to repeat DIE_WITH_MISSES times."""
+        pid, token = self.die_with
+        found = procs.start_token(pid)
+        if found == token:
+            self.die_misses = 0
+            return False
+        if found is not None:
+            return True
+        if _pid_exists(pid):
+            self.die_misses = 0
+            return False
+        self.die_misses += 1
+        return self.die_misses >= DIE_WITH_MISSES
+
+    def _startup(self) -> None:
+        """The first launch, in a thread. Planning imports the server and asks the machine about its cards, which takes seconds on a slow
+        disk or a PC with a virus scanner; with it in the accept loop's way a status question went unanswered and `runtime start` gave up
+        with "runtime operation wait expired" while the engine loaded fine (#5177). Now the owner answers (phase "preparing", then
+        "launching", then the server's own "loading" and "verifying_generation") the whole time."""
+        try:
+            self.phase = "preparing"
+            plan, args, source, source_bytes = self._plan()
+            if (self.expected_profile_revision is not None and
+                    plan["profile_revision"] != self.expected_profile_revision):
+                raise ProfileError("profile_changed_after_start_plan", 6)
+            if (self.expected_source_sha256 is not None and
+                    hashlib.sha256(source_bytes).hexdigest() != self.expected_source_sha256):
+                raise ProfileError("source_changed_after_start_plan", 6)
+            with self._launch_lock:
+                if not self.running:               # a stop (or a signal) came while the plan was made: nothing is started
+                    return
+                self.phase = "launching"
+                self._launch(args, source, source_bytes, plan["profile_revision"])
+        except (ProfileError, OSError) as exc:
+            self.last_error = str(exc) if isinstance(exc, ProfileError) else type(exc).__name__
+        except BaseException as exc:               # noqa: BLE001 - a thread that dies silently would leave "preparing" forever
+            self.last_error = type(exc).__name__
+        finally:
+            self.starting = False
+            self.phase = None
+
     def serve(self) -> int:
         activity_lease = acquire_activity_lease(shared=True)
         listener = owner_transport.Listener(self.socket_path, timeout=1.0)
@@ -1225,27 +1464,36 @@ class Host:
             signal.signal(signal.SIGINT, shutdown)
             if hasattr(signal, "SIGBREAK"):      # Windows: the signal a console Ctrl+Break / a closing console sends
                 signal.signal(signal.SIGBREAK, shutdown)
+            self._mark_child("no_child")           # (#4250) before the state exists: a host lost from here on, before it starts a server, is recoverable
             self.state_fd = _write_new(self.state_path, (json.dumps({"schema_version": 1, "profile": self.name,
                                                                      "socket": bound_address, "token": self.token,
                                                                      "host_pid": os.getpid()}) + "\n").encode())
-            try:
-                plan, args, source, source_bytes = self._plan()
-                if (self.expected_profile_revision is not None and
-                        plan["profile_revision"] != self.expected_profile_revision):
-                    raise ProfileError("profile_changed_after_start_plan", 6)
-                if (self.expected_source_sha256 is not None and
-                        hashlib.sha256(source_bytes).hexdigest() != self.expected_source_sha256):
-                    raise ProfileError("source_changed_after_start_plan", 6)
-                self._launch(args, source, source_bytes, plan["profile_revision"])
-            except (ProfileError, OSError) as exc:
-                self.last_error = str(exc) if isinstance(exc, ProfileError) else type(exc).__name__
+            self.starting = True
+            threading.Thread(target=self._startup, name="strata-owner-startup", daemon=True).start()
             while self.running:
-                if self.die_with is not None and procs.start_token(self.die_with[0]) != self.die_with[1]:
+                if self.die_with is not None and self._die_with_gone():
+                    self._say(f"the process this instance lives for (pid {self.die_with[0]}) is gone: stopping the server and leaving")
                     self.running = False         # the process this instance lives for is gone: stop (drained) and leave
                     break
                 if self.probe_result is not None and "error" in self.probe_result and \
                         self.child is not None and self.child.poll() is None:
                     self._stop_child()
+                if self._husk():
+                    # The server this host started has ended (or never started) and nothing is serving: a host that stays holds the profile's
+                    # state and lease, and every later start refuses it until a person kills a pid that status does not point at (#4574 #4824).
+                    # Status says "failed" and why for CHILD_EXIT_GRACE seconds, long enough for a client waiting for it; then the host leaves.
+                    now = time.monotonic()
+                    if self.gone_at is None:
+                        self.gone_at = now
+                        child = self.child
+                        self._say("the server ended on its own" + (f" (exit code {child.returncode})" if child is not None else
+                                                                  f" ({self.last_error})") + f"; this host leaves in {CHILD_EXIT_GRACE:.0f} s")
+                    elif now - self.gone_at >= CHILD_EXIT_GRACE:
+                        self.exit_status = 6
+                        self.running = False
+                        break
+                else:
+                    self.gone_at = None
                 try:
                     connection = listener.accept()
                 except socket.timeout:
@@ -1275,9 +1523,11 @@ class Host:
                     except OSError:
                         pass
         finally:
-            if self.child is not None and self.child.poll() is None:
-                self._stop_child()
-            self._close_owner_pipe()
+            self.running = False
+            with self._launch_lock:                # no launch can begin after this, and one that is under way has finished
+                if self.child is not None and self.child.poll() is None:
+                    self._stop_child()
+                self._close_owner_pipe()
             listener.close()
             if WINDOWS and self.state_fd is not None:
                 # an open file cannot be deleted on Windows: the lease ends just before the state file does
@@ -1304,7 +1554,7 @@ class Host:
                 os.close(self.state_fd)
             _unlock_file(activity_lease)
             os.close(activity_lease)
-        return 0
+        return self.exit_status
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1317,7 +1567,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--die-with-pid", type=int)
     parser.add_argument("--die-with-token")
     args = parser.parse_args(argv)
-    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= 600:
+    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= MAX_START_WAIT:
         parser.error("shutdown timeout must be 0..300")
     if args.expected_profile_revision is not None and not re.fullmatch(r"[0-9a-f]{16}", args.expected_profile_revision):
         parser.error("expected profile revision must be 16 lowercase hex characters")
