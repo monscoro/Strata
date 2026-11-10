@@ -1988,11 +1988,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
                 // S2 probe (debug only): the K rows are normed and RoPE'd here; the Hadamard below
                 // is the rotation the plan asks about.  Nothing is copied unless the env names a file.
-                const char* s2path = std::getenv("STRATA_KV_S2_STATS");
-                cudaStreamCaptureStatus s2_cap = cudaStreamCaptureStatusNone;
-                cudaStreamIsCapturing(cs, &s2_cap);
-                const bool s2_on = s2path != nullptr && st.kv_rot && is_qsa_layer(g, l) &&
-                                   s2_cap == cudaStreamCaptureStatusNone;
+                // The file name is read once (the environment does not change during a run), and the capture status
+                // is asked for only when the probe is on - both were per layer and token before.
+                static const char* const s2path = std::getenv("STRATA_KV_S2_STATS");
+                bool s2_on = false;
+                if (s2path != nullptr && st.kv_rot && is_qsa_layer(g, l)) {
+                    cudaStreamCaptureStatus s2_cap = cudaStreamCaptureStatusNone;
+                    cudaStreamIsCapturing(cs, &s2_cap);
+                    s2_on = (s2_cap == cudaStreamCaptureStatusNone);
+                }
                 static std::vector<strata::core::s2::Layer> s2_acc;
                 std::vector<float> s2_host;
                 if (s2_on) {

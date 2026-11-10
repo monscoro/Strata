@@ -102,6 +102,9 @@ if(STRATA_HIP_GFX906)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
+# The QSA layer trace (src/core/layer.cpp): one stderr line per QSA layer, for the hunt of a wrong KV path.  It is
+# compiled out by default, so a release build pays nothing for it; ON builds the line in (debug builds only).
+option(STRATA_QSA_LAYER_TRACE "Compile the QSA layer trace into the engine (one stderr line per QSA layer)" OFF)
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
 # switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
 # The rocBLAS tables are switched at run time (STRATA_AMD_COMMUNITY_TUNING=0).

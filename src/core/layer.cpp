@@ -1431,8 +1431,14 @@ if (st.kv_hybrid) {
     strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream,
                                        mirror ? &hv : nullptr);
 } else {
-const char* s2path = std::getenv("STRATA_KV_S2_STATS");
+// The S2 probe's target file, read once: the environment does not change during a run, and a getenv per layer and
+// token is a needless lookup on the decode path.
+static const char* const s2path = std::getenv("STRATA_KV_S2_STATS");
+#ifdef STRATA_QSA_LAYER_TRACE
+// The layer trace (debug only): compiled out by default, so a release build pays nothing for it. A build with
+// -DSTRATA_QSA_LAYER_TRACE=1 (cmake -DSTRATA_QSA_LAYER_TRACE=ON) prints one line per QSA layer.
 std::fprintf(stderr, "QSA_LAYER: layer=%lld kv_rot=%d kv_q4=%d\n", (long long)layer, (int)st.kv_rot, (int)st.kv_q4);
+#endif
 if (st.kv_rot && s2path) {
     // S2 (debug): second moments of K channels before and after the Hadamard, split into the
     // 64 rotated (RoPE) and 192 unrotated channels, per QSA layer. Accumulated over tokens,
