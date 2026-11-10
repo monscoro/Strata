@@ -19,6 +19,22 @@ The variants:
 
 With --center the measured per-channel offset is subtracted before the quantization; in the
 rotated domain that is the rotated offset H*m (the rotation is linear, so H(k) - H(m) = H(k-m)).
+
+TWO CENTERING MODES, AND THEY DO NOT AGREE (read this before quoting a number):
+
+  --center      the offsets measured from the dump itself: per layer, per KV head, per channel,
+                K and V separate.  THIS is the table the engine uses (tools/kv_center_table.py
+                builds it from the same dump), so this mode is the one that describes the
+                engine's correction.
+  --center-s2   the S2 probe's offsets: the probe measures K only and merges the two KV heads,
+                so this mode subtracts the key offsets from the value rows as well.  It is the
+                naive variant and it does NOT describe the engine.
+
+The C1 table of the campaign was computed with the second mode, which is why it reported
+1.9-2.6 dB for the centering.  Measured with the first mode (the engine's own table) the
+centering is worth 0.17 dB on the key side and 0.36 dB on the value side - see
+tools/kv_center_attrib.py for the per-layer, per-side breakdown.  Quote the mode with the
+number.
 """
 import argparse
 import math
