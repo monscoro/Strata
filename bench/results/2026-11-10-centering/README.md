@@ -1,4 +1,4 @@
-# Miniprojekt „Centering": der feste Kanal-Offset vor der Rotation
+# Miniprojekt „Centering": die systematischen Momente vor der Rotation entfernen
 
 **Status: vorregistriert (2026-11-10). Kein Arm gelaufen, kein Kernel gebaut.** Dieses Dokument
 steht vor dem ersten Lauf; die Gatter stehen fest. Anlass ist die Recherche in
@@ -8,23 +8,43 @@ Katalogzeile: `docs/paper/Ansatz_Improvements.md`, **A6** (Per-Kanal-Offset vor 
 Rotations-Variante **A7** (randomisierter Hadamard H·D) läuft im selben Harness mit, ist aber
 **nicht** Gegenstand dieses Projekts.
 
+**Das Prinzip des Projekts:** *Ein Bias ist bei randomisierten Verfahren immer problematisch — eine
+Zufallsrotation entfernt einen systematischen Anteil nicht, sie verteilt ihn nur auf zufällige
+Koordinaten.* Für einen gegebenen Sign-Zug S ist S·μ ein **fester** Vektor mit fester Energie
+(‖H·S·μ‖ = ‖μ‖, orthogonal): der Bias landet nur zufällig, er verschwindet nicht. Genau das ist
+Flagrots Beobachtung („rotation flattens a spiky piece of a key but can give a flat one a new
+peak"). **Darum ist die Reihenfolge fest: erst den systematischen Anteil entfernen, dann über
+Randomisierung reden** — vorher ist eine Randomisierung nicht sinnvoll messbar. Dieses Projekt
+entfernt den systematischen Anteil **konsequent**, also alle Momente, die systematisch sind, nicht
+nur den ersten.
+
 ## 1. Warum
 
-**Der Befund.** Die S2-Sonde akkumuliert je Kanal unter anderem den Mittelwert der K-Werte über
-32.746 Token (12 QSA-Layer × 256 Kanäle). Ausgewertet am 2026-11-10:
+**Der Befund.** Die S2-Sonde akkumuliert je Kanal unter anderem Mittel, Varianz, Schiefe und
+Exzess-Kurtosis der K-Werte über 32.746 Token (12 QSA-Layer × 256 Kanäle). Ausgewertet am
+2026-11-10, mit den Standardfehlern der Moment-Schätzer für diese Stichprobe als Rauschmaß:
 
-| | vor FWHT | nach FWHT |
-|---|---:|---:|
-| standardisierter Kanal-Mittelwert \|mean\|/sd, Median | **0,2673** | **0,2825** |
-| p90 / Maximum | 0,7337 / 3,5778 | 0,6967 / 1,6561 |
-| Sampling-Erwartung bei n = 32.746 | 0,0044 | 0,0044 |
+| Moment | vor FWHT | nach FWHT | Rauschen | systematisch? |
+|---|---|---|---|---|
+| Mittel (1. Moment) | Median \|mean\|/sd **0,2673**, p90 0,7337, max 3,5778 | **0,2825**, p90 0,6967 | 0,0055 | **ja, und die Rotation entfernt ihn nicht** |
+| Schiefe (3. Moment) | Median 0,1050, p90 0,3531, max 1,7199 | 0,0836, p90 0,2255 | 0,0135 | **ja, kanalspezifisch** (62,6 % der Kanäle > 5× Rauschen vor, 58,5 % nach) |
+| Exzess-Kurtosis (4. Moment) | Median 0,2220, p90 0,8452, max 6,7842 | 0,1295, p90 0,4373 | 0,0271 | ja, aber die Rotation flacht es stark ab (65,0 % → 48,1 % über 5× Rauschen) |
 
-Der Kanal-Mittelwert ist rund 60-mal größer als das Sampling-Rauschen: **er ist echt**. Und die
-Rotation **beseitigt ihn nicht**, sie verteilt ihn: aus einem festen Offset je Kanal wird ein
-fester Bias in *jedem* rotierten Koordinatenpaar (dieselben Offsets addieren sich mit den
-Hadamard-Vorzeichen). Er ist **kein gemeinsamer DC** — der Mittelwert der Kanalmittelwerte je Layer
-liegt bei −0,016 bis +0,086 bei einer Streuung der Kanalmittel von 0,43 bis 0,64, also
-\|mean\|/sd_typ = 0,007 bis 0,068: die Offsets sind **kanalspezifisch**.
+Drei Lesarten:
+
+1. **Der Mittelwert ist echt** (rund 60-mal über dem Rauschen) **und die Rotation verteilt ihn nur.**
+   Aus einem festen Offset je Kanal wird ein fester Bias in *jedem* rotierten Koordinatenpaar
+   (dieselben Offsets addieren sich mit den Hadamard-Vorzeichen). Er ist **kein gemeinsamer DC** —
+   der Mittelwert der Kanalmittelwerte je Layer liegt bei −0,016 bis +0,086 bei einer Streuung der
+   Kanalmittel von 0,43 bis 0,64, also \|mean\|/sd_typ = 0,007 bis 0,068: die Offsets sind
+   **kanalspezifisch**.
+2. **Die Schiefe ist ebenfalls systematisch und kanalspezifisch** — aber sie ist **nicht**
+   layerweit: der Mittelwert der Schiefe je Layer liegt nur bei 0,2 bis 2,0× Rauschen, mit 46 bis
+   56 % gleichgerichteten Kanälen. Es gibt also keinen „Layer-Schief", den man mit einem einzigen
+   Versatz räumt; jeder Kanal trägt seine eigene. Die Rotation nimmt sie nur leicht zurück
+   (0,1050 → 0,0836).
+3. **Die Kurtosis ist der Teil, den die Rotation schon erledigt** (0,2220 → 0,1295). Sie ist der
+   Grund, warum die Rotation überhaupt im Plan steht.
 
 **Warum das bei uns teuer ist.** Unsere Skala ist eine **Max-Statistik**: `d = amax / lmax`, mit
 `amax` als Shuffle-Maximum über die 32 Werte eines Blocks (`src/kernels/cuda/kv_q4.cu:138-144`;
@@ -94,6 +114,22 @@ Frage, woher sie kommt:
 **Die Entscheidung zwischen (a), (b) und (c) fällt in Stufe C0** — sie hängt an der Stabilität des
 Offsets über Texte und Längen.
 
+**Und die anderen systematischen Momente (das „konsequent").** Das Centering entfernt den ersten
+Moment. Die **Schiefe** (3. Moment) ist ebenfalls systematisch und kanalspezifisch (Median 0,1050
+vor und 0,0836 nach der Rotation; 62,6 % der Kanäle über 5× Rauschen) — eine **symmetrische**
+Lloyd-Tabelle kann eine schiefe Quelle nicht ausnutzen: die Stufen werden auf die leere Seite
+verteilt. Sie zu entfernen geht nur **kanalweise** (es gibt keinen Layer-Schieft, s. §1), also mit
+derselben Tabelle: pro Kanal ein Versatz **und** ein Asymmetrie-Parameter, oder eine eigene
+Stufentabelle je Kanal (12 KB je Layer und Kopf — dieselbe Währung wie die Offsets). Die
+**Exzess-Kurtosis** (4. Moment) ist der Teil, den die Rotation schon flacht (0,2220 → 0,1295); sie
+zu entfernen hieße eine andere Codebook-Familie (Katalogzeile A5), nicht eine Korrektur im Writer.
+**Die Reihenfolge, die dieses Projekt daraus macht:** (1) der 1. Moment (Versatz) — billig, exakt
+erhaltend, erwartet der größte Hebel; (2) der 3. Moment (Asymmetrie) — **nur wenn** der
+Parity-Harness zeigt, dass danach noch Stufen verschenkt werden; (3) der 4. Moment — gehört in
+eine andere Zeile (A5). Die Messung entscheidet die Reihenfolge: u (die Spannungsnutzung) ist das
+Werkzeug, und wenn u nach dem Versatz noch weit unter ihrem Maximum liegt, ist der nächste
+Kandidat die Asymmetrie.
+
 ## 3. Der Basis-Vertrag (der teuerste Teil)
 
 Ein Versatz ist **basisgebunden**: gemessen im unrotierten Kanalraum, angewendet vor dem FWHT.
@@ -115,8 +151,8 @@ Der `llama.cpp`-Guard existiert genau deshalb. Für uns heißt das:
 
 | Stufe | Was | Gatter (Kill) | Kosten |
 |---|---|---|---|
-| **C0** | **Offset-Stabilität.** Die S2-Sonde auf einem **zweiten Text und einer zweiten Länge** (z. B. cwe-8k, 32K) → die Offsets je Kanal vergleichen (Korrelation, relative Abweichung in sd-Einheiten) | **G1:** Korrelation der standardisierten Kanalmittelwerte ≥ 0,90 **und** mittlere relative Abweichung ≤ 0,25 sd. Darunter: (a) wird unbrauchbar, es bliebe (b) oder (c) — und (b) ist erst nach C1 zu bauen | 1 Lauf, ~3,5 min GPU (S2-Rohzeit laut `2026-10-27-s2-channels`: „ein Lauf, 3,5 min GPU-Zeit, kein Kernel geändert") |
-| **C1** | **Der Effekt, ohne Engine.** `kv_q4_parity` wird um eine Variante „mit Offsets" erweitert; gleiche Zellen, gleicher Tag, gleicher Build: MSE in dB gegen die Baseline **und** die Spannungsnutzung u je Block (Median, p10, p90) | **G2:** MSE-Gewinn ≥ 0,05 dB (der Rauschteppich des Werkzeugs). **G3:** die Spannungsnutzung u steigt um ≥ 10 % (Median). Beides fällt, ist die Achse geschlossen | Minuten, kein Modelllauf |
+| **C0** | **Offset-Stabilität und Moment-Status.** Die S2-Sonde auf einem **zweiten Text und einer zweiten Länge** (z. B. cwe-8k, 32K) → die Offsets je Kanal vergleichen (Korrelation, relative Abweichung in sd-Einheiten). Im selben Lauf die **Signifikanz aller drei Momente** berichten (Mittel, Schiefe, Kurtosis gegen die Standardfehler der Schätzer: 0,0055 / 0,0135 / 0,0271 bei n = 32.746), damit die Entfernungsreihenfolge (§2) auf Messdaten steht und nicht auf einer Vermutung | **G1:** Korrelation der standardisierten Kanalmittelwerte ≥ 0,90 **und** mittlere relative Abweichung ≤ 0,25 sd. Darunter: (a) wird unbrauchbar, es bliebe (b) oder (c) — und (b) ist erst nach C1 zu bauen. **G1b:** die Schiefe und die Kurtosis werden auf dem zweiten Text mit ihrer Signifikanz berichtet (Deskriptiv, kein Kill: sie entscheiden die Reihenfolge in §2, nicht das Projekt) | 1 Lauf, ~3,5 min GPU (S2-Rohzeit laut `2026-10-27-s2-channels`: „ein Lauf, 3,5 min GPU-Zeit, kein Kernel geändert") |
+| **C1** | **Der Effekt, ohne Engine.** `kv_q4_parity` wird um eine Variante „mit Offsets" erweitert; gleiche Zellen, gleicher Tag, gleicher Build: MSE in dB gegen die Baseline **und** die Spannungsnutzung u je Block (Median, p10, p90). **Die Varianten in dieser Reihenfolge:** (1) H (Baseline), (2) H + Centering, (3) H·D + Centering, (4) H·D allein nur zum Protokoll. Die Reihenfolge ist fest, weil eine Randomisierung **erst nach** der Bias-Entfernung sinnvoll messbar ist: auf dem verrauschten Signal misst man den Bias, nicht den Nutzen der Vorzeichen | **G2:** MSE-Gewinn ≥ 0,05 dB (der Rauschteppich des Werkzeugs). **G3:** die Spannungsnutzung u steigt um ≥ 10 % (Median). Beides fällt, ist die Achse geschlossen. **Für A7 (H·D) gilt dasselbe Gate, aber **auf dem zentrierten Signal** (Variante 3 gegen 2): der Vorzeichen-Nutzen wird erst dort sichtbar | Minuten, kein Modelllauf |
 | **C2** | **Die Korrektur, gebaut.** Writer-Änderung (Subtraktion vor dem FWHT), `m_V`-Add-Back auf dem Ausgabepfad, Offset-Tabelle im Weg der Wahl (a)/(b)/(c), Snapshot-Kennzeichen, opt-in-Schalter | **G4:** `int8`-Pfad byte-identisch (SHA-Gatter wie in der Kampagne), `kv_q4_parity` und `kv_win_parity` grün, `kv_window_parity` unverändert | **M** (Writer + Leser + Pack) |
 | **C3** | **Die Wirkung.** Ein cwe-4k-Arm (gepaart gegen `int8` und gegen den Window-Arm) | **G5:** die gepaarte KL verbessert sich; 128K nur bei einem 4K-Unterschied | **M** (ein Arm) |
 
@@ -126,7 +162,9 @@ Offset, sondern Rauschen — und dann hilft auch die schönste Tabelle nichts.
 
 **Der Rotations-Vergleich läuft im selben Harness mit** (H·D, drei Vorzeichenzüge; A7), weil der
 Harness ihn für einen Bruchteil der Kosten mitmessen kann — aber **G2 und G3 gehören dem
-Centering**; die RHT-Varianten haben eine eigene, unbestätigte Erwartung (≈ 0).
+Centering**; die RHT-Varianten haben eine eigene, unbestätigte Erwartung (≈ 0) und werden **auf dem
+zentrierten Signal** bewertet (Variante 3 gegen 2), weil eine Randomisierung einen systematischen
+Anteil nicht entfernt, sondern nur anders verteilt.
 
 ## 5. Was dieses Projekt nicht ist
 
@@ -134,6 +172,12 @@ Centering**; die RHT-Varianten haben eine eigene, unbestätigte Erwartung (≈ 0
 - Kein Ersatz für die Level-Tabelle (0,30 dB) und nicht für die per-Block-Skala (0,31 dB). Das
   Centering ist eine **dritte, orthogonale** Hebelwirkung auf derselben Bulk-Seite — wenn es
   trägt, verschiebt es den Rest (0,17 dB) nicht, es kommt dazu.
+- **Kein Ersatz für die Randomisierung, sondern ihre Voraussetzung.** Ein zufälliger Hadamard (A7)
+  entfernt einen systematischen Anteil nicht, er verteilt ihn: für einen gegebenen Sign-Zug ist
+  S·μ ein **fester** Vektor mit fester Energie (‖H·S·μ‖ = ‖μ‖). Deshalb wird A7 **erst nach** dem
+  Centering gemessen, und die Erwartung an A7 bleibt ≈ 0: nach der Rotation stehen Mittel (0,2825),
+  Schiefe (0,0836) und Kurtosis (0,1295) nahe an Gauss, aber nicht an Null — ein RHT verteilt diese
+  Restanteile nur anders, er nimmt sie nicht weg.
 - Kein 5.0-Bit-Ziel. Der Byte-Budget wird durch das Centering **nicht** berührt (kein zusätzliches
   Bit im Cache; die 12 KB liegen im Modell, nicht im KV).
 - Kein Ersatz für den Window-Overlay. Das Fenster lieferte den großen Sprung (KL 0,0318 → 0,0209
@@ -163,6 +207,10 @@ Rohdaten (TSVs, stderr, `seg.json`, S2-Dateien) liegen außerhalb des Repos unte
 ## 7. Grenzen, die schon jetzt gelten
 
 - Die Stabilität des Offsets über Texte und Längen ist **ungeprüft** (G1).
+- Die **Schiefe** ist systematisch, aber nur **kanalspezifisch** (kein Layer-Schieft: der Mittelwert
+  je Layer liegt bei 0,2 bis 2,0× Rauschen). Ihre Entfernung bräuchte dieselbe kanalspezifische
+  Tabelle wie die Offsets (12 KB je Layer und Kopf) — ob sie nach dem Versatz überhaupt noch Stufen
+  kostet, entscheidet die Spannungsnutzung u in C1, nicht dieses Dokument.
 - Ob der Offset aus dem Modellgewicht ableitbar ist (Variante c), ist **ungeprüft**; ohne (c)
   bleibt ein Artefakt oder eine Onlineschätzung.
 - Der Schätzwert der Skaleninflation (15 bis 30 %) ist eine **Rechnung aus Momenten**, keine

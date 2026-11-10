@@ -107,12 +107,11 @@ Quelle: `bench/results/2026-10-27-s2-channels/` (Rohdaten `Strata-data/bench/202
 anderem Mittel und Varianz — der Offset ist also **bereits gemessen**, er war nur nie gelesen
 worden. Auswertung: standardisierter Kanal-Mittelwert |mean|/sd.
 
-| | vor FWHT | nach FWHT |
-|---|---:|---:|
-| Median | **0,2673** | **0,2825** |
-| p90 | 0,7337 | 0,6967 |
-| Maximum | 3,5778 | 1,6561 |
-| Sampling-Erwartung bei n = 32.746 | 0,0044 | 0,0044 |
+| Moment | vor FWHT | nach FWHT | Rauschen | systematisch? |
+|---|---|---|---|---|
+| Mittel (1. Moment), \|mean\|/sd | Median **0,2673**, p90 0,7337, max 3,5778 | **0,2825**, p90 0,6967 | 0,0055 | **ja — und die Rotation entfernt ihn nicht** |
+| Schiefe (3. Moment) | Median 0,1050, p90 0,3531, max 1,7199 | 0,0836, p90 0,2255 | 0,0135 | **ja, kanalspezifisch** (62,6 % der Kanäle > 5× Rauschen vor, 58,5 % nach) |
+| Exzess-Kurtosis (4. Moment) | Median 0,2220, p90 0,8452, max 6,7842 | 0,1295, p90 0,4373 | 0,0271 | ja, aber die Rotation flacht es stark ab (65,0 % → 48,1 % über 5× Rauschen) |
 
 **Der Kanal-Mittelwert ist echt, kein Rauschen** — der Median liegt rund 60-mal über der
 Erwartung eines mittelwertsfreien Kanals. Und die Rotation **beseitigt ihn nicht**, sie verteilt
@@ -121,6 +120,23 @@ ihn: aus einem festen Offset je Kanal wird ein fester Bias in *jedem* rotierten 
 Mittelwert der Kanalmittelwerte je Layer liegt bei −0,016 bis +0,086 bei einer Streuung der
 Kanalmittel von 0,43 bis 0,64, also |mean|/sd_typ = 0,007 bis 0,068 — die Offsets sind
 **kanalspezifisch**.
+
+**Und die Konsequenz für randomisierte Verfahren:** Ein zufälliger Hadamard kann einen systematischen
+Anteil nicht entfernen, er verteilt ihn nur. Für einen gegebenen Sign-Zug S ist S·μ ein **fester**
+Vektor mit fester Energie (‖H·S·μ‖ = ‖μ‖, orthogonal) — der Bias landet zufällig, er verschwindet
+nicht. Das ist der mathematische Kern von Flagrots Beobachtung („rotation flattens a spiky piece of
+a key but can give a flat one a new peak"). **Darum ist die Reihenfolge fest: erst den
+systematischen Anteil entfernen, dann über Randomisierung reden** — und die Randomisierung ist
+danach erst sinnvoll messbar. Das Miniprojekt `bench/results/2026-11-10-centering/` folgt genau
+dieser Reihenfolge und entfernt **alle** systematischen Momente, nicht nur den ersten (der 3. Moment
+ist ebenfalls systematisch, aber nur kanalspezifisch — die Schiefe je Layer liegt bei 0,2 bis 2,0×
+Rauschen, es gibt keinen „Layer-Schieft", den ein einziger Versatz räumen könnte).
+
+**Eine Präzisierung zu §3:** Nach der Rotation stehen die Momente nahe an Gauss, aber nicht an Null
+(Kurtosis 0,1295, Schiefe 0,0836 gegen Rauschen 0,0271 bzw. 0,0135). Die Aussage „praktisch
+Gaussian" bleibt für die *Marginale* richtig; sie ist aber nicht „exakt Gauß", und die Restabweichung
+ist per Kanal systematisch — sie ist also mit einem kanalspezifischen Codebook (Katalogzeile A5) zu
+erreichen, nicht mit einer besseren Rotation.
 
 ### 4.3 Warum das bei uns teuer ist (Schätzung, keine Messung)
 
@@ -159,11 +175,16 @@ auffällig: sie ist **größer als der gesamte bisherige Hebel auf der Bulk-Seit
 2. **Die Offsetachse (Per-Kanal-Centering vor der Rotation) ist der interessantere Kandidat.**
    Erwartung aus den Momenten: 1 bis 2 dB MSE, also mehr als alles, was die Bulk-Seite bisher
    gebracht hat; exakt erhaltend (Softmax und Ausgabe); billig (12 KB, ein Kalibrierlauf).
+   **Und sie ist die Voraussetzung der Rotationsachse, nicht deren Alternative:** ein zufälliger
+   Hadamard entfernt einen systematischen Anteil nicht, er verteilt ihn nur (§4.2). Die Reihenfolge
+   ist damit fest: **erst den Bias entfernen, dann die Randomisierung messen** — und die
+   Randomisierung wird auf dem zentrierten Signal gemessen (Variante 3 gegen 2), weil man sonst den
+   Bias misst und nicht den Nutzen der Vorzeichen. Konsequent heißt auch: der 3. Moment (Schiefe)
+   ist ebenfalls systematisch und wird mitentfernt oder als Rest benannt (§4.2).
 3. **Beide brauchen denselben billigen Test:** `kv_q4_parity` (487 Zellen × 2 KV-Köpfe × 256
    Werte = 498.688 rotierte Werte, 15.584 Blöcke) vergleicht die Block-MSE auf **denselben**
-   Zellen. Vier Varianten: (1) H (Baseline), (2) H·D mit **drei** Vorzeichenzügen (SpinQuants
-   Lehre: der Zug ist eine Lotterie, bis 13 Accuracy-Punkte Streuung — also Streuung berichten,
-   nicht ein Zug), (3) H + Per-Kanal-Centering, (4) H·D + Centering. Vorab festzulegende Regel:
+   Zellen. Vier Varianten in fester Reihenfolge: (1) H (Baseline), (2) H + Per-Kanal-Centering,
+   (3) H·D + Centering, (4) H·D allein nur zum Protokoll. Vorab festzulegende Regel:
    ein Gewinn unter ≈0,05 dB (Rauschteppich des Werkzeugs) schließt die Achse; ein Centering-Gewinn
    über ≈0,3 dB (Größenordnung der Level-Tabelle) geht in die KL-Kette (cwe-4k, dann 128K).
 
