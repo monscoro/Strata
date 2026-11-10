@@ -35,6 +35,14 @@ OUT = Path(r"C:\Users\krone\git\Strata-data\bench\2026-11-10-merge-reeval\t")
 BASE_CFG = REPO / "bench" / "configs" / "needle-swift-iq3_xxs-merged-int8.json"
 TABLE = Path(r"C:\Users\krone\git\Strata-data\bench\2026-11-10-centering\center-table.bin")
 
+# The window arm's ring must hold one prompt chunk: the engine's default chunk is 6,144 cells
+# (the needle config does not set --prefill), so the ring needs STRATA_KV_WINDOW_BATCH 6,144 --
+# the geometry setup writes at 128K.  With 512 (the quality arms' geometry, which use
+# --prefill 512) the engine refuses the run loudly: "6144 cells in one batch do not fit the
+# 768-row recent ring".  Overridable so that both configurations stay reproducible.
+WINDOW_BATCH = os.environ.get("RUN_T_WINDOW_BATCH", "512")
+ONLY = [a for a in os.environ.get("RUN_T_ONLY", "").split(",") if a]
+
 # tag, --kv, extra env, expects the ring line
 ARMS = [
     ("int8", "int8", {}, False),
@@ -44,7 +52,7 @@ ARMS = [
                                   "STRATA_KV_CENTER": str(TABLE)}, False),
     ("q4lm8v-win", "q4lm8v", {"STRATA_VERIFY_ASYNC_LAUNCH": "1",
                                "STRATA_KV_WINDOW": "1", "STRATA_KV_WINDOW_S": "256",
-                               "STRATA_KV_WINDOW_R": "64", "STRATA_KV_WINDOW_BATCH": "512"}, True),
+                               "STRATA_KV_WINDOW_R": "64", "STRATA_KV_WINDOW_BATCH": WINDOW_BATCH}, True),
 ]
 
 
@@ -140,10 +148,11 @@ def arm(tag, kv, env, window):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     rc = 0
-    for tag, kv, env, window in ARMS:
+    arms = [a for a in ARMS if not ONLY or a[0] in ONLY]
+    for tag, kv, env, window in arms:
         rc = arm(tag, kv, env, window) or rc
     print("=== SUMMARY: prompt read time per needle (32k) ===", flush=True)
-    for tag, _kv, _env, _w in ARMS:
+    for tag, _kv, _env, _w in arms:
         p = OUT / f"needles-{tag}.json"
         if not p.exists():
             print(f"{tag:18s} (no result)")
