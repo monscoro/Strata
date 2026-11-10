@@ -210,7 +210,7 @@ negative result is a valid deliverable for us.
 --------------------
 
 Everything is in-repo and reproducible: the two papers
-(docs/paper/KV-Window-Hardening.pdf, docs/paper/KV-int8-quality-below-5bit-
+(docs/paper/KV-Window-Hardening.pdf, docs/paper/KV-mean-centered-calibrated-
 quantization.pdf), the measured series (bench/results/2026-11-03-tag-arm/,
 ...-deploy-range/, ...-256k/, ...-repeat-control/), the coverage counter
 (bench/results/2026-11-01-e1-128k/), the byte model

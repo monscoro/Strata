@@ -115,7 +115,7 @@ nicht neu erfunden:
 | M2 | Mittelwertverdünnung ist real: die schlimmsten 1 % der Positionen tragen 85,5 / 81,6 / 70,9 % der KL (int8/Fenster/plain), 88–90 % sitzen in den Rängen 1–8; Positionen mit Kopf-Substitution sind rar (0,7 % bei int8, 1,0 % Fenster, 1,6 % plain) und tragen bei int8 trotzdem ~56 % der Summe | `bench/results/2026-10-25-e4-error-shape/README.md` |
 | M3 | Ganzsegment-p99 liegt bei allen Armen hoch (3,66 / 4,76 / 5,55) und ist dominiert von Floor-Ereignissen — es trennt nicht das, was der Mittelwert trennt | `Ansatz_Improvements.md` §1 (Paper Tab. 8) |
 | M4 | Perplexity **dreht die Rangfolge um** und lag im 128K-Tail unter jeder Quantisierung **unterhalb der fp16-Referenz**, obwohl alle KL positiv sind | `Ansatz_Improvements.md` §4/E2; `PEER_REVIEW_GROK.md` §3 |
-| M5 | Tail-Mean kehrt zwischen den beiden 128K-Texten das Vorzeichen um — es trägt kein Ziel | `KV-int8-quality-below-5bit-quantization.tex` §2.2, §4 |
+| M5 | Tail-Mean kehrt zwischen den beiden 128K-Texten das Vorzeichen um — es trägt kein Ziel | `KV-mean-centered-calibrated-quantization.tex` §2.2, §4 |
 | M6 | Antwortregion und Ganzsegment trennen unterschiedlich: `int8 − Fenster` dort t=−0,51 (nicht trennscharf), Ganzsegment t=−3,55 | `bench/results/2026-10-25-s0-kl-support/README.md` |
 | M7 | **Positivbefund:** Rangfolge und Vorzeichen halten zwischen top-64 und top-256; Niveaus steigen +5,1/+6,4/+6,4 % (Floor-Effekt), t-Vorzeichen stabil | S0-Bericht, „What the wider support does" |
 | M8 | Kandidatenlage aus S1: nur 11,7 % der Indexer-Treffer werden exakt gelesen (Recall S 86,2 %, R 28,9 %); Randmedian 0,01 % der Spreizung (Selektionsgrenze dünn, Aggregate stabil) | `bench/results/2026-10-25-s1-selstats/README.md` |
@@ -143,7 +143,7 @@ Messung fest (statische Analyse, verifiziert 2026-10-27, Branch `kv_q4_quant_wit
    des Vorgänger-Papers, kein k8v4-Messwert: `KV-Window-Hardening.tex` Bar A), `q4lm*`-Lloyd-Familie
    und `q4lm8v`+Fenster (4,50 Basis + Ring = 5,29 bei 128K). Quelle: `include/strata/kernels/kv_stream.hpp:44-65`,
    `kv_q4.hpp:81-103`, `setup.py:6865` (816 je Token, daneben `docs/DETAILS.md:2312` mit „816 B/cell"),
-   `KV-int8-quality-below-5bit-quantization.tex` (8,25 / 5,29).
+   `KV-mean-centered-calibrated-quantization.tex` (8,25 / 5,29).
 2. **Eine „Window-Migration" gibt es nicht.** Beide Kopien (quantisiert und exakt) werden beim
    Append geschrieben; das Fenster verlässt eine Zelle nur dadurch, dass der Leser `qsa_win_slot`
    −1 liefert (Tag/Horizont) — es findet **keine erneute Quantisierung und keine Datenwanderung
@@ -285,7 +285,7 @@ Sofort offline möglich, sobald die S0/S3/Tag-TSVs vorliegen:
   Env-Liste in der `.seg.json` (`quant_quality.py:300-301`); S0-Arm: `STRATA_KV_WINDOW_S=256`,
   `STRATA_KV_WINDOW_R=64` (S0-Bericht Z. 44), Defaults 128/8 (`src/core/layer.cpp:270-277`),
   Ring = `S+B` (`include/strata/kernels/qsa_decode_attn.hpp:74-84`). Hypothese: der gemessene Restfehler sitzt **unmittelbar außerhalb**
-  des Overlays (das ist die Lesart der „letzten 1.024"-Statistik, `KV-int8-quality-below-5bit…` §4);
+  des Overlays (das ist die Lesart der „letzten 1.024"-Statistik, `KV-mean-centered-calibrated…` §4);
   die Regionsaufteilung prüft das direkt statt indirekt.
 - Präzisions- gegen Residency-Ereignisse trennen: Präzisionsregion = obige Labels; Residency =
   `kv_stream`-Verdrängungen — im Qualitätslauf ohnehin inaktiv (`--kv-resident` mit Fenster

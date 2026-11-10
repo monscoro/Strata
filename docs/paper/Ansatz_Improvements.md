@@ -1,8 +1,11 @@
 # Ansatz-Verbesserungen: KV-Cache-Quantisierung & Exact-Cell-Fenster
 
-Stand: 2026-10-28 (S3(a) und Ring-Geometrie gemessen, s. §7), Literaturabgleich nachgezogen · Autorenkontext: GLM-5.3 (opencode), auf Basis des Papers
-`docs/paper/KV-Window-Hardening.tex` (10 Seiten, 8 Tabellen; Stand 2026-10-25),
-des GLM-Selbst-Reviews (dasselbe Modell — Selbst-Review-Caveat gilt; §8
+Stand: 2026-11-10 (Centering gemessen, s. §7 und Zeile A6), Literaturabgleich nachgezogen · Autorenkontext: GLM-5.3 (opencode), auf Basis des Papers
+`docs/paper/KV-Window-Hardening.tex` (11 Seiten, 8 Tabellen; v1.10, Stand 2026-11-10)
+und des Schwester-Papers `docs/paper/KV-mean-centered-calibrated-quantization.tex`
+(v0.5, 9 Seiten; Stand 2026-11-10 — das Paper trägt seit der Umbenennung den
+Arbeitstitel „Mean-Centered Calibrated KV Quantization" und den gemessenen
+Per-Kanal-Offset), des GLM-Selbst-Reviews (dasselbe Modell — Selbst-Review-Caveat gilt; §8
 dokumentiert die Blindstellen) und des unabhängigen Zweit-Reviews (grok-4.7 via
 opencode, Desk-Review ohne Messungen; alle 8 Major-Befunde wurden gegen die
 Messquellen verifiziert und in den Artikel implementiert). Beide Reviews liegen
@@ -213,7 +216,7 @@ Reviews: GLM-5.3-Selbst-Review (Blindstellen in dessen §8) und der
 grok-4.7-Desk-Review. Beide Dateien liegen **außerhalb dieses Repos**; zitiert
 wird hier nur, was in Paper oder Messordnern belegt ist. Literatur: die
 Bibliographien von `KV-Window-Hardening.tex` und
-`KV-int8-quality-below-5bit-quantization.tex`, nicht die
+`KV-mean-centered-calibrated-quantization.tex`, nicht die
 Draft-Formulierungen der Reviews (dort steht u. a. noch „4-bit K / 8-bit V" und
 der GEAR-Titel „Serving"). Die **Margen in §7 (Latte 1) stehen nur hier**, nicht
 im Paper: das Paper nennt Latte A (Parität bei ≤ 6,0 bit/cell, opt-in) und
@@ -253,7 +256,7 @@ Scissorhands, ChunkKV, und die Gegenrichtung „keys want the bits"
 
 Die Leiter steht seit dem 2026-10-25 in zwei Papers: `KV-Window-Hardening.tex`
 (Abschnitt „Avenues for Improvement", zwei Latten A/B) und
-`KV-int8-quality-below-5bit-quantization.tex` (Status und Arbeitsplan, das
+`KV-mean-centered-calibrated-quantization.tex` (Status und Arbeitsplan, das
 5,0-Ziel mit Kriterien K1–K6 und derselben Leiter S0–S5). Dieses Kapitel ist
 die Arbeitsfassung und **verschärft** das Ziel: **5,0 bit/cell** — weniger Speicher
 als das heutige Fenster (5,29) bei besserer Qualität als `int8` (8,25). Das ist
@@ -285,7 +288,7 @@ ein Rückstand ist einer.
 
 | # | Punkt | Schwelle | Anker (heute) |
 |---|---|---|---|
-| K1 | cwe-4k, gepaarte Mean-KL (Arm − `int8`) | Differenz ≤ 0, obere 95-%-Grenze < **+0,001 nats**, `int8` führt in höchstens 4 von 8 Segmenten | +0,00402, t = −3,55, `int8` führt in 7/8 |
+| K1 | cwe-4k, gepaarte Mean-KL (Arm − `int8`) | Differenz ≤ 0, obere 95-%-Grenze < **+0,001 nats**, `int8` führt in höchstens 4 von 8 Segmenten | ohne Centering +0,00402, t = −3,55, `int8` führt in 7/8; **mit Centering (A6) +0,00184, t = −1,85, `int8` führt in 2/8** — zwei von drei Bedingungen erfüllt (obere Grenze +0,00062 ✓, Differenz ≤ 0 ✗, Segmente ≤ 4 ✗) |
 | K2 | cwe-128k, **beide** Texte, Ganzsegment-KL | ≤ `int8` auf beiden Texten | +0,02597 (Text 1), +0,01089 (Text 2) |
 | K3 | cwe-128k, **beide** Texte, p99 und letzte 1.024 | ≤ `int8` auf beiden Texten und beiden Statistiken | p99 +0,01322 / +0,00450; letzte 1.024: 0,00444 (Fenster) gegen 0,00265 (`int8`) |
 | K4 | effektive Rate bei 128K | ≤ **5,0 bit/cell** (Byte-Modell, vor dem Lauf aufgeschrieben) | 39 % unter `int8`, 6 % unter dem Fenster |
