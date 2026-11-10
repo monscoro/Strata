@@ -3,6 +3,12 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.4  2026-11-10  the rotation axis read against the 2026 KV-cache literature: the
+%                     rotation is worth nothing on isotropic or low-rank data and
+%                     everything on heavy tails, the data-adaptive eigenbasis alternative
+%                     is fragile and pays off only at 2-3 bits and short sequences, and
+%                     the measured per-channel offset is removed by a centering (the
+%                     zero-point of an asymmetric quantizer); no 5.0-bit number changes
 %   v0.3  2026-11-10  the rotation axis read against the 2026 literature: the
 %                     "randomized Hadamard" of that literature is a sign
 %                     diagonal, not a permutation, and is expected to add
@@ -69,7 +75,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={int8-Quality KV Quantization Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.3, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.4, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -84,7 +90,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.3 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.4 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -314,6 +320,8 @@ The exact overlay itself is the literature's sliding-window and sink protection:
 
 Two deployed anchors bound the claim. \texttt{llama.cpp}'s \texttt{q4\_0}/\texttt{q8\_0} KV types\,\cite{llama-cpp} are the field's version of the same trade-off, measured on document perplexity, not on this cwe protocol; the predecessor's \texttt{q4\_0} anchor is a different harness and is not comparable. FP8\,\cite{vllm-fp8} is not an attention kernel on this GPU, which is why the two-times point here is \texttt{int8} and the frontier is 4 bit.
 
+\paragraph{The rotation's job, and what the 2026 literature adds.} The Walsh--Hadamard this cache applies before writing belongs to the rotation family that the quantization literature uses to make outliers harmless\,\cite{quarot,rotatekv}: it spreads a channel's energy over the 256 coordinates, so that no block maximum has to cover a few large channels. Two controlled results from 2026 sharpen what that buys. A systematic comparison of KV-cache compression schemes finds that the rotation is worth nothing where the data is isotropic or low-rank --- ``the rotation neither helps nor hurts'' --- and everything where it is heavy-tailed, there being ``the only viable scheme''\,\cite{amd-kv-ablation}. The randomized Hadamard is therefore an insurance against tails, not a quality lever in general; the same paper reports that a fully random projection is uniformly worse than the structured one, and that a data-adaptive alternative (a per-head eigenbasis with water-filling\,\cite{spectralquant}) is fragile --- one spurious eigenvalue reverses the output --- and pays off only at two to three bits and short sequences. For four-bit generation at 128K that comparison recommends the structured rotation, which is what this cache uses. The channel moments measured on this model say which regime it is in: the excess kurtosis before the rotation is $-0.18$, i.e. lighter than Gaussian, so the insurance is not needed here and the randomized variant is left out for a reason that can be stated rather than assumed. One warning from the same work applies to this paper's own future steps: a residual correction on the \emph{key} path is amplified exponentially by the softmax (Jensen's inequality), while a correction on the value path is not.
+
 The rotation axis has a literature that names a different object than a reader of this plan would expect. What the quantization literature calls the randomized Hadamard transform is the Hadamard with a random sign diagonal\,\cite{quip}, not the fast randomized Hadamard transform with a random permutation: the permutation is what a Haar approximation would need, and the 2026 theory work shows that the sign-only version suffices\,\cite{rht-theory}. The adaptive variants re-order the channels towards the outliers instead of randomising them\,\cite{rotatekv}, which needs offline statistics. The same literature warns that rotation is not unconditionally good --- it flattens a spiky piece of a key and can give a flat one a new peak\,\cite{flagrot}. This plan's own material agrees with the warning: the predecessor's on/off ablation was a tie, and the channel moments show the crest rising through the transform (3.72 before, 3.93 after). The reason the published gains do not transfer is the regime: they are per-token or per-vector gains, while this cache is quantized per 32-value block, where a local scale already absorbs most of the dynamic range. One piece of the same literature does carry over, and it is not the rotation: centering the keys before the transform is exactly preserving\,\cite{optr}, and the offset it would remove is measurable in the moments this plan already has (Section~\ref{sec:error}).
 
 \section{Threats to Validity}\label{sec:threats}
@@ -332,7 +340,7 @@ The window's successor has a precise job: store at most 5.0 bit/cell --- 39\% be
 
 The plan's most likely outcomes are a negative result and a 6.0-bit fallback, in that order. That is not a weakness of the plan; it is what a pre-registered target looks like before the data exist. If the \texttt{int8} ring plus a better bulk reaches 5.0, the window is not improved but replaced: the same 128K context would cost about 960\,MiB instead of 1,584, with no statistic behind \texttt{int8}. If it does not, the negative result is the deliverable, and the shipped window stays the honest memory point at 5.29.
 
-\begin{thebibliography}{28}
+\begin{thebibliography}{31}
 \setlength{\itemsep}{0pt}\footnotesize\raggedright
 
 \bibitem{kvwin}
@@ -408,6 +416,21 @@ arXiv:2611.03992, 2026.
 \bibitem{optr}
 \emph{Output-Aware Rotation for INT2 KV-Cache Quantization}.
 arXiv:2608.02691, 2026.
+
+\bibitem{amd-kv-ablation}
+P.~D'Alberto, A.~Sirasao, E.~Delaye, and R.~Patwari.
+\emph{Ablation, Statistical Inference, and Validation for KV-Cache Compression}.
+arXiv:2607.09683, 2026.
+
+\bibitem{spectralquant}
+A.~Gopinath.
+\emph{3\% Is All You Need: Breaking TurboQuant's Compression Limit via Spectral Structure}.
+Technical report, 2026.
+
+\bibitem{turboquant}
+A.~Zandieh et~al.
+\emph{TurboQuant: Online Vector Quantization with Near-Optimal Distortion Rate}.
+ICLR 2026, arXiv:2504.19874.
 
 \bibitem{palu}
 C.-C.~Chang, W.-C.~Lin, C.-Y.~Lin, C.-Y.~Chen, Y.-F.~Hu, P.-S.~Wang, N.-C.~Huang, L.~Ceze, M.~S.~Abdelfattah, K.-C.~Wu.

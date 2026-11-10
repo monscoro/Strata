@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]   # bench/results/<ordner>/run-t.py -> the repo root
 PY = sys.executable
-URL = "http://127.0.0.1:7603/v1"
+URL = "http://127.0.0.1:7603"      # the needle tool appends /v1/chat/completions itself
 OUT = Path(r"C:\Users\krone\git\Strata-data\bench\2026-11-10-merge-reeval\t")
 BASE_CFG = REPO / "bench" / "configs" / "needle-swift-iq3_xxs-merged-int8.json"
 TABLE = Path(r"C:\Users\krone\git\Strata-data\bench\2026-11-10-centering\center-table.bin")
@@ -52,7 +52,7 @@ def wait_up(timeout=900):
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
-            with urllib.request.urlopen(URL.replace("/v1", "/health"), timeout=5) as r:
+            with urllib.request.urlopen(URL + "/health", timeout=5) as r:
                 if r.status == 200:
                     return True
         except Exception:
@@ -149,8 +149,8 @@ def main():
             print(f"{tag:18s} (no result)")
             continue
         rows = json.loads(p.read_text(encoding="utf-8"))
-        times = [r["seconds"] for r in rows]
-        toks = [r["prompt_tokens"] for r in rows]
+        times = [r.get("seconds", 0.0) for r in rows]
+        toks = [r.get("prompt_tokens", 0) for r in rows]
         rate = sum(toks) / sum(times) if sum(times) else 0.0
         found = sum(1 for r in rows if r.get("found"))
         print(f"{tag:18s} {len(times)} needles, {found} found, "
