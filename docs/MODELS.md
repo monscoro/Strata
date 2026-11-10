@@ -271,6 +271,8 @@ START-HERE.bat --setup --family qwen36 --model UD-Q4_K_XL
   you already have would be, without changing anything.
 - **With the installer:** `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux `./setup.sh --setup`) adds another
   model any time.
+- **A model Strata does not ship:** a fine-tune, another quantization or a hybrid needs its own pack and server
+  JSON. The steps, and where they stop, are in [Adapting-Models.md](Adapting-Models.md).
 
 Files another model shares are not downloaded again (the Coder uses the original's shard 2 and vision encoder). With more
 than one model installed, `START-HERE.bat` asks which one to start; `run-<model>.bat` (Linux: `run-<model>.sh`) starts one
