@@ -156,13 +156,48 @@ Der `llama.cpp`-Guard existiert genau deshalb. Für uns heißt das:
 | Stufe | Was | Gatter (Kill) | Kosten |
 |---|---|---|---|
 | **C0** | **Offset-Stabilität und Moment-Status — zwei Läufe auf dem aktuellen Build.** **C0a:** cwe-4k (derselbe Text und dieselbe Länge wie die Messung vom 2026-10-27) → die Referenz **desselben** Builds. **C0b:** cwe-8k (zweiter Text, zweite Länge, 65.571 Ids) → der Gate-Vergleich. Der Vergleich **C0a ↔ C0b** ist G1; der Vergleich der 0.1.47-Datei mit C0a isoliert zusätzlich den **Build-Effekt** auf die Offsets (deskriptiv, kein Kill). Beide Läufe über den batched Prompt-Pfad (`--short-read 0`), weil der Verify-Pfad graph-capture-geschützt ist. Im selben Lauf die **Signifikanz aller drei Momente** berichten (Mittel, Schiefe, Kurtosis gegen die Standardfehler der Schätzer: 0,0055 / 0,0135 / 0,0271 bei n = 32.746), damit die Entfernungsreihenfolge (§2) auf Messdaten steht und nicht auf einer Vermutung | **G1 (C0a ↔ C0b):** Korrelation der standardisierten Kanalmittelwerte ≥ 0,90 **und** mittlere relative Abweichung ≤ 0,25 sd. Darunter: (a) wird unbrauchbar, es bliebe (b) oder (c) — und (b) ist erst nach C1 zu bauen. **G1b:** die Schiefe und die Kurtosis werden auf dem zweiten Text mit ihrer Signifikanz berichtet (Deskriptiv, kein Kill: sie entscheiden die Reihenfolge in §2, nicht das Projekt) | 2 Läufe, ~3,5 min (4K) + ~7 min (8K) GPU (S2-Rohzeit laut `2026-10-27-s2-channels`: „ein Lauf, 3,5 min GPU-Zeit, kein Kernel geändert") |
-| **C1** | **Der Effekt, ohne Engine-Änderung — auf den echten Zellen.** Der Parity-Harness zieht **synthetische Gauss-Zellen** (`nd(rng)*2.0f`); dort gibt es keinen Kanal-Offset, die Centering-Frage ist dort **nicht** messbar. **Deshalb zwei Schritte:** (C1a) ein Lauf mit `STRATA_KV_Q4_DUMP=<datei>` (FROM/TO auf die ersten 8192 Positionen geklemmt, ~400 MB) → die **echten** rotierten K/V-Zellen des batched Promptpfads, im selben Lauf mit der S2-Sonde (Momente und Zellen aus einem Durchgang über eine Passage); (C1b) die Auswertung auf dem Host (`tools/kv_codec_mse.py`): MSE und Spannungsnutzung u je Block, Variante für Variante. **Die Varianten in fester Reihenfolge:** (1) uniform+max (der Anker `q4_0`), (2) uniform+max + Centering, (3) uniform+LS (der A8-Kandidat, **affin**), (4) uniform+LS + Centering, (5) lloyd16+max, (6) lloyd16+LS, (7) lloyd16K+lloyd8V (der q4lm8v-Codec) — jeweils mit und ohne Centering; (8) H·D + Centering nur zum Protokoll (A7) | **G2:** MSE-Gewinn ≥ 0,05 dB (der Rauschteppich des Werkzeugs). **G3:** die Spannungsnutzung u steigt um ≥ 10 % (Median). Beides fällt, ist die Achse geschlossen. **Für A7 (H·D) gilt dasselbe Gate, aber auf dem zentrierten Signal** (Variante gegen (4)); die Randomisierung wird erst nach der Bias-Entfernung bewertet | C1a: 1 Lauf, ~4 min GPU (4K, batched Promptpfad, ein GPU-Job); C1b: Host, Minuten (keine GPU) |
+| **C1** | **Der Effekt, ohne Engine-Änderung — auf den echten Zellen.** Der Parity-Harness zieht **synthetische Gauss-Zellen** (`nd(rng)*2.0f`); dort gibt es keinen Kanal-Offset, die Centering-Frage ist also dort **nicht** messbar. **Deshalb zwei Schritte:** (C1a) ein Lauf mit `STRATA_KV_Q4_DUMP=<datei>` (FROM/TO auf die ersten 8192 Positionen geklemmt, ~400 MB) → die **echten** rotierten K/V-Zellen des batched Promptpfads, im selben Lauf mit der S2-Sonde (Momente und Zellen aus einem Durchgang über eine Passage); (C1b) die Auswertung auf dem Host (`tools/kv_codec_mse.py`): MSE und Spannungsnutzung u je Block, Variante für Variante. **Die Varianten in fester Reihenfolge:** (1) uniform+max (der Anker `q4_0`), (2) uniform+max + Centering, (3) uniform+LS (der A8-Kandidat, **affin**), (4) uniform+LS + Centering, (5) lloyd16+max, (6) lloyd16+LS, (7) lloyd16K+lloyd8V (der q4lm8v-Codec) — jeweils mit und ohne Centering; (8) H·D + Centering nur zum Protokoll (A7) | **G2 erfüllt** (MSE-Gewinn **−1,9 dB** beim Anker, **−2,6 dB** beim q4lm8v-Codec — Faktor 2,8 bzw. 1,8 im MSE). **G3 nicht erfüllt** (+0,35 %), weil das registrierte Maß σ/Schritt **skaleninvariant** ist und ein Bias-Entfernen per Definition nicht zeigen kann; der Bericht trägt stattdessen \|d\|/σ (die Skala relativ zur Streuung des Blocks — die Größe, die „besser den Wertebereich ausnutzen" meint). **A7 mit Messung geschlossen**: drei H·D-Züge innerhalb 0,01 dB, und auf den zentrierten Daten ist der RHT (−0,18 dB) *schlechter* als das uniforme Gitter mit der gefitteten Skala (−0,20 dB) | C1a: 1 Lauf, ~4 min GPU (4K, batched Promptpfad, ein GPU-Job); C1b: Host, Minuten (keine GPU) |
 | **C2** | **Die Korrektur, gebaut.** Writer-Änderung (Subtraktion vor dem FWHT), `m_V`-Add-Back auf dem Ausgabepfad, Offset-Tabelle im Weg der Wahl (a)/(b)/(c), Snapshot-Kennzeichen, opt-in-Schalter | **G4:** `int8`-Pfad byte-identisch (SHA-Gatter wie in der Kampagne), `kv_q4_parity` und `kv_win_parity` grün, `kv_window_parity` unverändert | **M** (Writer + Leser + Pack) |
 | **C3** | **Die Wirkung.** Ein cwe-4k-Arm (gepaart gegen `int8` und gegen den Window-Arm) | **G5:** die gepaarte KL verbessert sich; 128K nur bei einem 4K-Unterschied | **M** (ein Arm) |
 
 **Reihenfolge:** C0 → C1 → C2 → C3. C0 und C1 sind billig und entscheiden, ob C2 überhaupt
 gebaut wird. **C0 ist der eigentliche Kill**: ein Offset, der mit dem Text wandert, ist kein
 Offset, sondern Rauschen — und dann hilft auch die schönste Tabelle nichts.
+
+### Ergebnis (2026-11-10): der Bias kostete ein Drittel des Fehlers
+
+Auf den **echten** Zellen (C1a/C1b: 12 QSA-Layer × 32.746 Zellen × 2 KV-Köpfe, Block-MSE auf
+denselben Zellen, gegen die publizierten Zahlen des Parity-Harness validiert):
+
+| Variante | ohne Centering | mit Centering | Δ |
+|---|---:|---:|---:|
+| uniform+max (der Anker `q4_0`) | 9,093e-03 | **5,826e-03** | **−1,93 dB** |
+| uniform+LS (der affine A8-Kandidat) | 8,686e-03 | 5,564e-03 | −1,93 dB |
+| lloyd16+max | 8,443e-03 | 5,445e-03 | −1,91 dB |
+| lloyd16+LS | 7,868e-03 | **5,072e-03** | **−1,91 dB** |
+| lloyd16K+lloyd8V (der q4lm8v-Codec) | 1,288e-02 | **7,033e-03** | **−2,63 dB** |
+| RHT(H·D) + uniform+LS (drei Züge) | −0,21 bis −0,24 dB | −0,18 bis −0,19 dB | ~0 |
+
+**Der Bias kostete mehr als die Level-Tabelle (0,30 dB) und die per-Block-Skala (0,31 dB) zusammen.**
+Zwei eigene Messfehler waren unterwegs und sind hier benannt, weil sie das Bild zuerst falsch
+gemacht haben: (1) der **K-Offset wurde auch auf V angewendet** — die S2-Sonde misst **nur K**, und K
+und V haben verschiedene Offsets; (2) die **S2-Sonde mittelt über die beiden KV-Köpfe**, ihre Zahl ist
+damit weder ein Kopf- noch ein V-Offset. **Die Tabelle muss je Kopf und je Seite sein.**
+
+**C0 (der eigentliche Kill) hat nicht gefeuert:** über Text und Länge (cwe-4k gegen cwe-8k) liegt die
+Korrelation der Kanalmittelwerte bei **0,9489** und die mittlere Abweichung bei **0,0799 sd** (Gate:
+≥ 0,90 und ≤ 0,25 sd). Der Build-Effekt 2026-10-27 (Engine 0.1.47) gegen den aktuellen Build
+(0.1.59.1) ist **exakt null** (Korrelation 1,0000, Abweichung 0,0000 sd) — der Merge hat die
+K-Verteilung nicht bewegt.
+
+**Stand der Umsetzung (C2 ist gebaut, die KL-Messung C3 läuft):** die zentrierte Rotation und der
+V-Add-Back als Kernel (`src/kernels/cuda/kv_q4.cu`), alle Rotationsstellen über **eine** Writer-
+Funktion (damit keine sie vergessen kann), der Loader `STRATA_KV_CENTER=<datei>` in `generate.cpp`,
+der Generator `tools/kv_center_table.py` (aus dem Dump; der Dump hält die rotierten Zellen, die
+Tabelle braucht den Kanalraum → der FWHT ist selbstinvolvierend), das Snapshot-Kennzeichen (+32) in
+`conversation_snapshot.cpp`. **Nicht umfasst und als Grenze zu nennen:** die Draft-Layer (der MTP
+rotiert seine eigenen K/V; der Draft-Layer ist keiner der 12 QSA-Layer → seine Offsets sind
+ungemessen, er bleibt unzentriert) und der Hybrid (rotiert V ohne Centering → kein Add-Back).
 
 **Der Rotations-Vergleich läuft im selben Harness mit** (H·D, drei Vorzeichenzüge; A7), weil der
 Harness ihn für einen Bruchteil der Kosten mitmessen kann — aber **G2 und G3 gehören dem

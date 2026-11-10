@@ -138,21 +138,58 @@ Gaussian" bleibt für die *Marginale* richtig; sie ist aber nicht „exakt Gauß
 ist per Kanal systematisch — sie ist also mit einem kanalspezifischen Codebook (Katalogzeile A5) zu
 erreichen, nicht mit einer besseren Rotation.
 
-### 4.3 Warum das bei uns teuer ist (Schätzung, keine Messung)
+### 4.3 Was der Bias kostet (gemessen am 2026-11-10, nicht geschätzt)
 
-Unsere Skala ist eine **Max-Statistik**: `d = amax / lmax` mit `amax` als Shuffle-Maximum über den
-32er-Block (`src/kernels/cuda/kv_q4.cu:138-144`), `lmax` = 87 (16 Stufen) bzw. 69 (8 Stufen). Ein
-fester Bias je Koordinate bläht dieses Maximum auf.
+Auf den **echten** Zellen (Dump des Engines: 12 QSA-Layer × 32.746 Zellen × 2 KV-Köpfe; Block-MSE,
+dieselben Zellen in jeder Variante; `tools/kv_codec_mse.py`, gegen die publizierten Zahlen des
+Parity-Harness validiert):
 
-- Nach der Rotation: sd ≈ 1,1 bis 1,67 (Var-Spreizung 1,2 bis 2,8), Bias |mean_post| ≈ 0,283 · sd
-- Signalmaximum über 32 Koordinaten ≈ 2,1 · sd; Biasmaximum über dieselben Block ≈ 2,1 · 0,283 · sd
-  ≈ 0,6 · sd
-- → die Skala ist um grob **15 bis 30 %** zu groß, der MSE skaliert mit d² → **etwa +1 bis +2 dB**
+| Variante | ohne Centering | mit Centering | Δ |
+|---|---:|---:|---:|
+| uniform+max (der Anker `q4_0`) | 9,093e-03 | **5,826e-03** | **−1,93 dB** |
+| uniform+LS (der affine Kandidat) | 8,686e-03 | 5,564e-03 | −1,93 dB |
+| lloyd16+max | 8,443e-03 | 5,445e-03 | −1,91 dB |
+| lloyd16+LS | 7,868e-03 | **5,072e-03** | **−1,91 dB** |
+| lloyd16K+lloyd8V (der q4lm8v-Codec) | 1,288e-02 | **7,033e-03** | **−2,63 dB** |
+| lloyd16K+lloyd8V+LS | 1,192e-02 | 6,527e-03 | −2,62 dB |
+| RHT(H·D) + uniform+LS (drei Züge) | −0,21 bis −0,24 dB | −0,18 bis −0,19 dB | ~0 |
 
-Das ist **eine Schätzung aus den Momenten, keine Messung**: die Blockmaxima addieren sich nicht
-exakt, und der MSE-Effekt ist am echten Zellensatz zu messen. Aber die Größenordnung ist
-auffällig: sie ist **größer als der gesamte bisherige Hebel auf der Bulk-Seite** (Level-Tabelle
-0,30 dB + Skala 0,31 dB = 0,61 dB) und um Größenordnungen größer als die Erwartung für einen RHT.
+**Der Bias kostete ein Drittel des Quantisierungsfehlers** — mehr als die Level-Tabelle (0,30 dB) und
+die per-Block-Skala (0,31 dB) zusammen und mehr als der Rest bis zum konvergierten per-Block-Fit
+(0,17 dB). Die frühere Schätzung in diesem Dokument (1–2 dB) war damit richtig; die dazwischen
+gemessenen „kein Effekt"-Werte waren **zwei eigene Fehler**: der K-Offset wurde auch auf V angewendet
+(K und V haben verschiedene Offsets), und die S2-Sonde mittelt über die beiden KV-Köpfe (sie misst
+weder je Kopf noch V). **Die Tabelle muss je Kopf und je Seite sein.**
+
+Warum die Max-Statistik so empfindlich ist: `d = amax / lmax` mit `amax` als Shuffle-Maximum über den
+32er-Block (`src/kernels/cuda/kv_q4.cu:138-144`); ein fester Bias je Koordinate bläht dieses Maximum
+auf, und die Skala wird an **alle** Werte des Blocks bezahlt. Die Messung bestätigt die Größenordnung
+der Schätzung (Skala grob 15–30 % zu groß, MSE entsprechend).
+
+## 4a. Die drei Rollen: Rotation, Centering, Randomisierung
+
+| Verfahren | Achse | Was es leistet | Status |
+|---|---|---|---|
+| **Die feste Hadamard-Rotation** | **Ausreißer / Tail** | „incoherence processing … a form of outlier suppression" (QuIP 2023); „apply **online Hadamard transformations to the attention module to remove outlier features in keys and values**" (QuaRot 2024); „**outlier removal using rotation enables accurate token-wise or tensor-wise quantization**" (SpinQuant 2025) | **unverzichtbar** (Post-FWHT-Clip schadet: +34 % / +111 % KL, WP §7.11) **und** schnellpfad-kompatibel (die Abbildung ist affin) |
+| **Das Centering (der Nullpunkt)** | **Mittelwert / Bias** | gemessen: **−1,9 bis −2,6 dB** MSE. In der Literatur ist derselbe Eingriff der **Nullpunkt** der asymmetrischen Quantisierung: „The outlier x₁ is spread across all channels as a constant offset x₁/√2, **which can be absorbed into the zero-point under asymmetric quantization**" (OffQ, arXiv:2606.07116) | **der größte offene Hebel** — von keiner Rotation ersetzbar |
+| **Die Randomisierung (H·D)** | **Ausrichtungsrisiko** | schützt den *festen* Hadamard vor der unglücklichen Ausrichtung auf die Datenstruktur; die Theorie gibt die Inkoherenz-Schranke mit Wahrscheinlichkeit ≥ 1−δ **über den Zug** (QuIP#, Halko et al. 2011; „Quantizing With Randomized Hadamard Transforms: Efficient Heuristic Now Proven", 10/2026) | **gemessen ohne Wirkung** (drei Züge innerhalb 0,01 dB; auf zentrierten Daten −0,18 gegen −0,20 dB) → **geschlossen** |
+
+**Die Kernaussage, die alles trägt:** eine orthogonale Transformation **verteilt** die Energie eines
+Vektors, sie **entfernt** sie nicht: ‖H·μ‖ = ‖μ‖. Ein fester Bias bleibt ein fester Bias, nur an
+einer anderen Koordinate; ein zufälliger Zug verteilt ihn lediglich auf eine zufällige Koordinate
+(FlagRot: „rotation flattens a spiky piece of a key but can give a flat one a new peak"). Die
+Literatur ist sich einig, dass die **Rotation** die Ausreißer-Achse bedient und dass für die
+**Mittelwert-Achse** ein **Nullpunkt** (asymmetrische Quantisierung) oder ein explizites Centering
+das richtige Mittel ist — unsere Messung trennt beide Achsen erstmals am selben Codec.
+
+**Was daraus für den Plan folgt:** Window-Overlay und Centering sind **orthogonale** Hebel (der
+Window lieferte den KL-Sprung 0,0318 → 0,0209, das Centering den MSE-Gewinn); Level-Tabelle und
+per-Block-Skala sind es auch (0,30 bzw. 0,31 dB); die Randomisierung ist auf unseren Daten **kein**
+Hebel (gemessen). Die Rotation selbst bleibt, weil sie die Ausreißer-Achse bedient **und** weil nur
+eine affine Abbildung in den Tensor-Core-Promptpfad passt (der Lloyd-Modus nicht: der Kern rechnet
+`Σ q_i·(code−8)` und wendet die Skala danach an — eine nicht-affine Level-Tabelle lässt sich so nicht
+rechnen; der Preis ist der Decode-Kern als Rückfall, im B1-Pfad als +12 % gemessen, im 128K-Prompt
+**mit Fremdlast im Verdacht und deshalb zurückgezogen**).
 
 ### 4.4 Die Kosten
 
@@ -218,3 +255,8 @@ auffällig: sie ist **größer als der gesamte bisherige Hebel auf der Bulk-Seit
 | KVQuant (Hooper et al., NeurIPS 2024, arXiv:2401.18079) | per-channel Keys vor RoPE; NUQ; dense-and-sparse |
 | Interface-aware NVM KV (arXiv:2609.05764, 2026-09) | RHT = Hadamard + random sign flip; post-Hadamard Key-Exzesskurtosis ≈ −0,16 (unabhängige Gegenprobe zu unserem −0,14); dieselbe Matrix rotiert den Query |
 | llama.cpp PR (PrismML-Eng, 2026-07) | K-Cache-Mean-Centering **mit** Calibration-Basis-Guard: ein Versatz aus der falschen Basis verschlechtert messbar |
+| **OffQ** (arXiv:2606.07116, 2026-06) | die Hadamard-Streuung eines Ausreißers ist ein **konstanter Offset**, der in den **Nullpunkt** der asymmetrischen Quantisierung wandert; und: Bias-Terme in den Attention-Schichten (Qwen 2.5 u. a.) schiefen die Aktivierungen und bringen Ausreißer in den KV-Cache — dieselbe Fehlerklasse wie unser Kanal-Offset |
+| **Transforms for LLM Quantization: The Great Inversion and Format Co-Design** (arXiv:2608.25188, 2026-08) | der erste Survey nur über die Transformationsstufe; „a transform … **redistributes** the outlier's energy without discarding any of it, which is why flattening rather than clipping is the mechanism" |
+| **TORQUE** (arXiv:2609.36032, 2026-09) | die Rotation **verdeckt** nützliche Struktur (ein Ausreißer wird über alle Kanäle gestreut); die Erhaltung der Ausreißer **vor** der Rotation ist eine eigene Entscheidung |
+| **BATQuant** (ECCV 2026) | „global orthogonal rotations inadvertently **transfer outlier energy across quantization blocks**, inducing new outliers that disrupt local block-wise scaling" — die blockweise Sicht auf genau unser Problem (das Blockmaximum) |
+| **DRIVE / Ben-Basat et al.** (arXiv:2605.06014, 2026-05) | die RHT ist **jetzt bewiesen** statt heuristisch; und die Arbeit zerlegt den Fehler in Varianz und **Bias** („the NMSE decomposes into the aggregated variance and squared bias") — genau unsere zwei Achsen |
