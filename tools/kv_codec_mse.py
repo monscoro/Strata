@@ -31,6 +31,10 @@ L16 = np.array([-87, -66, -52, -40, -30, -21, -12, -4, 4, 12, 21, 30, 40, 52, 66
 L8 = np.array([-69, -43, -24, -8, 8, 24, 43, 69], dtype=np.float64)
 L16_MAX = 87.0
 L8_MAX = 69.0
+# The engine's level boundaries (the midpoints of consecutive levels; the engine picks the higher
+# level at a boundary, which searchsorted with side="right" reproduces).
+B16 = np.array([-76.5, -59.0, -46.0, -35.0, -25.5, -16.5, -8.0, 0.0, 8.0, 16.5, 25.5, 35.0, 46.0, 59.0, 76.5])
+B8 = np.array([-56.0, -33.5, -16.0, 0.0, 16.0, 33.5, 56.0])
 
 
 def fwht(x):
@@ -86,48 +90,78 @@ def read_dump(path, max_records=None, want_layers=None):
     return recs
 
 
-def quantize_uniform(x, fit_scale):
-    """The q4_0 grid: code = round(x/d) + 8 clamped to 0..15, value = (code-8)*d.
+_SIGN_CACHE = {}
 
-    fit_scale: False -> d = max|x|/87 (the engine's rule); True -> one least-squares pass over the
-    block's own values against the uniform code values (the candidate of catalog line A8)."""
+
+def _sign_vector(n, seed):
+    """The fixed random sign vector of one RHT draw (the same signs for every cell: a rotation,
+    not a per-cell randomization)."""
+    key = (n, seed)
+    if key not in _SIGN_CACHE:
+        rng = np.random.default_rng(1000 + seed)
+        _SIGN_CACHE[key] = rng.integers(0, 2, size=n) * 2 - 1
+    return _SIGN_CACHE[key]
+
+
+def rht(x, seed):
+    """The randomized Hadamard transform H*D of the literature: a fixed random sign vector per
+    coordinate, then the orthonormal Hadamard.  The rotation is orthogonal, so the error energy
+    is the same in the transformed and the original domain; the MSE below is measured there."""
+    return fwht(x * _sign_vector(x.shape[-1], seed))
+
+
+def quantize_uniform(x, fit_scale):
+    """ggml's q4_0 grid, mirrored from the engine's q4_group (kv_q4.cu:76):
+
+        mval = the value of largest |x| (ties to the larger value), d = mval / -8,
+        q = clamp(trunc(x/d + 8.5), 0, 15), value = (q - 8) * d.
+
+    fit_scale: False -> the engine's rule; True -> one least-squares pass over the block's own
+    values against the uniform code values (the candidate of catalog line A8). The sign convention
+    of d is kept (the engine's d carries the sign of mval)."""
     amax = np.max(np.abs(x))
-    d = amax / L16_MAX if amax > 0 else 0.0
-    if d == 0.0:
+    idx = int(np.argmax(np.abs(x)))
+    mval = float(x[idx])
+    if amax == 0.0:
         return np.zeros_like(x), 0.0
-    code = np.clip(np.rint(x / d) + 8.0, 0.0, 15.0)
+    d = mval / -8.0
+    idd = 1.0 / d
+    q = np.trunc(x * idd + 8.5)
+    code = np.clip(q, 0.0, 15.0)
     if fit_scale:
         c = code - 8.0
         den = float(np.dot(c, c))
         if den > 0:
-            d = float(np.dot(c, x) / den)
-            if d < 0:
-                d = 0.0
-            else:
-                code = np.clip(np.rint(x / d) + 8.0, 0.0, 15.0)
+            d_ls = float(np.dot(c, x) / den)
+            if d_ls != 0.0 and (d_ls < 0) == (d < 0):
+                d = d_ls
+                code = np.clip(np.trunc(x * (1.0 / d) + 8.5), 0.0, 15.0)
     recon = (code - 8.0) * d
     return recon, d
 
 
 def quantize_lloyd(x, levels, fit_scale):
-    """Max-Lloyd's table: the nearest level to x/d, value = level * d (d = max|x|/max|level|)."""
+    """Max-Lloyd's table, mirrored from the engine's q4l_group (kv_q4.cu:137): d = max|x| / max|level|
+    (unsigned), the level is the nearest one (the engine's boundary rule), value = level * d. With
+    fit_scale: one least-squares pass over the block's own values against these very levels."""
+    levels = np.asarray(levels, dtype=np.float64)
     lmax = float(np.max(np.abs(levels)))
-    amax = np.max(np.abs(x))
+    amax = float(np.max(np.abs(x)))
     d = amax / lmax if amax > 0 else 0.0
     if d == 0.0:
         return np.zeros_like(x), 0.0
+    bnd = B8 if len(levels) == 8 else B16
     y = x / d
-    idx = np.abs(y[:, None] - levels[None, :]).argmin(axis=1)
+    idx = np.searchsorted(bnd, y, side="right")
     if fit_scale:
         l = levels[idx]
         den = float(np.dot(l, l))
         if den > 0:
-            d = float(np.dot(l, x) / den)
-            if d < 0:
-                d = 0.0
-            else:
+            d_ls = float(np.dot(l, x) / den)
+            if d_ls > 0:
+                d = d_ls
                 y = x / d
-                idx = np.abs(y[:, None] - levels[None, :]).argmin(axis=1)
+                idx = np.searchsorted(bnd, y, side="right")
     recon = levels[idx] * d
     return recon, d
 
@@ -193,6 +227,9 @@ def main():
         ("lloyd16K+lloyd8V (q4lm8v-Codec)", dict(kind="lloyd", levels=L16, fit=False),
          dict(kind="lloyd", levels=L8, fit=False)),
         ("lloyd16K+lloyd8V+LS", dict(kind="lloyd", levels=L16, fit=True), dict(kind="lloyd", levels=L8, fit=True)),
+        ("RHT(H*D) + uniform+LS, Zug 1", dict(kind="uniform", fit=True, rht=1), dict(kind="uniform", fit=True, rht=1)),
+        ("RHT(H*D) + uniform+LS, Zug 2", dict(kind="uniform", fit=True, rht=2), dict(kind="uniform", fit=True, rht=2)),
+        ("RHT(H*D) + uniform+LS, Zug 3", dict(kind="uniform", fit=True, rht=3), dict(kind="uniform", fit=True, rht=3)),
     ]
 
     base = None
@@ -205,11 +242,20 @@ def main():
             if args.max_cells:
                 karr, varr = karr[:args.max_cells], varr[:args.max_cells]
                 T = args.max_cells
-            bl_k = blocks(karr, 8)
-            bl_v = blocks(varr, 8)
-            for side, bl, var in (("K", bl_k, kv), ("V", bl_v, vv)):
-                if args.center:
-                    bl = bl - offsets_rot[layer][None, :]
+            for side, arr, var in (("K", karr, kv), ("V", varr, vv)):
+                if "rht" in var:
+                    # the cells in the dump are rotated (H k).  The RHT of the literature is H*S on the
+                    # unrotated data, and H is its own inverse: un-rotate, subtract the offset in the
+                    # unrotated domain, then H*S.  The rotation is orthogonal, so the error energy is
+                    # the same in both domains and the MSE below is comparable.
+                    sign = _sign_vector(hd, var["rht"]).astype(np.float64)
+                    arr = fwht(arr)
+                    if args.center:
+                        arr = arr - fwht(offsets_rot[layer])[None, None, :]
+                    arr = fwht(arr * sign[None, None, :])
+                elif args.center:
+                    arr = arr - offsets_rot[layer][None, None, :]
+                bl = blocks(arr, 8)
                 for i in range(bl.shape[0]):
                     x = bl[i]
                     if var["kind"] == "uniform":
