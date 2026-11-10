@@ -201,13 +201,38 @@ def evaluate(name, krec, vrec, kvar, vvar, centered, offsets_rot):
     return name, mse, umed, out["K"][0], out["V"][0], out["K"][1], out["V"][1]
 
 
+def _offset_for(args, offs, offsets_rot, layer, nkv, hd, rotated_domain, tag):
+    """The offset to subtract, shape (nkv, hd).
+
+    --center: the per-head per-channel mean measured from the dump itself, per side (K and V have
+    their own table - the S2 probe measures K only and merges the heads).  The dump holds rotated
+    cells, so the offset is a rotated one; in the unrotated domain it is un-rotated back.
+    --center-s2: the S2 file's offset (K only, both heads merged) - the naive variant."""
+    if args.center:
+        out = np.zeros((nkv, hd))
+        for h in range(nkv):
+            v = offs.get((tag, layer, h))
+            if v is None:
+                continue
+            out[h] = v if rotated_domain else fwht(v)
+        return out
+    v = offsets_rot.get(layer)
+    if v is None:
+        return np.zeros((nkv, hd))
+    v = v if rotated_domain else fwht(v)
+    return np.repeat(v[None, :], nkv, axis=0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump", required=True)
     ap.add_argument("--s2", required=True)
     ap.add_argument("--layers", type=int, default=None, help="only the first N layers")
     ap.add_argument("--max-cells", type=int, default=None, help="only N cells per layer")
-    ap.add_argument("--center", action="store_true", help="subtract the measured per-channel offset")
+    ap.add_argument("--center", action="store_true",
+                    help="subtract the per-head per-channel offset measured from the dump itself")
+    ap.add_argument("--center-s2", action="store_true",
+                    help="subtract the S2 file's offset (the probe merges the two KV heads)")
     args = ap.parse_args()
 
     means = read_s2_means(args.s2)
@@ -217,6 +242,45 @@ def main():
     if not recs:
         raise SystemExit("no records in the dump")
     print(f"dump: {len(recs)} records, layers {sorted(set(r[0] for r in recs))}")
+
+    # The offsets from the dump itself: per layer, per KV head, per channel - the mean over the dumped
+    # cells.  The S2 probe merges the two heads AND measures only K, so its numbers are neither a
+    # per-head nor a V offset: K and V get their own table here.
+    offs = {}
+    cnts = {}
+    for layer, p0, T, nkv, hd, karr, varr in recs:
+        if args.max_cells:
+            karr, varr = karr[:args.max_cells], varr[:args.max_cells]
+            T = args.max_cells
+        for tag, arr in (("K", karr), ("V", varr)):
+            for h in range(arr.shape[1]):
+                s = offs.setdefault((tag, layer, h), np.zeros(hd))
+                s += arr[:, h, :].sum(axis=0)
+                c = cnts.setdefault((tag, layer, h), 0)
+                cnts[(tag, layer, h)] = c + T
+    for key in offs:
+        offs[key] = offs[key] / max(cnts[key], 1)
+    if offs:
+        for tag in ("K", "V"):
+            med = []
+            for (t, layer, h), v in offs.items():
+                if t != tag:
+                    continue
+                sd = float(np.sqrt(np.mean((v - v.mean()) ** 2))) or 1.0
+                med.append(float(np.median(np.abs(v))) / sd)
+            if med:
+                print(f"Offset aus dem Dump ({tag}): Median |Offset| / sd der Kanaloffsets = {np.median(med):.4f}")
+        by_layer = {}
+        for (tag, layer, h), v in offs.items():
+            if tag != "K":
+                continue
+            by_layer.setdefault(layer, []).append(v)
+        agree = []
+        for layer, vs in by_layer.items():
+            if len(vs) == 2:
+                agree.append(float(np.mean(np.abs(0.5 * (vs[0] + vs[1])))))
+        if agree:
+            print(f"           K nach dem Kopf-Mittel (wie die S2-Sonde): Mittel |Rest| {np.mean(agree):.4f}")
 
     # one variant set over all records
     variants = [
@@ -238,6 +302,7 @@ def main():
         tot_err = 0.0
         tot_n = 0
         us = []
+        rs = []
         for layer, p0, T, nkv, hd, karr, varr in recs:
             if args.max_cells:
                 karr, varr = karr[:args.max_cells], varr[:args.max_cells]
@@ -250,11 +315,12 @@ def main():
                     # the same in both domains and the MSE below is comparable.
                     sign = _sign_vector(hd, var["rht"]).astype(np.float64)
                     arr = fwht(arr)
-                    if args.center:
-                        arr = arr - fwht(offsets_rot[layer])[None, None, :]
+                    if args.center or args.center_s2:
+                        arr = arr - _offset_for(args, offs, offsets_rot, layer, arr.shape[1], hd, False, side)
                     arr = fwht(arr * sign[None, None, :])
-                elif args.center:
-                    arr = arr - offsets_rot[layer][None, None, :]
+                else:
+                    if args.center or args.center_s2:
+                        arr = arr - _offset_for(args, offs, offsets_rot, layer, arr.shape[1], hd, True, side)
                 bl = blocks(arr, 8)
                 for i in range(bl.shape[0]):
                     x = bl[i]
@@ -266,15 +332,22 @@ def main():
                     tot_n += 1
                     used = np.unique(np.rint(recon / d) if d > 0 else recon)
                     st = (recon.max() - recon.min()) / max(len(used) - 1, 1) if d > 0 else 0.0
+                    sd = float(x.std())
                     if st > 0:
-                        us.append(float(x.std()) / st)
+                        us.append(sd / st)
+                    if d != 0.0 and sd > 0:
+                        # the scale relative to the block's own spread: how much of the quantizer's
+                        # range the signal needs.  Lower is better - and unlike sigma/step it is not
+                        # scale-invariant, so it shows what a removed bias does.
+                        rs.append(abs(d) / sd)
         mse = tot_err / max(tot_n, 1)
         if base is None:
             base = mse
         db = 10.0 * math.log10(mse / base) if mse > 0 and base > 0 else float("nan")
         umed = float(np.median(us)) if us else float("nan")
-        rows.append((name, mse, db, umed))
-        print(f"{name:34s} MSE {mse:.6e}  {db:+6.2f} dB  u(Median) {umed:7.2f}")
+        rmed = float(np.median(rs)) if rs else float("nan")
+        rows.append((name, mse, db, umed, rmed))
+        print(f"{name:34s} MSE {mse:.6e}  {db:+6.2f} dB  sigma/Schritt {umed:6.2f}  |d|/sigma {rmed:6.3f}")
 
     print()
     print(f"Zentriert: {'ja' if args.center else 'nein'}   Werte je Block: {KQ4}")
