@@ -2008,8 +2008,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     strata::core::s2::accumulate(s2_acc[(size_t) l].pre, s2_host.data(), n * NKV, (int) HD);
                 }
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
-                    fwht256_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
-                    fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
+                    // with the centering: the per-(head, channel) offset is subtracted before the rotation
+                    fwht256_kv_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, (int) NKV,
+                                           qsa_kv_center_k_offsets((int) l), cs);
+                    fwht256_kv_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, (int) NKV,
+                                           qsa_kv_center_v_offsets((int) l), cs);
                 } else if (st.kv_hybrid) {   // K8V4: only V is rotated
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 }
@@ -2199,6 +2202,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 stamp(l, 13, grp);
                 if (st.kv_rot || st.kv_hybrid) fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs);   // back: H^-1 = H
+                // The centering: the V offsets come back on the output (the attention weights sum to one, so
+                // the output carries -m_V in the rotated domain).  Only when the V was centered - the hybrid
+                // rotates its V without the centering.
+                if (st.kv_rot) {
+                    const float* vo = qsa_kv_center_v_offsets((int) l);
+                    if (vo != nullptr)
+                        strata::kernels::add_center_offsets_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, (int) NH,
+                                                                   (int) (NH / NKV), vo, cs);
+                }
                 if (qb) native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
                                               (int) (n * NH), (int) HD, cs);
                 else
