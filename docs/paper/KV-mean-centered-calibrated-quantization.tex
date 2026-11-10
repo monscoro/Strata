@@ -149,6 +149,8 @@ What this paper is not: it reports no new measurement, changes no engine code, a
 
 Table~\ref{tab:point} collects the numbers this paper builds on. All of them are the predecessor's\,\cite{kvwin,strata-details}; none was re-run here. The engine is 0.1.44.1 for the quality and runtime tables and 0.1.47 for the needle pair, on one RX~9060~XT (gfx1200), Windows, ROCm/HIP 7.1, Swift~1.5 IQ3\_XXS, \texttt{-{}-spec 4}. The KL is teacher-forced against an fp16 KV reference and computed over the reference's top-64 tokens, renormalized.
 
+One row of that table was checked against the merged build, because the numbers below had to be comparable with it: the cwe-4k row coincides to the last digit (\texttt{int8} 0.01688, window 0.02090), so the merge moved neither the quality nor the protocol. The runtime rows could not be inherited --- the campaign's time values were withdrawn, because they were taken with foreign GPU load --- and were measured again (Section~\ref{sec:target}).
+
 \begin{table*}[t]
 \centering
 \footnotesize
