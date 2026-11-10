@@ -1,6 +1,6 @@
 # Miniprojekt „Centering": die systematischen Momente vor der Rotation entfernen
 
-**Status: vorregistriert (2026-11-10). C0, C1, C2 und C3 sind gelaufen; die Ergebnisse stehen unten.**
+**Status: vorregistriert (2026-11-10). C0 bis C4 sind gelaufen; die Ergebnisse stehen unten.**
 Dieses Dokument stand vor dem ersten Lauf; die Gatter standen fest. Anlass ist die Recherche in
 `docs/research/KV_ROTATION_SURVEY.md` und die Auswertung der S2-Rohdaten aus
 `bench/results/2026-10-27-s2-channels/` (Rohdaten: `Strata-data/bench/2026-10-27-s2-channels.txt`).
@@ -257,7 +257,9 @@ plain −21 % KL, Window −10,5 % KL. Die gepaarte Differenz `int8 − Arm` (Se
 schließt 0 ein). **K1 (Leiter §7) ist zwei von drei Bedingungen erfüllt:** obere Grenze +0,00062 <
 +0,001 ✓; Differenz ≤ 0 ✗ (positiv, aber halb so groß wie der Anker); `int8` führt in höchstens 4 von
 8 Segmenten ✗ (6 von 8, der Anker 7 von 8). **Der ehrliche Satz: der Arm ist `int8` statistisch nicht
-mehr unterlegen, aber noch nicht gleichauf.**
+mehr unterlegen, aber noch nicht gleichauf.** *(Die Wirkung der Kalibrierung auf **diesen** Arm ist
++0,00218 nats und **nicht** signifikant — siehe C4 unten; die Zeile hier bleibt, weil sie den
+Abstand zu `int8` beschreibt, nicht die Wirkung der Kalibrierung.)*
 
 **Ein verworfener Lauf, im Protokoll benannt:** der erste Centering-Arm war **byte-identisch** zum
 unzentrierten (SHA gleich) — der Verify-Pfad rotierte selbst (`verify.cpp:2010`) und hatte weder die
@@ -270,6 +272,63 @@ nichts tut, fällt nur im Zahlenvergleich auf. Die wiederholten Läufe haben ver
 Der Produktcodec braucht **16 Stufen auf beiden Seiten** (`q4lm32w` + Fenster + Centering) — das ist
 der Arm **C4**. Danach: 128K **out of sample** (die Offsets aus cwe-4k, die Texte aus den 128K-Draws),
 weil die Kalibrierung bisher nur auf einem Text und einer Länge geprüft ist (G1: cwe-4k gegen cwe-8k).
+
+### Ergebnis C4 (2026-11-10, abends): der Produktcodec 16/16 ist auf `int8`-Niveau — und die Kalibrierung wird auf ihm überflüssig
+
+Zwei Arme auf cwe-4k, derselbe Build, dieselben Ids, das Fenster in der Produktionsgeometrie
+(S 256, R 64, Chunk 512): `q4lm32w` (16/16) **ohne** und **mit** der Offset-Tabelle. Beide
+32.746 Zeilen, 8/8 Segmente, verschiedene SHA → das Wirksamkeitsgatter ist erfüllt (der erste
+Versuch scheiterte an der Verify-Fenster-Klasse #267, weil der Abhilfe-Schalter
+`STRATA_VERIFY_ASYNC_LAUNCH=1` fehlte — Abweichung 9).
+
+| Arm | KL (alle) | Top-1 | KL p99 | PPL | ΔKL vs `int8` (Segment) | t | `int8` führt in |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `int8` | 0,01688 | 99,05 % | 0,1888 | 2,860 | — | — | — |
+| `q4_0` (Stock) | 0,02530 | 98,71 % | 0,3955 | 2,863 | +0,00843 | −3,99 | 8/8 |
+| `q4lm8v` + Fenster (16/8) | 0,02090 | 98,84 % | 0,2811 | 2,858 | +0,00402 | −3,55 | 7/8 |
+| `q4lm8v` + Fenster + Centering | 0,01871 | 98,87 % | 0,2665 | 2,862 | +0,00184 | −1,85 | 6/8 |
+| **`q4lm32w` (16/16)** | **0,01689** | 98,89 % | 0,2410 | 2,852 | **+0,00002** | **−0,02** | 5/8 |
+| **`q4lm32w` + Centering (16/16)** | 0,01768 | 98,97 % | 0,2263 | 2,856 | +0,00081 | −0,99 | 5/8 |
+
+Per-Position-Intervalle (fp16-Referenz, autoritative Neuberechnung aller neun Arme in **einem**
+Vergleichsdurchlauf, `b4\paired-all.json`):
+
+| Paar | Δ | 95-%-Intervall | t | schlechter in |
+|---|---:|---|---:|---:|
+| `int8` − `q4lm32w` | −0,00002 | [−0,00240, +0,00237] | −0,01 | 3/8 |
+| `int8` − `q4lm32w`+C | −0,00081 | [−0,00307, +0,00145] | −0,70 | 3/8 |
+| `q4lm8v`-Fenster − `q4lm32w` | +0,00400 | [+0,00138, +0,00663] | **+2,99** | 7/8 |
+| `q4lm8v` − `q4lm8v`+C | +0,00677 | [+0,00350, +0,01003] | +4,06 | 8/8 |
+| `q4lm8v`-Fenster − `q4lm8v`-Fenster+C | +0,00218 | [−0,00022, +0,00459] | +1,78 | 6/8 |
+| `q4lm32w` − `q4lm32w`+C | −0,00079 | [−0,00341, +0,00183] | −0,59 | 5/8 |
+
+**Die drei Befunde:**
+
+1. **Der Produktcodec 16/16 liegt auf `int8`-Niveau** (+0,00002, t = −0,02; das Intervall schließt 0
+   ein). Gegen den 8-Stufen-V-Fenster-Arm ist er **+0,00400 nats besser** (t = +2,99, **signifikant**)
+   — die 1,10 dB Block-MSE aus C1 sind end-to-end real.
+2. **Die Kalibrierung ist ein Ersatz für den Level-Split, keine Ergänzung:** +0,00677 auf dem plain
+   16/8-Arm (signifikant), +0,00218 mit Fenster (**nicht** signifikant, das Intervall schließt 0 ein),
+   **−0,00079 auf 16/16** (nichts). Beide Hebel holen dieselbe verschwendete Spannung zurück.
+3. **Die Produktentscheidung dreht sich:** Produktpfad ist `q4lm32w` **ohne** Kalibrierung — 16/16,
+   Fenster, kein Artefakt (keine 12-KB-Tabelle je Modell), keine Basisdisziplin im Snapshot, keine
+   1,8 % Laufzeit, und trotzdem auf `int8`-Niveau. Die Kalibrierung bleibt ein Hebel für Codecs, die
+   Spannung verschenken (der 16/8-Probe).
+
+**Korrektur zu Abweichung 10:** die C3-Tabelle in diesem Dokument nannte den Effekt der Kalibrierung
+auf dem Fenster-Arm **+0,00416**; die autoritative Neuberechnung ergibt **+0,00218** (nicht
+signifikant). Der Wert im C3-Protokolleintrag war falsch (Abweichung 10 im Kampagnen-Protokoll); die
+Qualitätszahlen selbst (KL, Top-1, p99, PPL) sind unverändert.
+
+**K1 (Leiter §7)** bleibt für den 16/16-Arm formal **nicht** erfüllt: Differenz ≤ 0 ✗ (mit
++0,00002, praktisch null), obere Grenze **+0,00237 > +0,001** ✗, `int8` führt in 5 von 8 Segmenten ✗
+(gefordert ≤ 4). **Die zweite Bedingung ist auf diesem Korpus für keinen Arm erfüllbar** — die
+Paritätsauflösung des Korpus liegt bei 0,00200. Das wird vermerkt, nicht stillschweigend geändert.
+
+**Der Widerspruch zum Block-Harness, offen benannt:** C1 sagt, das Centering verbessere den
+**16/16**-Codec um 1,91 dB Block-MSE; der Engine sagt end-to-end **nichts**. Die Gegenmessung
+(je Layer und je Seite getrennt, `tools/kv_center_attrib.py`) läuft; ihr Ergebnis kommt ins Protokoll.
+Bis dahin stützt sich die Produktentscheidung auf die **end-to-end**-Messung.
 
 **Der Rotations-Vergleich läuft im selben Harness mit** (H·D, drei Vorzeichenzüge; A7), weil der
 Harness ihn für einen Bruchteil der Kosten mitmessen kann — aber **G2 und G3 gehören dem
