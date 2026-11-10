@@ -1,8 +1,12 @@
-﻿% ---------------------------------------------------------------------------
+% ---------------------------------------------------------------------------
 % Version history (visible on page 1 and in the PDF metadata; one line per
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v1.11 2026-11-10  one more paragraph from the companion paper: the product arm
+%                     (16 levels on both sides, this window) reaches int8's level on cwe-4k
+%                     (+0.00002 nats, t = -0.02) and the calibration does not carry that arm
+%                     (-0.00079).  This paper's own numbers are unchanged
 %   v1.10 2026-11-10  reference to the companion paper (the measured per-channel
 %                     offset, the per-channel mean) and the two corrections that
 %                     follow from it: the 8-level value table is a probe without
@@ -77,7 +81,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Hardening the Exact-Cell KV Window for --kv q4lm8v},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 1.10, built \buildstamp; first version 2026-10-24}}
+  pdfsubject={Version 1.11, built \buildstamp; first version 2026-10-24}}
 
 \setlength{\parindent}{10pt}
 
@@ -90,7 +94,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 1.10 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-24\par}
+    {\small Version 1.11 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-24\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -247,6 +251,8 @@ The chunk $B$ follows \texttt{-{}-prefill}. A larger automatic chunk would need 
 The exact cells must stay resident. A streamed KV cache has no always-resident side pool, so the window and KV streaming do not combine (A2). The window is also orthogonal to the level table: it can be enabled on other 4-bit modes, but the production point is \texttt{q4lm8v} with 256/64.
 
 \paragraph{Two corrections from the companion measurement.} The level split above (\texttt{q4lm8v}: 16 levels on K, 8 on V) was a probe: an 8-level codebook inside the same 4-bit bytes saves no byte and costs 1.10\,dB of block error, so the product codec carries 16 levels on both sides (\texttt{q4lm32w}), and ``16 levels on K and on V'' in the plan below is that codec\,\cite{mean-centered}. The second correction is on the gap: with the calibrated per-channel offset measured in the companion paper the 4K paired mean KL against \texttt{int8} falls from $+0.00402$ to $+0.00184$ nats and is no longer statistically significant. The offset is orthogonal to the window --- the overlay buys exact cells, the offset buys back the range the bulk spends on a fixed bias --- and it is the one lever of the family that is measured rather than proposed\,\cite{mean-centered}. Nothing else in this paper changes; the numbers above are the numbers measured without it.
+
+A third measurement from the same companion paper names the product arm and belongs here, because the window is part of it: the 16-levels-on-both-sides codec \emph{with} this window reaches \texttt{int8}'s level on cwe-4k (paired $+0.00002$ nats, $t = -0.02$, the per-position interval $[-0.00240, +0.00237]$ includes zero) and is $+0.00400$ nats better than the 8-level-value window arm\,\cite{mean-centered}. The overlay and the level split therefore carry the product point together --- and the calibration, which was measured on the 8-level probe, does not carry it at all ($-0.00079$ nats on the 16/16 arm). This paper's own measurements are unchanged; the companion carries the comparison.
 
 \section{Design Alternatives Considered}\label{sec:alternatives}
 
@@ -649,7 +655,7 @@ Strata, \texttt{docs/KV\_QUANT\_WORKPACKAGE.md}: the window's runtime, quality a
 Strata, \texttt{bench/results/2026-10-24-needle-window}: same-day needle pair, engine 0.1.47, \texttt{int8} against the 256/64 window, 6/6 and 6/6. In-repo.
 
 \bibitem{mean-centered}
-Kronenberger, M., \emph{Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell --- Status, Work Plan, and the One Measured Lever}, version 0.5, 2026-11-10. Companion paper, in-repo (\texttt{docs/paper/KV-mean-centered-calibrated-quantization.pdf}): the calibrated per-channel offset, the block-error measurement and the cwe-4k quality numbers.
+Kronenberger, M., \emph{Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell --- Status, Work Plan, and the One Measured Lever}, version 0.5, 2026-11-10. Companion paper, Public \texttt{KV-mean-centered-calibrated-quantization.pdf} in the repository's \texttt{docs/paper}: the calibrated per-channel offset, the block-error measurement and the cwe-4k quality numbers.
 
 \end{thebibliography}
 
