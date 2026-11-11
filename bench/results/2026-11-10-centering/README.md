@@ -179,11 +179,17 @@ Offsets unverändert bleiben (der Test misst die Übertragbarkeit, nicht die Tab
 
 **Material:** die Offsets aus cwe-4k (`center-table.bin`), die Texte aus den 128K-Draws
 (`data/quant_quality/cwe-128k/t1.ids.json` und `t2.ids.json` — zwei Texte, jeder 128K; die Dateien
-liegen **außerhalb** des Tracked-Bereichs, weil sie 1,8 MB je Text sind). **Arme:** `int8`
-(Referenz), der Produktarm `q4lm32w` **mit** Centering, und derselbe Arm **ohne** Centering — der
-Paar-Arm gegen den Paar-Arm isoliert die Übertragbarkeit des Offsets, der Arm gegen `int8` die
-K2/K3-Bedingungen der Leiter (Ganzsegment-KL ≤ `int8` auf **beiden** Texten, p99 ≤ `int8` auf
-beiden Texten und beiden Statistiken).
+liegen **außerhalb** des Tracked-Bereichs, weil sie 1,8 MB je Text sind). **Arme:** `fp16` (die
+Referenz, auf die die absolute KL gemessen wird — und zugleich die Gegenprobe zum Vorgänger, dessen
+128K-Zahlen 0,10715 (T1) und 0,06435 (T2) sind), `int8` (der K1-Anker), der Produktarm `q4lm32w`
+**ohne** Kalibrierung und derselbe Arm **mit** `STRATA_KV_CENTER` — der Paar-Arm gegen den
+Paar-Arm isoliert die Übertragbarkeit des Offsets, der Arm gegen `int8` die K2/K3-Bedingungen der
+Leiter (Ganzsegment-KL ≤ `int8` auf **beiden** Texten, p99 ≤ `int8` auf beiden Texten und beiden
+Statistiken).
+
+**Geometrie:** die Produktionsgeometrie bei 128K (`STRATA_KV_WINDOW_S=256`, `_R=64`,
+`_BATCH=6144`, `--prefill 6144`) und der `STRATA_VERIFY_ASYNC_LAUNCH=1`-Schalter, den jeder
+Kampagnen-Arm braucht (ohne ihn stirbt der Verify-Pfad an der #267-Klasse).
 
 **Gatter (vor dem Lauf festgelegt):**
 - **G7 (die Übertragbarkeit):** der Arm **mit** Centering muss auf **beiden** Texten besser sein als
@@ -194,8 +200,20 @@ beiden Texten und beiden Statistiken).
 - **Der 128K-Lauf startet nur bei einem 4K-Unterschied** (Leiter §7, S4). Fällt C4 auf 4K durch,
   entfällt D1 — und das wird im Protokoll so festgehalten.
 
-**Kosten:** zwei 128K-Läufe je Arm (Prefill + Scoring der 128K-Positionen) — der teuerste Test des
-Projekts. Deshalb die Vorab-Registrierung und der 4K-Trigger.
+**Kosten:** zwei 128K-Läufe je Arm (Prefill + Scoring der 128K-Positionen, ~70 min je Arm bei
+131.061 Positionen) — der teuerste Test des Projekts. Deshalb die Vorab-Registrierung und der
+4K-Trigger. **Gestuft:** erst Text 1 (vier Arme), Text 2 nur, wenn Text 1 die Frage nicht bereits
+beantwortet.
+
+**Nachtrag 2026-11-11 (vor dem Lauf):** die Frage hat sich durch C4 verschoben. Das Centering ist
+**kein Produktpfad** mehr (auf dem 16/16-Codec bringt es end-to-end nichts, siehe C4), der
+Produktarm ist `q4lm32w` **ohne** Kalibrierung. D1 prüft deshalb (a) ob der 16/16-Arm sein
+`int8`-Niveau **bei 128K** hält (K2/K3 — die eigentliche Produktfrage), und (b) ob das Centering
+auf den Texten, für die es **nicht** kalibriert wurde, irgendetwas bringt — denn **das p99** ist
+das einzige Kriterium, das dem kalibrierten Arm nützt (0,2263 gegen 0,2410 auf 4K, dort aber
+**nicht** gepaart signifikant: McNemar p = 0,18). Genau deshalb läuft der kalibrierte Arm mit und
+wird mit denselben gepaarten Werkzeugen ausgewertet (`tools/kv_tail_top1.py`: der Tail über eine
+**arm-unabhängige** Positionsmenge, der Top-1 mit exaktem McNemar).
 
 ### Ergebnis (2026-11-10): der Bias kostete ein Drittel des Fehlers
 

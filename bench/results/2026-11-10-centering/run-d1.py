@@ -95,18 +95,23 @@ def main():
     for text, tag, kv, centered in ARMS:
         rc = run_arm(text, tag, kv, centered) or rc
         time.sleep(30)   # the campaign rule: 30 s between engine starts
-    print("=== compare against the fp16 reference (the absolute numbers) ===", flush=True)
+    print("=== compare against the fp16 reference (the absolute numbers AND the paired differences) ===", flush=True)
     runs = [str(OUT / f"{t}-{tag}.tsv") for t, tag, _kv, _c in ARMS]
+    # the paired series must be measured against the fp16 reference: the paired difference between
+    # two arms is the difference of their KLs against fp16, not their KL against int8 (the C4 run
+    # showed how easily the two get mixed up)
     cmd = [PY, str(REPO / "tools" / "quant_quality.py"), "compare", runs[0]] + runs[1:] + \
-          ["--segments", "--json", str(OUT / "compare-fp16.json")]
-    rc = subprocess.run(cmd, cwd=str(REPO)).returncode or rc
-    print("=== compare against int8 (the paired differences) ===", flush=True)
-    int8 = [r for r in runs if "int8" in r][0]
-    cmd = [PY, str(REPO / "tools" / "quant_quality.py"), "compare", int8] + \
-          [r for r in runs if "int8" not in r] + \
           ["--paired", "--ids", str(IDS / "t1.ids.json"), "--segments",
-           "--json", str(OUT / "compare-int8.json"), "--paired-json", str(OUT / "paired.json")]
+           "--json", str(OUT / "compare-fp16.json"), "--paired-json", str(OUT / "paired-fp16.json")]
     rc = subprocess.run(cmd, cwd=str(REPO)).returncode or rc
+    print("=== the tail and the top-1, paired (the criteria the calibration was nominated for) ===", flush=True)
+    a = str(OUT / "t1-q4lm32w.tsv")
+    b = str(OUT / "t1-q4lm32w-center.tsv")
+    if Path(a).exists() and Path(b).exists():
+        cmd = [PY, str(REPO / "tools" / "kv_tail_top1.py"), "--ref", runs[0],
+               "--int8", str(OUT / "t1-int8.tsv"), "--a", a, "--b", b,
+               "--ids", str(IDS / "t1.ids.json")]
+        rc = subprocess.run(cmd, cwd=str(REPO)).returncode or rc
     return rc
 
 
