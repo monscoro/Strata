@@ -237,3 +237,25 @@ Der Vorschlag steht bei **≤ 1,25×**; die Zahl wird gemessen, nicht geschätzt
 **Und die Konstante, die der Leser addiert:** Median **0,32** (K) bzw. **0,14** (V) in Roheinheiten,
 also **0,92** bzw. **1,07 Schritte** — sie ist klein genug, um in fp16 zu stehen, und der Leser
 rechnet sie in fp32.
+
+## Der Preis des Fits: das Knie (gemessen auf dem Host, K-Seite, 4096 Bloecke)
+
+| Regel | Reduktionen | Shuffles | Block-MSE | gegen die Lloyd-Tabelle |
+|---|---:|---:|---:|---:|
+| 6 LS-Durchlaeufe (die Referenz) | 19 | 95 | 8,795968e-03 | **+1,120 dB** |
+| 4 LS-Durchlaeufe | 13 | 65 | 8,841831e-03 | +1,098 dB |
+| 2 LS-Durchlaeufe | 7 | 35 | 9,076392e-03 | +0,984 dB |
+| 1 LS-Durchlauf | 4 | 20 | 9,438023e-03 | +0,814 dB |
+| **nur die Spannweite** (das Gitter [min, min+15s], keine Verfeinerung) | **2** | **10** | 1,031334e-02 | **+0,429 dB** |
+
+**Der Preis ist abstellbar, und das Knie ist bei 2 bis 4 Durchlaeufen.** Die **Spannweitenregel
+allein** (2 Reduktionen: min und max -- **weniger Shuffles als der heutige Writer** mit 15) holt
+**+0,43 dB** gegen die Lloyd-Tabelle, und **zwei LS-Durchlaeufe** (35 Shuffles) holen **+0,98 dB** --
+88 % des Gewinns bei 37 % der Kosten. Der Offset ist in beiden Faellen derselbe (die linke
+Gitterkante, c = o + 8s) -- **die Konstante wird in jedem Fall gespeichert**, die Frage ist nur, wie
+genau (o, s) geschaetzt werden.
+
+**Die klassische Alternative (Max 1960, die Iteration s = sqrt(12*MSE) mit dem Offset aus dem
+kreisfoermigen Mittel der Residuen) ist in meiner Fassung DIVERGIERT** (1,884852e-02, also 3 dB
+schlechter als die Lloyd-Tabelle) -- sie ist damit **nicht** die gesuchte Entlastung. Die
+LS-Iteration mit der richtigen Initialisierung (das Gitter deckt den Block) ist es.
