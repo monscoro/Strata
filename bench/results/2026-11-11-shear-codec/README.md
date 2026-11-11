@@ -127,3 +127,72 @@ python tools\kv_tail_top1.py --ref <fp16.tsv> --int8 <int8.tsv> --a <q4lm32w.tsv
 
 Die Rohdaten (TSVs, stderr, `seg.json`) liegen außerhalb des Repos unter
 `C:\Users\krone\git\Strata-data\bench\2026-11-11-shear-codec\`.
+
+
+## Die Macht des Arms (die wichtigste Entwurfsfrage)
+
+**Vorher geschätzt, was der Arm zeigen kann.** Die Brücke von der Block-MSE zu den nats ist an
+**drei bereits gemessenen Paaren** ablesbar (alle cwe-4k, alle aus dieser Kampagne):
+
+| Paar (End-to-End) | Block-Differenz | nats-Differenz | Brücke |
+|---|---:|---:|---:|
+| `q4_0` gegen `q4lm8v` (plain) | +1,512 dB | +0,00652 | **0,00431 nats/dB** |
+| `q4lm8v`+Fenster gegen `q4lm32w` | +1,834 dB | +0,00401 | **0,00219 nats/dB** |
+| `q4lm8v`+Fenster+C gegen `q4lm32w`+C | +1,111 dB | +0,00103 | **0,00093 nats/dB** |
+
+**Die Brücke ist keine Konstante: sie streut über den Faktor 4,7.** Für den Shear (+0,86 dB Block)
+erwartet sie **+0,0008 bis +0,0037 nats**.
+
+**Die Auflösung des Korpus** (die 95-%-Halbbreite der gepaarten Differenz): 4K per Position 0,0094,
+4K als Segmentstatistik (8 Segmente) 0,0026, 128K per Position 0,00254. **Die erwartete Wirkung liegt
+an oder unter der Auflösung** — mit zwei Folgen:
+
+1. **Die Paarung ist die ganze Macht.** Die genannten Auflösungen stammen aus Paaren, die sich
+   *überall* unterscheiden (`int8` gegen einen 4-Bit-Arm: die gepaarte Streuung 0,56 sd je Position).
+   **Der Shear gegen die Lloyd-Tabelle ist ein viel engeres Paar** (gleiches Bytebudget, gleiche
+   Klasse, nur die Level-Form und der Nullpunkt) → die gepaarte Streuung ist kleiner und die
+   Auflösung besser. **Deshalb wird die Arm-Reihenfolge streng gepaart** (derselbe Text, dieselben
+   Ids, nur der Codec unterscheidet sich) und **der Arm berichtet die gepaarte Streuung und die
+   Paritätsauflösung mit** (`paired.json`), damit der Leser die Macht des Ergebnisses sieht.
+2. **Der 4K-Lauf ist der Bildschirm, der 128K-Lauf ist der Beweis.** Der 4K-Lauf entscheidet die
+   *Wirkrichtung* (die vier Ebenen: Block-MSE, Tail, Top-1, Parität) und trägt die Aussage „der Shear
+   schadet nicht"; der 128K-Lauf (131.060 Positionen, Paritätsauflösung 0,00254) ist der, der die
+   **Größe** der Wirkung zeigen kann — er kostet aber je Arm 78–89 Minuten. **Die Reihenfolge ist
+   festgelegt: erst 4K (alle sechs Arme), dann 128K (nur `int8`, `q4lm32w`, `q4u32`+Z und — falls
+   G3 offen bleibt — `q4lm32w`+C und `q4u32`+Z+C).**
+
+**Ein Null-Ergebnis ist nur aussagekräftig, wenn das Intervall eng genug ist.** Deshalb gilt G2 streng:
+der Shear muss **besser** sein, und das Intervall muss 0 **nicht** enthalten — ein „im Rauschen"
+ist kein Bestehen.
+
+## Der Bau, Datei für Datei
+
+**Der Codec `q4u32`**: 16 gleichmäßige Stufen, die Skala **per LS** je 32-Wert-Block, optional ein
+**Nullpunkt je Block**. Die Rekonstruktion ist `v = s·(code − 8) + c` mit `c = o + 8·s`.
+
+**Der Kern des Designs: der Schalter `STRATA_KV_ZERO=1`** — die beiden uniformen Arme unterscheiden
+sich **nur** im Nullpunkt. Damit ist seine end-to-End-Wirkung isoliert statt mit dem Skalen-Fit
+vermischt.
+
+| # | Datei | Die Arbeit |
+|---|---|---|
+| 1 | `include/strata/kernels/kv_q4.hpp` | eine neue Basisform `kUniform` **mit** Nullpunkt (als **Overlay** neben dem Fenster, nicht als eigener Blocktyp: der Block bleibt 18 Bytes, damit **kein** ausgeliefertes Format sich ändert); die Deklaration des **Seitenpools** für die Konstanten (eine fp16 je Block, adressiert wie die Blöcke: `row·8 + b`) |
+| 2 | `src/kernels/cuda/kv_q4.cu` | der Writer: `q4u_group` — die Codes zuweisen, `s` per LS fitten (derselbe Schmetterlings-Butterfly wie die FIT-Variante), dann der **Nullpunkt**: `o = (Σx − s·Σcode)/32`, die Codes neu zuweisen, `s` noch einmal fitten, `c = o + 8·s`; `c` in den Seitenpool schreiben. Und der **Leser** (`kv_gather_q4_kernel`): `+ c` |
+| 3 | `src/kernels/cuda/qsa_decode_attn.cu` | `load8_q4`: **eine Addition je Wert** (`out[k] = level[n]·d + c`) — der Decode-Kern dequantisiert explizit, es ist **kein** MMA-Umbau nötig. **Das ist der Grund, warum die Messung ohne Fast-Path geht** |
+| 4 | `src/core/layer.cpp` | die **Allokation** des Seitenpools (dieselbe Blockzahl wie der Bulk-Pool, 2 Bytes je Block) — nach dem Muster des Fenster-Seitenpools; der **Formatbyte** im Snapshot (+64: ein zentrierter Zustand darf nicht in einen unzentrierten zurückgespielt werden) |
+| 5 | `src/program/generate.cpp` | die CLI: `--kv q4u32` und der Schalter `STRATA_KV_ZERO=1` (mit der Hilfezeile) |
+| 6 | `src/core/verify.cpp` | **nichts** — der Verify-Pfad ruft den Writer und liest über die Attention-Kerne; die Korrektur sitzt im Decode-Kern |
+| 7 | `tests/` | der **Paritätstest**: die Rekonstruktion des neuen Codecs zellenweise gegen den Writer (der Test `kv_q4_parity` bekommt den neuen Fall) — **das ist das Wirksamkeitsgatter G1 in Codeform** |
+
+**Die Reihenfolge:** (1) der Writer **und** der Paritätstest, (2) G1 (die Block-MSE der
+Engine-Implementierung gegen die Harness-Vorhersage), (3) der Decode-Kern, (4) die CLI, (5) der
+4K-Lauf, (6) der 128K-Lauf.
+
+**Was ausdrücklich nicht gebaut wird:** der Fast-Path (Mode 4 mit der Konstante — die K-Seite braucht
+die Query-Gruppensummen, die V-Seite eine gewichtete Summe je Gruppe) und die 8-Bit-Variante des
+Nullpunkts (4,66 bit/celle). Beides erst, wenn der Arm eine Wirkung zeigt.
+
+**Die Risiken, und woran sie auffallen:** ein Fehler in der Rekonstruktion fällt sofort auf (G1, der
+Paritätstest); ein Fehler in der *Zuordnung* (der Nullpunkt gehört zur falschen Seite) fällt über den
+Vergleich K gegen V auf; ein Fehler in der Byte-Rechnung fällt über die Rechnung im Repo auf. **Der
+Arm, der ohne Wirkung bleibt, wird nicht weiterverfolgt** — das ist der Kill.
