@@ -100,10 +100,29 @@ enum class Q4Mode : int {
     // rows carry the cell they hold, so a row a rewind or resume left stale is read quantized, never as the
     // wrong cell - this is what makes the pool independent of the context length.
     kLloydWin = 6,  ///< `--kv q4lm32w`: kLloyd's blocks with an exact fp16 window (window arm)
+    // The shear (bench/results/2026-11-11-shear-codec/): a UNIFORM grid with a per-block offset.
+    // The reconstruction is v = s * (code - 8) + c, with c = o + 8*s and the grid [o, o + 15*s] in
+    // the code's own units (code 0 is the grid's left end).  The offset is a per-block zero point:
+    // it corrects the position of the grid against the block's own distribution, not a vector.
+    // It is still affine, so unlike the level tables it can ride the prompt fast path (that is the
+    // point of the arm: the level table is what the fast path declines).  The writer fits (o, s)
+    // by alternating least squares -- kShearPasses passes -- and the constant c travels with the
+    // block.  The blocks are 20 bytes (18 + the constant), so this mode has its own byte size and
+    // the shipped formats keep theirs.
+    kShear = 7,  ///< `--kv q4u32`: a uniform grid with a per-block offset (the zero point)
 };
 
-/// True for every level-table mode. A *reader* (gather, fused attention, a block move) only has to know the table,
-/// not how the scale was chosen - the scale is in the block - so the read side collapses to this one bit.
+/// How many least-squares passes the shear's writer runs.  This is a DIAL, not a constant: the
+/// price of each pass is measured (bench/results/2026-11-11-shear-codec/README.md, "der Preis des
+/// Fits").  Six passes are the reference (they define the effectiveness gate G1: the engine must
+/// reproduce the harness's block MSE exactly); two passes are the default, because the price of
+/// giving up four passes (0.136 dB of block error, about 0.0006 nats end to end) sits below the
+/// corpus's resolution (0.00254 nats at 128K) while the writer's price does not (35 shuffles per
+/// block against 15 today, against 95 at six passes).
+inline constexpr int kShearPasses = 2;
+
+/// True for the level-table modes and for the shear: every mode whose reader needs more than
+/// `code - 8`.
 inline constexpr bool q4_lloyd(Q4Mode m) { return m != Q4Mode::kUniform; }
 
 inline constexpr int8_t kQ4lMax = 87;   // == max |level|, the 16-level table

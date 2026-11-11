@@ -167,6 +167,67 @@ __device__ __forceinline__ uint16_t q4l_group(float x, uint8_t& byte) {
     return f16_from_f32(d);
 }
 
+// The shear: a UNIFORM grid with a per-block offset (the "zero point"), see
+// bench/results/2026-11-11-shear-codec/.  The grid is [o, o + 15*s] in the code's own units (code 0
+// is its left end) and the reconstruction is v = s*(code - 8) + c with c = o + 8*s, so the reader
+// adds ONE constant per block -- the offset corrects the grid's position against the block's own
+// distribution, not a vector.
+//
+// The fit is kShearPasses passes of "assign the codes, then solve the centred least squares for
+// (o, s)".  It starts from the grid that COVERS the block (o = min, s = (max-min)/15): a grid of
+// +/-max leaves half the range empty, and the least-squares correction cannot find its way back
+// from that start -- it costs 1.3 dB of block error (measured, see the README).
+//
+// The reductions are butterflies over the 32 lanes of the block: sum(code), sum(code^2) and
+// sum(code*x); sum(x) does not change over the passes and is taken once, so a pass costs three
+// butterflies (plus the assignment) and the first pass four.
+template <int PASSES>
+__device__ __forceinline__ uint16_t q4u_group(float x, uint8_t& byte, float& c_out) {
+    float vmax = x, vmin = x;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        vmax = fmaxf(vmax, __shfl_xor_sync(0xffffffffu, vmax, o));
+        vmin = fminf(vmin, __shfl_xor_sync(0xffffffffu, vmin, o));
+    }
+    float s = (vmax - vmin) / 15.0f;
+    if (!(s > 0.0f)) s = 1.0f;          // an all-zero block keeps s = 1 and the code 0
+    float off = vmin;                   // the grid's left end
+    float sx = x;                       // sum(x): constant over the passes
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sx += __shfl_xor_sync(0xffffffffu, sx, o);
+    for (int pass = 0; pass < PASSES; ++pass) {
+        const float inv = 1.0f / s;
+        int code = (int) rintf((x - off) * inv);   // the nearest grid point
+        code = code < 0 ? 0 : (code > 15 ? 15 : code);
+        const float cf = (float) code;
+        float sc = cf, sc2 = cf * cf, scx = cf * x;
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) {
+            sc += __shfl_xor_sync(0xffffffffu, sc, o);
+            sc2 += __shfl_xor_sync(0xffffffffu, sc2, o);
+            scx += __shfl_xor_sync(0xffffffffu, scx, o);
+        }
+        constexpr float n = 32.0f;
+        const float cm = sc / n;                  // mean(code)
+        const float xm = sx / n;                  // mean(x)
+        const float den = sc2 - n * cm * cm;      // sum((code - cm)^2)
+        const float num = scx - n * cm * xm;      // sum((code - cm)*(x - xm))
+        if (den > 0.0f) {
+            const float s_new = num / den;
+            if (s_new > 0.0f) s = s_new;          // the step stays positive: the grid's direction
+        }
+        off = xm - s * cm;                        // the grid's left end, at the least-squares offset
+    }
+    const float inv = 1.0f / s;
+    int code = (int) rintf((x - off) * inv);
+    code = code < 0 ? 0 : (code > 15 ? 15 : code);
+    const uint8_t kc = (uint8_t) code;
+    const uint8_t khi = __shfl_down_sync(0xffffffffu, kc, 16);
+    byte = (uint8_t) (kc | (khi << 4));
+    c_out = off + 8.0f * s;                       // the constant the reader adds
+    return f16_from_f32(s);
+}
+
 // `is_v` is the tensor of the pair this block belongs to; only the kLloyd8* probe modes look at it.
 template <Q4Mode M>
 __device__ __forceinline__ uint16_t q4_group_any(float x, int lane, uint8_t& byte, bool is_v = false) {
