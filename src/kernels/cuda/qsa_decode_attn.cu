@@ -77,13 +77,19 @@ __device__ __forceinline__ void load8_q8(const QsaAttnPools& p, bool value, long
 #pragma unroll
     for (int j = 0; j < 8; ++j) out[j] = (float) c[j] * sc;
 }
-template <bool LLOYD>
+template <bool LLOYD, bool SHEAR = false>
 __device__ __forceinline__ void load8_q4(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
-    constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
+    constexpr int bytes_per_head = (HD / QK4_0) * (SHEAR ? (int) sizeof(block_q4_0z) : (int) sizeof(block_q4_0));
     const int b = d0 / QK4_0;
     const int rem = d0 % QK4_0;
     const block_q4_0* blk = reinterpret_cast<const block_q4_0*>((value ? p.v_q4 : p.k_q4) + row * bytes_per_head) + b;
     const float d = __half2float(__ushort_as_half(blk->d));
+    // the shear's constant: the block carries the offset, so the value is s*(code-8) + c
+    float c = 0.0f;
+    if constexpr (SHEAR) {
+        const block_q4_0z* bz = reinterpret_cast<const block_q4_0z*>((value ? p.v_q4 : p.k_q4) + row * bytes_per_head) + b;
+        c = __half2float(__ushort_as_half(bz->c));
+    }
     const int8_t* lm = value ? q4l_map_v(p.q4_mode) : q4l_map_k(p.q4_mode);
     const int j = (rem == 0 || rem == 16) ? 0 : 8;
     const uint8_t* bytes = blk->qs + j;
@@ -95,13 +101,13 @@ __device__ __forceinline__ void load8_q4(const QsaAttnPools& p, bool value, long
 #pragma unroll
         for (int k = 0; k < 8; ++k) {
             const int n = (int) (bytes[k] & 0x0F);
-            out[k] = (LLOYD ? (float) lm[n] : (float) (n - 8)) * d;
+            out[k] = (LLOYD ? (float) lm[n] : (float) (n - 8)) * d + c;
         }
     } else {
 #pragma unroll
         for (int k = 0; k < 8; ++k) {
             const int n = (int) (bytes[k] >> 4);
-            out[k] = (LLOYD ? (float) lm[n] : (float) (n - 8)) * d;
+            out[k] = (LLOYD ? (float) lm[n] : (float) (n - 8)) * d + c;
         }
     }
 }

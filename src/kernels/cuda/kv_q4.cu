@@ -228,11 +228,58 @@ __device__ __forceinline__ uint16_t q4u_group(float x, uint8_t& byte, float& c_o
     return f16_from_f32(s);
 }
 
+// The same uniform grid WITHOUT the offset: the step fitted per block, the grid centred on zero
+// (the codes are then exactly `code - 8` times the step, so this mode is affine and rides the
+// prompt fast path).  It is the arm's other half: the pair (kUniformLs, kShear) differs in the
+// offset and nothing else.  One least-squares pass over the block, the same rule the harness's
+// "uniform+LS" mirrors (tools/kv_affine_price.py).
+__device__ __forceinline__ uint16_t q4u_ls_group(float x, int lane, uint8_t& byte) {
+    float amax = fabsf(x), mval = x;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        const float a = __shfl_xor_sync(0xffffffffu, amax, o);
+        const float v = __shfl_xor_sync(0xffffffffu, mval, o);
+        if (a > amax || (a == amax && v > mval)) { amax = a; mval = v; }
+    }
+    float d = mval / -8.0f;
+    const float id = d != 0.0f ? 1.0f / d : 0.0f;
+    int q = __float2int_rz(x * id + 8.5f);
+    const uint8_t qc = (uint8_t) (q < 0 ? 0 : (q > 15 ? 15 : q));
+    // one least-squares pass with the assignment held: d = sum(l*x) / sum(l*l), l = code - 8
+    const float l = (float) qc - 8.0f;
+    float num = l * x, den = l * l;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        num += __shfl_xor_sync(0xffffffffu, num, o);
+        den += __shfl_xor_sync(0xffffffffu, den, o);
+    }
+    if (den > 0.0f) {
+        const float d_ls = num / den;
+        if (d_ls != 0.0f && (d_ls < 0.0f) == (d < 0.0f)) {
+            d = d_ls;
+            const float id2 = d != 0.0f ? 1.0f / d : 0.0f;
+            const int q2 = __float2int_rz(x * id2 + 8.5f);
+            const uint8_t qc2 = (uint8_t) (q2 < 0 ? 0 : (q2 > 15 ? 15 : q2));
+            const uint8_t qhi2 = __shfl_down_sync(0xffffffffu, qc2, 16);
+            byte = (uint8_t) (qc2 | (qhi2 << 4));
+            return f16_from_f32(d);
+        }
+    }
+    const uint8_t qhi = __shfl_down_sync(0xffffffffu, qc, 16);
+    byte = (uint8_t) (qc | (qhi << 4));
+    return f16_from_f32(d);
+}
+
 // `is_v` is the tensor of the pair this block belongs to; only the kLloyd8* probe modes look at it.
 template <Q4Mode M>
-__device__ __forceinline__ uint16_t q4_group_any(float x, int lane, uint8_t& byte, bool is_v = false) {
+__device__ __forceinline__ uint16_t q4_group_any(float x, int lane, uint8_t& byte, float& c_out,
+                                                bool is_v = false) {
     if constexpr (M == Q4Mode::kUniform) {
         return q4_group(x, lane, byte);
+    } else if constexpr (M == Q4Mode::kUniformLs) {
+        return q4u_ls_group(x, lane, byte);
+    } else if constexpr (M == Q4Mode::kShear) {
+        return q4u_group<kShearPasses>(x, byte, c_out);
     } else if constexpr (M == Q4Mode::kLloyd8) {
         return q4l_group<false, 8>(x, byte);
     } else if constexpr (M == Q4Mode::kLloyd8K) {
@@ -247,10 +294,19 @@ __device__ __forceinline__ uint16_t q4_group_any(float x, int lane, uint8_t& byt
     }
 }
 
-__device__ __forceinline__ void q4_store(uint8_t* pool, long long row, int b, int lane, uint16_t d, uint8_t byte) {
-    block_q4_0* blk = reinterpret_cast<block_q4_0*>(pool + row * (long long) sizeof(block_q4_0) * 8) + b;
-    if (lane == 0) blk->d = d;
-    if (lane < 16) blk->qs[lane] = byte;
+template <Q4Mode MODE>
+__device__ __forceinline__ void q4_store(uint8_t* pool, long long row, int b, int lane, uint16_t d, uint16_t c,
+                                         uint8_t byte) {
+    if constexpr (MODE == Q4Mode::kShear) {
+        // the shear's block carries the constant as well (20 bytes)
+        block_q4_0z* blk = reinterpret_cast<block_q4_0z*>(pool + row * (long long) sizeof(block_q4_0z) * 8) + b;
+        if (lane == 0) { blk->d = d; blk->c = c; }
+        if (lane < 16) blk->qs[lane] = byte;
+    } else {
+        block_q4_0* blk = reinterpret_cast<block_q4_0*>(pool + row * (long long) sizeof(block_q4_0) * 8) + b;
+        if (lane == 0) blk->d = d;
+        if (lane < 16) blk->qs[lane] = byte;
+    }
 }
 
 // One block = one 32-value group of one KV head of K (plane 0) or V (plane 1) for token step_idx; 32 threads.
@@ -267,12 +323,15 @@ __global__ void kv_append_q4_kernel(uint8_t* __restrict__ k_q4, uint8_t* __restr
     const long long step_off = (long long) step_idx * kv_heads * head_dim;
     const float x = (is_v ? vcur : kcur)[step_off + h * head_dim + b * QK4_0 + t];
     uint8_t byte;
-    const uint16_t d = q4_group_any<MODE>(x, t, byte, is_v);
+    float c = 0.0f;   // the shear's constant (the other modes leave it at 0)
+    const uint16_t d = q4_group_any<MODE>(x, t, byte, c, is_v);
     const long long page = (long long) table[pos / page_size];
-    if (page >= 0) q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, t, d, byte);
+    const uint16_t cb = f16_from_f32(c);
+    if (page >= 0)
+        q4_store<MODE>(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, t, d, cb, byte);
     if (host.k_q4 != nullptr)
-        q4_store(is_v ? host.v_q4 : host.k_q4, ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size), b, t,
-                 d, byte);
+        q4_store<MODE>(is_v ? host.v_q4 : host.k_q4, ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size), b, t,
+                 d, cb, byte);
 }
 
 // The prompt path: grid (T, kv_heads, groups), K then V; also into the staging pool (identity layout) when given.
@@ -288,17 +347,20 @@ __global__ void kv_append_q4_batch_kernel(uint8_t* __restrict__ k_q4, uint8_t* _
     const bool is_v = is_v_grid != 0;
     const float x = (is_v ? V : K)[t * (kv_heads * head_dim) + h * head_dim + b * QK4_0 + th];
     uint8_t byte;
-    const uint16_t d = q4_group_any<MODE>(x, th, byte, is_v);
+    float c = 0.0f;   // the shear's constant (the other modes leave it at 0)
+    const uint16_t d = q4_group_any<MODE>(x, th, byte, c, is_v);
     const long long page = (long long) table[pos / page_size];
     const long long row_id = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
-    if (page >= 0) q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, th, d, byte);
-    if (host.k_q4 != nullptr) q4_store(is_v ? host.v_q4 : host.k_q4, row_id, b, th, d, byte);
-    if (stage.k_q4 != nullptr) q4_store(is_v ? stage.v_q4 : stage.k_q4, row_id, b, th, d, byte);
+    const uint16_t cb = f16_from_f32(c);
+    if (page >= 0)
+        q4_store<MODE>(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, th, d, cb, byte);
+    if (host.k_q4 != nullptr) q4_store<MODE>(is_v ? host.v_q4 : host.k_q4, row_id, b, th, d, cb, byte);
+    if (stage.k_q4 != nullptr) q4_store<MODE>(is_v ? stage.v_q4 : stage.k_q4, row_id, b, th, d, cb, byte);
 }
 
 // Gather step[kStepWidth] cells into FP16 scratch (the non-fused attention paths). NK / NV are the level count of
 // the K side and the V side (0 = q4_0's uniform grid), because the probe can put 8 levels on one and 16 on the other.
-template <int NK, int NV>
+template <int NK, int NV, bool SHEAR = false>
 __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint8_t* __restrict__ v_q4,
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ ids,
                                     const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
@@ -308,7 +370,8 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
                                     int win_all) {
     const long long n_ids = (long long) __ldg(step + kStepWidth);
     const int blocks_per_head = head_dim / QK4_0;                        // 8
-    const int bytes_per_head = blocks_per_head * sizeof(block_q4_0);    // 144
+    const int bytes_per_head = blocks_per_head * (SHEAR ? (int) sizeof(block_q4_0z)   // 160
+                                                         : (int) sizeof(block_q4_0)); // 144
     const long long total_blocks = n_ids * kv_heads * blocks_per_head;
 
     const long long blk_idx = (long long) blockIdx.x * blockDim.y + threadIdx.y;
@@ -351,6 +414,14 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
     const block_q4_0* v_blk = reinterpret_cast<const block_q4_0*>(v_q4 + row * bytes_per_head) + b;
     const float kd = f32_from_f16(k_blk->d);
     const float vd = f32_from_f16(v_blk->d);
+    // the shear's constant (the offset in the reader's units): v = s*(code-8) + c
+    float kc = 0.0f, vc = 0.0f;
+    if constexpr (SHEAR) {
+        const block_q4_0z* kz = reinterpret_cast<const block_q4_0z*>(k_q4 + row * bytes_per_head) + b;
+        const block_q4_0z* vz = reinterpret_cast<const block_q4_0z*>(v_q4 + row * bytes_per_head) + b;
+        kc = f32_from_f16(kz->c);
+        vc = f32_from_f16(vz->c);
+    }
     const int j = t < 16 ? t : (t - 16);
     const uint8_t k_byte = k_blk->qs[j];
     const uint8_t v_byte = v_blk->qs[j];
@@ -358,8 +429,8 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
     const int vn = (t < 16) ? (v_byte & 0x0F) : (v_byte >> 4);
     const int kq = (NK == 0) ? (kn - 8) : (int) ((NK == 8) ? kQ4l8Map[kn] : kQ4lMap[kn]);
     const int vq = (NV == 0) ? (vn - 8) : (int) ((NV == 8) ? kQ4l8Map[vn] : kQ4lMap[vn]);
-    k_scratch[dst_offset] = f16_from_f32((float) kq * kd);
-    v_scratch[dst_offset] = f16_from_f32((float) vq * vd);
+    k_scratch[dst_offset] = f16_from_f32((float) kq * kd + kc);
+    v_scratch[dst_offset] = f16_from_f32((float) vq * vd + vc);
 }
 
 void need_256(const QsaShapes& s, const char* what) {

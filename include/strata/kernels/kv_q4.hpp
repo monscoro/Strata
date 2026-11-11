@@ -110,7 +110,32 @@ enum class Q4Mode : int {
     // block.  The blocks are 20 bytes (18 + the constant), so this mode has its own byte size and
     // the shipped formats keep theirs.
     kShear = 7,  ///< `--kv q4u32`: a uniform grid with a per-block offset (the zero point)
+    // The same grid WITHOUT the offset: the step fitted per block, the grid centred on zero.  The
+    // pair (kUniformLs, kShear) is the arm's design: the two arms differ in the offset and nothing
+    // else, so its end-to-end effect is isolated.  kUniformLs is affine, so it rides the prompt
+    // fast path; kShear carries a constant and therefore does not.
+    kUniformLs = 8,  ///< `--kv q4u32` without STRATA_KV_ZERO=1: a uniform grid, the step fitted per block
 };
+
+/// The shear's block: the codes, the scale, and the constant (the offset in the reader's units,
+/// c = o + 8*s).  20 bytes -- this mode has its own byte size, so the shipped formats keep theirs.
+struct block_q4_0z {
+    uint8_t qs[16];
+    uint16_t d;
+    uint16_t c;
+};
+
+/// Bytes per head for a mode: the shear's blocks carry the constant as well (20 bytes), so the
+/// mode decides the row stride.  The shipped modes keep the 18-byte block.
+inline uint64_t kv_q4_bytes_per_head(int head_dim, Q4Mode m) {
+    return (uint64_t) (head_dim / QK4_0) *
+           (m == Q4Mode::kShear ? sizeof(block_q4_0z) : sizeof(block_q4_0));
+}
+
+/// Bytes per cell for a mode (the shear's row is wider).
+inline uint64_t kv_q4_bytes_per_cell(const QsaShapes& s, Q4Mode m) {
+    return (uint64_t) s.n_head_kv * kv_q4_bytes_per_head((int) s.head_dim, m) * 2;
+}
 
 /// How many least-squares passes the shear's writer runs.  This is a DIAL, not a constant: the
 /// price of each pass is measured (bench/results/2026-11-11-shear-codec/README.md, "der Preis des
