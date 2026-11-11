@@ -57,10 +57,39 @@ könnte** — er ist die *zweite* Byte-Variante des Arms, falls das fp16-Format 
 |---|---|---|---|---|---|
 | 0 | `int8` | `int8` | — | — | der K1-Anker (in **einem** Lauf mitgemessen: die Merge-Gegenprobe hat gezeigt, dass er exakt reproduzierbar ist) |
 | 1 | `q4lm32w` | `q4lm32w` | — | ja | der **Produktarm** (Lloyd 16/16) |
-| 2 | `q4lm32w`+C | `q4lm32w` | `STRATA_KV_CENTER` | ja | der kalibrierte Produktarm |
-| 3 | `q4u32` | `q4u32` | — | ja | das affine Gitter **ohne** Nullpunkt (der kernelfreie Weg) |
-| 4 | `q4u32`+Z | `q4u32` | `STRATA_KV_ZERO=1` | ja | **der Shear** |
-| 5 | `q4u32`+Z+C | `q4u32` | `STRATA_KV_ZERO=1`, `STRATA_KV_CENTER` | ja | die **Additivität** (Nullpunkt neben der Kalibrierung) |
+| 2 | `q4lm32w`c | `q4lm32w` | `STRATA_KV_CENTER` | ja | der kalibrierte Produktarm |
+| 3 | **`q4u32`** | `q4u32` | — | ja | das affine Gitter **ohne** Nullpunkt (der kernelfreie Weg) |
+| 4 | **`q4u32c`** | `q4u32` | `STRATA_KV_CENTER` | ja | dasselbe **mit** der Kalibrierung (die andere Hälfte der Additivität) |
+| 5 | **`q4u32z`** | `q4u32z` | — | ja | **der Shear** (das affine Gitter **mit** dem per-Block-Nullpunkt) |
+| 6 | **`q4u32zc`** | `q4u32z` | `STRATA_KV_CENTER` | ja | die **Additivität** (der Nullpunkt neben der Kalibrierung) |
+
+**Die Namen (2026-11-11, vom Nutzer festgelegt):** `q4u32` = das uniforme Gitter mit der per Block
+gefitten Stufe, `z` = der **per-Block-Nullpunkt** (der Shear), `c` = die **Kalibrierung**
+(`STRATA_KV_CENTER`). **CLI-Namen sind `q4u32` und `q4u32z`** — das `c` ist der Schalter, kein eigener
+Name, weil die Kalibrierung ihre Tabelle (`STRATA_KV_CENTER=<datei>`) braucht und ein Name sie nicht
+tragen kann. Die Arm-Matrix ist damit **2 × 2**: {ohne, mit} Nullpunkt × {ohne, mit} Kalibrierung,
+plus die zwei Anker (`int8`, `q4lm32w`).
+
+**Die sechs Arme werden in EINEM Lauf gefahren** (ein `quant_quality.py compare` gegen die fp16-Referenz),
+damit die gepaarten Differenzen vergleichbar sind — genau der Fehler, der in Abweichung 10 passiert ist.
+
+### Was am Code noch fehlt (Stand 2026-11-11, 20:30)
+
+**Gebaut und grün** (`build-hip-port`, HIP 7.2): der Writer des Shears (`q4u_group`, der Fit mit dem
+Offset), der Writer des Zwillings ohne Offset (`q4u_ls_group`), der 20-Byte-Block mit der Konstante,
+beide Leser (der fused Decode und der q4-Gather addieren die Konstante), der Modus `kUniformLs` und
+der Modus `kShear`, die Blockgröße als Eigenschaft des Modus, und die CLI `--kv q4u32`.
+
+**Noch offen:** (1) der **`kv_mode` des Shears** — der Leser, der die Konstante addiert, braucht eine
+eigene Instanziierung im fused Decode, und der **Window-Overlay** wird im fused Decode bisher nur von
+den Lloyd-Instanziierungen gelesen (kv_mode 4) — beide neuen Modi brauchen ihn, sonst sind die Arme
+**nicht mit `q4lm32w` vergleichbar** (das Fenster ist der Unterschied zwischen dem Produktarm und dem
+Bulk); (2) damit zusammen der CLI-Namen `q4u32z` und die Pools-Größe für den 20-Byte-Block im
+Runtime-Pfad (VRAM und Host-Pool).
+
+**Bis dahin gilt:** `--kv q4u32` ist erreichbar und **korrekt** (der Writer fitet die Stufe, der Leser
+ist q4_0's, das Layout ist identisch) — aber **ohne Fenster** (der fused Decode liest das Overlay nur
+in den Lloyd-Instanziierungen), also noch **nicht arm-vergleichbar**.
 
 **Alle sechs Arme in einem Lauf** (ein `quant_quality.py compare` gegen die fp16-Referenz), damit die
 gepaarten Differenzen vergleichbar sind — genau der Fehler, der in Abweichung 10 passiert ist.
