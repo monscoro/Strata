@@ -109,6 +109,82 @@ per-Block-Nullpunkt" gegen „lloyd16 + max", jeweils mit und ohne die per-Kanal
   Lloyd-Tabelle bleiben soll (und wenn der Prefill nicht compute-gebunden ist);
 - **(b) stückweise affine Zerlegung** — die aufwendigste, und ohne Beleg, dass sie sich lohnt.
 
+## 3b. Der Code beantwortet die Frage besser als die Literatur — und meine eigene „Affinitäts"-These war falsch
+
+**Was ich zuerst glaubte (und in der Leiter stand):** *„der Kern rechnet `Σ qᵢ·(code−8)` im
+Tensor-Core und wendet die Skala **danach** in FP32 an — eine nicht-affine Tabelle passt nicht."*
+**Was der Kernel tatsächlich tut** (`src/kernels/cuda/qsa_prompt_attn.cu`, der Pfad `KV_MODE 4`):
+
+```cpp
+for (int g = 0; g < NG; ++g) {              // die Skalengruppen (8 × 32 dims bei q4_0)
+    float tg[4] = {0.f, 0.f, 0.f, 0.f};
+    for (int kk = 0; kk < KPG; ++kk) {       // die 16-dim-MMA-Schritte der Gruppe
+        b[0] = i8x2_to_h2(...S.kv.k[...]);   // die Codes -> exakt fp16 (der Bit-Trick)
+        mma16816(tg, ah, b);                // die Produkte sammeln sich in der Gruppe
+    }
+    const float s0 = S.ks[cb + 2*tig][g];   // die GRUPPEN-Skala (32 Werte)
+    sc[0] = fmaf(tg[0], s0, sc[0]);          // -> nach der Gruppen-Partialsumme
+}
+```
+
+**Daraus folgt dreierlei, und es dreht die Fragestellung:**
+
+1. **Die Skala ist pro *Gruppe* (32 Werte) und wird nach der Gruppen-Partialsumme angewendet.** Der
+   Kernel unterstützt also **bereits** eine affine Karte, die **entlang der Head-Dimension variiert**.
+   Meine Affinitäts-These war falsch: es gibt keine „eine Skala für die ganze Zeile"-Beschränkung.
+2. **Der einzige fest verdrahtete Teil ist die *Wertabbildung* `code − 8`** (der `i8x2_to_h2`-Trick:
+   zwei Codes werden exakt in ein fp16x2 verpackt). Und **der Kernel sagt es selbst**:
+   *„Mode 4 could carry the level table the way it carries the int8 codes; **that is owed if a
+   level-table format ships**."* → **der Fast-Path für die Lloyd-Tabelle ist keine Affinitäts-Reparatur,
+   sondern ein Tabelleneintrag im Operandenbau:** `level[code]` statt `code − 8`. Die Level sind
+   kleine ganze Zahlen (±87) → **exakt in fp16** ✓, die Gruppenskala bleibt unverändert ✓.
+3. **Die „billige Abkürzung" (Weg 2, der affine Shear) ist damit noch billiger, als ich dachte:**
+   eine **pro Block affine Karte** (ein Nullpunkt je 32 Werte) lässt den Operanden einen affinen
+   Ausdruck des Codes bleiben — der Bit-Trick überlebt mit einem pro-Block-Konstanten — also
+   **kein Lookup, überhaupt keine Änderung am Operandenbau**. Der Preis ist rein qualitativ.
+
+### Die angewandte Mathematik dazu (der Hinweis des Nutzers)
+
+**Die Lloyd-Tabelle *ist* der optimale Compander.** Das ist eine alte, exakte Aussage: Max 1960,
+*„An optimal class of companding laws"*, und die Standardvorlesungen dazu (Stanford EE269,
+MIT 6.450): *„Companding: we can find a nonlinear scalar transformation to warp the signal axis so
+that optimal non-uniform bins become uniform bins … a uniform quantizer can be used as a universal
+quantizer … the quantizer based on this scalar quantizer also satisfies the Lloyd–Max
+conditions."* → **Die Lloyd-Level-Tabelle und der optimale Compander sind dasselbe Objekt.** Unsere
+Level-Tabelle ist also bereits die *nichtlineare* (pro Element) Lösung des Problems.
+
+**Und die Ingenieurs-Form davon sind die Shears:** μ-Law (logarithmisch) und A-Law
+(stückweise-linear, 8 Segmente) — die Standard-Compander der Telefonie; die anwendungsnahe
+Optimierung dieser Nichtlinearitäten ist eine eigene Literaturlinie (z. B. *„Designing of the
+piecewise linear optimal compander"*, Perić et al., KaunasTech/ITC 2013: die stückweise-lineare
+optimale Compander-Konstruktion für gaußförmige Quellen).
+
+**Die Randbedingung, die in der reinen Quantisierungstheorie keine Rolle spielt und die hier
+entscheidend ist:** **die Attention ist ein linearer Operator in den KV-Werten**
+(`scores = q·k` linear, `output = P·v` linear; nur der Softmax dazwischen ist nichtlinear). Also
+muss **jede elementweise Nichtlinearität vor der Summation invertiert werden** — ein Compander, der
+erst *nach* der Summe invertiert würde (wie im Telefonie-Signalpfad, wo der Empfänger am Ende
+expandiert), ist **für die Attention mathematisch falsch**: `γ⁻¹(Σ aᵢ·γ(vᵢ)) ≠ Σ aᵢ·vᵢ`, und auf der
+K-Seite ebenso (`q·γ(k) ≠ γ(q·k)`). **Deshalb ist der LUT-Weg (Operand = dequantisierter Wert)
+der einzige mathematisch zulässige**, und deshalb ist die Frage nicht „welche Nichtlinearität",
+sondern **„welche Nichtlinearität pro Element (⇒ Lookup) oder pro Block (⇒ frei)"**.
+
+**Damit ist die Entscheidungsfrage präzise und billig:**
+
+| | nichtlineare Karte | **pro Element** (Lookup) | **pro Block/Gruppe** (frei) |
+|---|---|---|---|
+| Operandenbau | `level[code]` | Lookup (16 Einträge, exakt in fp16) | `code − z_b` (der Bit-Trick mit einer pro-Block-Konstanten) |
+| Fast-Path-Kosten | ein Lookup je Element (FLUTE/AMD: Pair-LUT, SoA) | **keine** | **keine** |
+| Qualität | die Lloyd-Tabelle (unser Anker) | der Preis des Uniformitäts-Verlusts | **im Block-Harness messbar** |
+
+**Und der philosophische Punkt:** Unsere Lloyd-Tabelle ist der *optimale Compander* für N(0,1) —
+also die beste nichtlineare Karte. Die Frage „welche affine Näherung stellt den nichtlinearen
+Quantisierungsfall ausreichend gut affin dar" (die Formulierung des Nutzers) ist damit genau die
+Frage: **wie viel vom Lloyd-Max-Vorteil bleibt, wenn die Karte auf eine pro-Block affine Karte
+beschränkt wird?** Das ist eine **Block-MSE-Frage** und damit eine **Host-Frage ohne Kernel**
+(`tools/kv_codec_mse.py`: „uniform + per-Block-Nullpunkt" gegen „lloyd16 + max", je mit und ohne
+die per-Kanal-Kalibrierung).
+
 ## 4. RDNA4: die Matrix-Core-Achse ist **nicht** unser Fast-Path — und die Community misst sie uneinheitlich
 
 ### 4a. Unsere eigene Messung (der Kern)
