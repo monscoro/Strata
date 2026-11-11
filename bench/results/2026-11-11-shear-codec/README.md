@@ -259,3 +259,43 @@ genau (o, s) geschaetzt werden.
 kreisfoermigen Mittel der Residuen) ist in meiner Fassung DIVERGIERT** (1,884852e-02, also 3 dB
 schlechter als die Lloyd-Tabelle) -- sie ist damit **nicht** die gesuchte Entlastung. Die
 LS-Iteration mit der richtigen Initialisierung (das Gitter deckt den Block) ist es.
+
+## Die Entscheidung, die ein **Stellrad** ist: der Durchlauf-Zaehler
+
+**Der Fit kostet, und der Preis ist abstellbar.** Die Entscheidung ist deshalb **keine Festlegung,
+sondern ein benanntes Stellrad mit Protokoll** — der Zaehler steht an **einer** Stelle im Code
+(`kShearPasses`, ein benannter Wert in `kv_q4.hpp`), und jede Stellung ist **vor** dem GPU-Lauf
+gegen das Harness gemessen.
+
+| Stellung | Reduktionen | Shuffles je Block | Block-MSE (K) | gegen die Lloyd-Tabelle | der Preis gegen die Referenz |
+|---|---:|---:|---:|---:|---|
+| 6 Durchlaeufe (**die Referenz**, definiert den Gate-Wert G1) | 19 | 95 | 8,795968e-03 | +1,120 dB | — |
+| 4 Durchlaeufe | 13 | 65 | 8,841831e-03 | +1,098 dB | 0,022 dB |
+| **2 Durchlaeufe (die Voreinstellung)** | **7** | **35** | **9,076392e-03** | **+0,984 dB** | **0,136 dB** |
+| 1 Durchlauf | 4 | 20 | 9,438023e-03 | +0,814 dB | 0,306 dB |
+| 0 Durchlaeufe (nur die Spannweite) | 2 | 10 | 1,031334e-02 | +0,429 dB | 0,691 dB |
+
+**Die Voreinstellung ist 2 Durchlaeufe**, aus zwei Gruenden:
+1. **der Preis gegen die Referenz liegt unter der Aufloesung des Korpus** — 0,136 dB Block sind rund
+   0,0006 nats End-to-End, und die kleinste messbare gepaarte Differenz auf 128K ist 0,00254 nats.
+   **Der Verzicht auf vier Durchlaeufe ist also end-to-end nicht unterscheidbar** — er kostet nichts,
+   was der Arm zeigen koennte;
+2. **der Writer-Preis** (Gate G6): 35 Shuffles je Block gegen 15 heute sind rund 2,3x, bei 95 (sechs
+   Durchlaeufe) waeren es 6,3x. Das Gate (Vorschlag: die Prompt-Lesedauer des Shear-Arms hoechstens
+   1,25x des Produktarms) ist bei zwei Durchlaeufen mit Abstand zu erreichen und bei sechs vermutlich
+   nicht.
+
+**Die Regel, nach der nachgestellt wird** (sie steht hier, damit sie nicht spaeter ad hoc geaendert
+wird):
+- **Nach oben**, wenn das Gate G6 (der Writer-Preis) mit Reserve passiert **und** der End-to-End-Arm
+  eine Wirkung zeigt, die an der Aufloesungsgrenze liegt: der Zaehler geht auf 4 (0,022 dB Block,
+  65 Shuffles) — mehr als 4 bringt messbar nichts (0,022 dB sind 0,0001 nats).
+- **Nach unten**, wenn das Gate G6 (der Writer-Preis) nicht passiert: auf 1 oder 0. Der Preis ist
+  bekannt (0,306 dB bzw. 0,691 dB Block, rund 0,0014 bzw. 0,0030 nats End-to-End) und **vor** dem
+  Arm zu nennen, damit die Aenderung nicht hinterher kommt.
+- **Nie** ohne neue Harness-Messung: der Wert des Zaehlers ist **die** Zahl, die G1 prueft.
+
+**Und was das ueber die Regelung des Zaehlers hinaus bedeutet:** der Nullpunkt ist **kein
+Produktformat**, sondern eine **Messgroesse**, bis der Arm eine Wirkung zeigt. Seine Form
+(Gitter [o, o+15s], die Konstante c = o + 8s) ist stabil; **nur die Genauigkeit der Schaetzung ist
+verhandelbar** — und das ist der Unterschied zwischen einem Produktpfad und einem Messarm.
