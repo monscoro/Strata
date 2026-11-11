@@ -3,6 +3,10 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.13 2026-11-11  the earlier 1.9 dB reading of the block measurement is withdrawn:
+%                     neither of the harness's two centering modes reproduces that column,
+%                     so its provenance is unknown and the number is not quoted as a
+%                     measurement any more
 %   v0.12 2026-11-11  our own numerical study of the rotation's bias enters the
 %                     references and the literature section: two in-repo items (the
 %                     bias-origin measurement with the yardstick's own drift, and the
@@ -130,7 +134,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.12, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.13, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -145,7 +149,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.12 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.13 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -388,7 +392,7 @@ The predecessor's measurements answer, partially, where the remaining error live
 
 \paragraph{2K is saturated.} The window is already indistinguishable from \texttt{int8} at 2K ($t{=}-1.92$, window ahead in 2 of 8 segments). A target statistic that no arm can fail is not a test; 2K is reported, not used.
 
-\paragraph{A fixed per-channel offset rides along with the rotation.} The channel statistics measured before and after the transform (the S2 probe of 2026-10-27, in-repo) carry a mean that the plan had not read yet. The standardized channel mean $|\mathrm{mean}|/\mathrm{sd}$ has median 0.2673 before the transform and 0.2825 after it, against 0.0044 as the sampling expectation at this token count: the offset is real, and the transform does not remove it --- it turns a fixed per-channel offset into a fixed bias in every rotated coordinate, because the same offsets add up with the Hadamard signs. The offsets are channel-specific rather than a common mode (the mean of the channel means is 0.007 to 0.068 of the typical channel standard deviation, layer by layer). This matters here because the block scale is a maximum statistic, $d = \mathrm{amax}/l_{\max}$, with $\mathrm{amax}$ the shuffle maximum over the 32 values of a block: a fixed bias inflates that maximum, and the inflation is paid in resolution by every value of the block. Centering the keys before the transform is exactly preserving --- $\langle q, m\rangle$ shifts every logit of one query by the same constant, so the softmax does not move, and centering the values shifts the output by $m$, because the attention weights sum to one --- and it is the lever the 2026 literature opens\,\cite{optr}. From the moments alone the block scale looks 15\% to 30\% too large, which would be one to two decibels of mean-squared error; measured on the engine's own cells, with the offsets the engine itself uses, the effect is 0.17\,dB on the key side and 0.36\,dB on the value side --- an order of magnitude less than the estimate from the moments, and the reason a plan should measure the estimate. (An earlier reading of this measurement reported 1.9\,dB; that number came from a probe variant whose offsets belong to a different sample and to the key side only, and it does not describe the correction the engine applies\,\cite{strata-codec}.) The offset is stable across a second text and a second length (correlation 0.9489, mean deviation 0.0799\,sd), so the table it needs is a per-model artifact rather than a per-run one.
+\paragraph{A fixed per-channel offset rides along with the rotation.} The channel statistics measured before and after the transform (the S2 probe of 2026-10-27, in-repo) carry a mean that the plan had not read yet. The standardized channel mean $|\mathrm{mean}|/\mathrm{sd}$ has median 0.2673 before the transform and 0.2825 after it, against 0.0044 as the sampling expectation at this token count: the offset is real, and the transform does not remove it --- it turns a fixed per-channel offset into a fixed bias in every rotated coordinate, because the same offsets add up with the Hadamard signs. The offsets are channel-specific rather than a common mode (the mean of the channel means is 0.007 to 0.068 of the typical channel standard deviation, layer by layer). This matters here because the block scale is a maximum statistic, $d = \mathrm{amax}/l_{\max}$, with $\mathrm{amax}$ the shuffle maximum over the 32 values of a block: a fixed bias inflates that maximum, and the inflation is paid in resolution by every value of the block. Centering the keys before the transform is exactly preserving --- $\langle q, m\rangle$ shifts every logit of one query by the same constant, so the softmax does not move, and centering the values shifts the output by $m$, because the attention weights sum to one --- and it is the lever the 2026 literature opens\,\cite{optr}. From the moments alone the block scale looks 15\% to 30\% too large, which would be one to two decibels of mean-squared error; measured on the engine's own cells, with the offsets the engine itself uses, the effect is 0.17\,dB on the key side and 0.36\,dB on the value side --- an order of magnitude less than the estimate from the moments, and the reason a plan should measure the estimate. (An earlier reading of this measurement reported 1.9\,dB. That column is **not reproducible**: neither of the harness's two centering modes produces it, so its provenance could not be established and the number is withdrawn\,\cite{strata-codec}. The end-to-end numbers of this paper come from the engine and are unaffected.) The offset is stable across a second text and a second length (correlation 0.9489, mean deviation 0.0799\,sd), so the table it needs is a per-model artifact rather than a per-run one.
 
 \paragraph{Where the bias comes from: the data, not the transform.} A fixed per-channel offset is a fixed vector in the transform space, and an exactly orthogonal transform maps it back exactly --- so a bias that *vanished* under the back-transformation could only be an artifact of the transform's arithmetic, not of the data. The two halves of that question are measured separately here: the channel probe measures the key means \emph{before} the rotation, and the cell dump holds the \emph{rotated} rows, so un-rotating the dump's mean and comparing it with the probe's is a direct test. It comes out at a ratio of **1.000** in every layer and every head: the bias in the transform space is exactly the image of a real bias in the channel space, and the round trip $H(H(y)) - y$ is exactly zero on the dumped cells. The bias is the data's\,\cite{strata-bias}.
 

@@ -30,11 +30,11 @@ TWO CENTERING MODES, AND THEY DO NOT AGREE (read this before quoting a number):
                 so this mode subtracts the key offsets from the value rows as well.  It is the
                 naive variant and it does NOT describe the engine.
 
-The C1 table of the campaign was computed with the second mode, which is why it reported
-1.9-2.6 dB for the centering.  Measured with the first mode (the engine's own table) the
-centering is worth 0.17 dB on the key side and 0.36 dB on the value side - see
-tools/kv_center_attrib.py for the per-layer, per-side breakdown.  Quote the mode with the
-number.
+Measured on the full dump of 2026-11-10: --center gives -0.17 dB on the key side and -0.36 dB on
+the value side (tools/kv_center_attrib.py for the per-layer, per-side breakdown), and
+--center-s2 gives about -0.07 dB combined (it helps the keys and hurts the values).  The
+campaign's C1 table reported -1.9 dB for the centering; **neither mode reproduces that column**,
+so its provenance is unknown and the number is withdrawn.  Quote the mode with the number.
 """
 import argparse
 import math
