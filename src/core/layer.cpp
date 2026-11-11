@@ -304,6 +304,10 @@ bool qsa_kv_q4() { return g_kv_q4; }
 void qsa_set_kv_q4_layer(int layer) { g_kv_q4_layer = layer; }
 void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
     g_kv_q4_mode = mode;
+    // the shear's block carries the constant as well (20 bytes); every shipped mode keeps 18
+    strata::kernels::g_kv_q4_block_bytes =
+        (mode == strata::kernels::Q4Mode::kShear) ? sizeof(strata::kernels::block_q4_0z)
+                                                    : sizeof(strata::kernels::block_q4_0);
     g_kv_q4 = g_kv_q4 || (mode != strata::kernels::Q4Mode::kUniform);
     kv_q4_mask_parse();
     // Window overlay (kv_q4.hpp), orthogonal to the level table: `--kv q4lm32w` (kLloydWin) is the overlay on
