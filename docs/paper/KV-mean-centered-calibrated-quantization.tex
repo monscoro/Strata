@@ -3,6 +3,12 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.16 2026-11-11  L5 (the selection-following pool) placed next to what the code
+%                     allows: the exact twin exists only at write time and the row is
+%                     positional, so a selection-following pool must predict the selection;
+%                     what decides it is a counter, not a kernel (the union's growth
+%                     against the pool's capacity, and whether the heavy positions are
+%                     read at all)
 %   v0.15 2026-11-11  the 128K measurement: the 4K tie does not survive.  The product
 %                     arm (16/16 + window) is +0.00741 nats behind int8 on the first
 %                     128K text (t = +4.80), wider on the p99, and the gap grows with
@@ -146,7 +152,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.15, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.16, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -161,7 +167,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.15 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.16 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -465,6 +471,8 @@ L6 residual correction & a low-rank or sparse residual on the 4-bit bulk (GEAR f
 \end{table*}
 
 \paragraph{L1 and L2: the code inside the block.} The 4-bit block holds K at 16 levels and V at 8. Giving V 16 levels costs no bytes and is the cheapest quality experiment in the plan; a tie kills it, and a tie is the likely outcome given that the predecessor's K-versus-V contrast did not support an asymmetry. A different 16-level table (L2) is the same experiment with a different codebook and the same kill. Neither touches the byte budget, which is why they come first: if the bulk cannot be improved inside 4 bits, the plan's remaining levers all cost bytes. The block-level measurement of this paper answers the first half of the question: the 8-level value ladder is a measurement probe --- a 3-bit codebook inside 4-bit bytes --- so it saves no byte, and it costs 1.10\,dB of block error against the 16-level ladder. The product codec therefore carries 16 levels on both sides, which makes ``give V 16 levels'' a correction to the shipped mode rather than an experiment; the open part of L2 is the codebook itself. The engine agrees with the block measurement, and the agreement is larger than the block measurement alone would have suggested: against the shipped window arm the 16/16 codec is $+0.00400$ nats better (per-position $[+0.00138, +0.00663]$, $t = +2.99$), and it reaches \texttt{int8}'s level (Section~\ref{sec:target}). The runtime belongs to the same paragraph, because it is the price of the level table as such and not of the 8-level variant: the level table is what the prompt fast path declines (Section~\ref{sec:target}), and the arm pays 2.25$\times$ the prompt read time for it (Table~\ref{tab:runtime}). The decision taken here is quality first --- the table stays, the fast path for it is a separate project --- but the price is named, because a plan that hides it cannot be weighed.
+
+\paragraph{L5: the selection-following pool, and why it is not a build but a count.} The overlay's ring is positional: the exact twin of a cell is written when the cell is written, and it lands in the row the position dictates, while the indexer's selection --- which cells the attention actually reads --- is only known afterwards, when the cell already sits quantized in the bulk. A pool that followed the selection would therefore have to \emph{predict} it at write time, and its exactness promise would become a promise about a guess rather than about a rule. Two measurements decide whether that is worth anything at all, and both are counters rather than kernels: how fast the union of the selections grows (the pool holds 4,096 cells, the ring's price at 0.50 bit per cell), and whether the positions that carry the 128K error are among the selections at all --- the heavy positions are the occurrences of the most frequent coded word, spread over the whole text, and a pool cannot protect what the indexer never reads. The predecessor's own counter says the positional ring covers 8.55\,\% of the selections, so 91.45\,\% of the reads are 4-bit today; if the union of the selections outgrows the pool, or if the heavy positions are not read, the lever is closed arithmetically and the 5.0-bit mark stays what it is --- a byte question about the ring's tier, not a quality question about its contents.
 
 \paragraph{L3: the channel axis before the rotation.} The writer quantizes after the Walsh--Hadamard, which mixes the 64 rotated with the 192 unrotated dimensions. KIVI's per-channel key quantization assumes channels survive to the quantizer\,\cite{kivi}; here they do not, unless the scale is applied before the transform. The lever is a per-channel scale on the K half before the transform, at 0.06 bit/cell. Its gate is a measurement, not an argument: the second moments of the K channels before and after the transform, split into the two slices. If the pre-rotation channels are not the heavier tail, the lever is not built. Per-channel scales after the transform are not this lever --- the transform has already mixed the channels. The gate ran on 2026-10-27 and killed the tail half: the pre-rotation channels are not the heavier tail (mean excess kurtosis $-0.18$ before against $-0.14$ after, mean crest 3.72 before against 3.93 after), so a per-channel \emph{scale} is not built. The same probe carries a mean the plan had not read, and that half is not killed: the standardized channel mean is 0.2673 (median) against a sampling expectation of 0.0044, and the transform spreads it into a fixed bias (Section~\ref{sec:error}). A per-channel \emph{offset} before the transform is therefore the surviving form of this axis --- exact, cheap, and measurable in the block harness before anything is built. It has since been built and measured (Section~\ref{sec:target}): 0.17\,dB of block error on the key side and 0.36\,dB on the value side, and end to end $+0.00677$ nats on the plain 4-bit arm (the window arm from $+0.00402$ to $+0.00184$ against \texttt{int8}, no longer significant) --- but nothing on the 16-level-on-both-sides codec, where the level table has already recovered the range. Its price is a calibrated table (3,072 values per side, 12\,KB per model), a basis discipline (a snapshot of a centered state must not restore into an uncentered one) and a second, still open, question: whether the offsets hold at 128K on texts they were not calibrated on.
 
