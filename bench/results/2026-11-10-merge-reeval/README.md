@@ -1,9 +1,21 @@
 # A/B/C/D — Re-Evaluation nach dem Upstream-Merge: Kontrollexperiment, Re-Baseline, Speed, Docs
 
-**Status: vorregistriert (2026-11-10), kein Arm gelaufen.** Kein Lauf dieser Kampagne durfte vor
-diesem Dokument starten; Stufe A startet erst danach. Die Regeln je Stufe stehen vor dem Lauf und
-werden nicht nachträglich ergänzt — Abweichungen werden unter „Abweichungen und Grenzen“ offen
-genannt, nicht stillschweigend geändert.
+**Status: vorregistriert (2026-11-10); die Stufen A–C sind gelaufen, D läuft.** Kein Lauf dieser
+Kampagne durfte vor diesem Dokument starten; Stufe A startet erst danach. Die Regeln je Stufe
+standen vor dem Lauf und werden nicht nachträglich ergänzt — Abweichungen werden unter
+„Abweichungen und Grenzen“ offen genannt, nicht stillschweigend geändert.
+
+**Wo die Ergebnisse stehen:** das **Laufprotokoll** (außerhalb des Repos:
+`C:\Users\krone\git\Strata-data\bench\2026-11-10-merge-reeval\protocol.md`) mit allen Zahlen,
+allen Gattern und allen Abweichungen 1–11; die **Ergebnisse in den Dokumenten**: das Paper
+`docs/paper/KV-mean-centered-calibrated-quantization.tex` (v0.10), das Fenster-Blatt
+`docs/paper/KV-Window-Hardening.tex` (v1.11), die Leiter `docs/paper/Ansatz_Improvements.md`
+(A2, A6, K1) und das Miniprojekt-Dokument `bench/results/2026-11-10-centering/README.md`
+(C0–C4, D1). **Kurzfassung der Befunde:** der `int8`-Pfad ist byte-identisch; die cwe-4k-Zahlen
+des Vorgängers gelten auf dem Merge unverändert; der **Produktcodec ist 16/16 + Fenster ohne
+Kalibrierung** (auf `int8`-Niveau: +0,00002 nats, t = −0,02); das Centering ist ein **Ersatz** für
+den Level-Split, kein Zusatz; die Zeitmessungen der Kampagne sind zurückgezogen und durch eine
+saubere Nachmessung ersetzt.
 
 Katalogzeile: `docs/paper/Ansatz_Improvements.md` §1/§7 — die „Anker (heute)“ der Leiter (K1–K3)
 und jede Zahl in §1 sind Messungen des Port-Builds **0.1.47**. Diese Kampagne setzt sie auf den
