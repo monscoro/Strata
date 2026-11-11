@@ -484,13 +484,15 @@ The window's successor has a precise job: store at most 5.0 bit/cell --- 39\% be
 
 The plan's most likely outcomes are a negative result and a 6.0-bit fallback, in that order. That is not a weakness of the plan; it is what a pre-registered target looks like before the data exist. If the \texttt{int8} ring plus a better bulk reaches 5.0, the window is not improved but replaced: the same 128K context would cost about 960\,MiB instead of 1,584, with no statistic behind \texttt{int8}. If it does not, the negative result is the deliverable, and the shipped window stays the honest memory point at 5.29.
 
+\paragraph{The state after the first ladder step.} One measurement is in, and it decides the codec. The 16-levels-on-both-sides codec with the exact-cell window reaches \texttt{int8}'s level on cwe-4k (paired $+0.00002$ nats, $t = -0.02$), while the shipped 8-level-value probe is $+0.00402$ behind, and the level split is worth $+0.00400$ nats against it (per-position $[+0.00138, +0.00663]$, $t = +2.99$). The per-channel offset --- the lever this paper is named after --- turns out to be a \emph{substitute} for the level table rather than an addition to it: $+0.00677$ nats on the coarse probe, $+0.00218$ with the window (not significant), and nothing on the 16/16 codec. The product reading is therefore the 16/16 codec with the window and without the calibration: no per-model artifact, no basis discipline in the snapshot, no extra runtime, and a prompt read that the window does not slow down. What the plan still owes is the 128K evidence on both texts --- and there the p99, the one statistic on which the calibration was nominally ahead, is a criterion of its own and has to be tested with the same paired tools.
+
 \begin{thebibliography}{31}
 \setlength{\itemsep}{0pt}\footnotesize\raggedright
 
 \bibitem{kvwin}
 M.~Kronenberger.
 \emph{Hardening the Exact-Cell KV Window for} \texttt{-{}-kv q4lm8v}\emph{: Design, Decisions, and a Measurement-First Validation}.
-In-repo, \texttt{docs/paper/KV-Window-Hardening.pdf}, version 1.6, 2026-10-25.
+In-repo, \texttt{docs/paper/KV-Window-Hardening.pdf}, version 1.11, 2026-11-11.
 
 \bibitem{ansatz}
 M.~Kronenberger.
