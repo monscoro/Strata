@@ -54,7 +54,7 @@ def main():
     print(f"tail: {tail_n} positions ({args.tail:.1%}), the ones where int8's KL is largest\n")
 
     print(f"{'arm':>6} {'mean KL':>10} {'p99':>9} {'top1 vs fp16':>13} | "
-          f"{'tail mean KL':>13} {'Δ vs int8 (tail)':>18} {'t':>7} {'95 % CI':>22}")
+          f"{'tail mean KL':>13} {'d vs int8 (tail)':>18} {'t':>7} {'95 % CI':>22}")
     print("-" * 112)
     for name in ("int8", "A", "B"):
         s = series[name]
@@ -89,10 +89,11 @@ def main():
     print(f"top-1, A against B over the same positions: A right where B wrong: {a_only}, "
           f"B right where A wrong: {b_only}")
     if a_only + b_only:
-        # exact binomial two-sided (McNemar)
+        # exact binomial two-sided (McNemar), computed with integers so that a large n does not overflow
         nn = a_only + b_only
         k = min(a_only, b_only)
-        p = min(1.0, 2.0 * sum(math.comb(nn, i) for i in range(k + 1)) / (2.0 ** nn))
+        tail = sum(math.comb(nn, i) for i in range(k + 1))
+        p = min(1.0, (2 * tail) / (2 ** nn))
         print(f"  exact McNemar (two-sided): p = {p:.4f}  (n = {nn} discordant of {len(both)} positions)")
     else:
         print("  no discordant positions")

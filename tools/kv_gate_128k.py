@@ -76,7 +76,7 @@ def main():
         stats[name] = kl_stats(ref, r, args.kl_topk)
 
     print(f"=== {args.label}: K2 (whole segment) and K3 (p99) against int8, fp16 as the reference ===")
-    print(f"{'arm':>12} {'mean KL':>10} {'p99':>9} {'top-1':>9} | {'Δ vs int8 (mean)':>16} {'t':>7} "
+    print(f"{'arm':>12} {'mean KL':>10} {'p99':>9} {'top-1':>9} | {'d vs int8 (mean)':>16} {'t':>7} "
           f"{'95 % CI':>22} | {'K2':>4} {'K3':>4}")
     print("-" * 116)
     verdict = {}
@@ -107,7 +107,7 @@ def main():
     for name in stats:
         s = stats[name][0]
         tm = sum(s[k] for k in tail) / len(tail)
-        print(f"  {name:>12} mean KL {tm:9.5f}   Δ vs int8 {tm - sum(stats['int8'][0][k] for k in tail)/len(tail):+.5f}")
+        print(f"  {name:>12} mean KL {tm:9.5f}   d vs int8 {tm - sum(stats['int8'][0][k] for k in tail)/len(tail):+.5f}")
 
     if "arm+center" in stats:
         a, b = stats["arm"][0], stats["arm+center"][0]
@@ -125,7 +125,8 @@ def main():
         nn = a_only + b_only
         if nn:
             k = min(a_only, b_only)
-            p = min(1.0, 2.0 * sum(math.comb(nn, i) for i in range(k + 1)) / (2.0 ** nn))
+            tail = sum(math.comb(nn, i) for i in range(k + 1))
+            p = min(1.0, (2 * tail) / (2 ** nn))
             print()
             print(f"top-1, arm against arm+center: arm right where arm+center wrong: {a_only}, "
                   f"the other way: {b_only}  ->  exact McNemar p = {p:.4f}")

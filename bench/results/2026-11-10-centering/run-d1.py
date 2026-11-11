@@ -21,6 +21,7 @@ paper), and the verify-window launch switch that every campaign arm used.
 """
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
