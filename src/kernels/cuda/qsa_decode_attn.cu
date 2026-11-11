@@ -121,6 +121,8 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
         if (value) load8_q4<false>(p, value, row, d0, out);
         else load8_q8(p, value, row, d0, out);
     } else if constexpr (KV_MODE == 4) load8_q4<true>(p, value, row, d0, out);   // q4lm32
+    else if constexpr (KV_MODE == 5) load8_q4<false, true>(p, value, row, d0, out);   // q4u32z: the shear
+    else if constexpr (KV_MODE == 6) load8_q4<false, false>(p, value, row, d0, out);  // q4u32: uniform, fitted step
     else load8_q4<false>(p, value, row, d0, out);
 }
 
@@ -203,7 +205,7 @@ __device__ __forceinline__ int reduce12_head_of_lane(int lane) {
 // only for a q4-**Lloyd** state, and `qsa_set_kv_q4_mode` refuses `STRATA_KV_WINDOW=1` on a plain q4_0 arm (which
 // maps to kv_mode 2 and would have been read by the q4 gather but silently ignored here). No arm gets a pool that
 // this kernel does not read.
-template <int KV_MODE, bool WIN = (KV_MODE == 4)>
+template <int KV_MODE, bool WIN = (KV_MODE >= 4)>
 struct WinRows {
     long long row[CHUNK];
     __device__ __forceinline__ long long operator[](int c) const { return row[c]; }
@@ -382,15 +384,24 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
             if (swin[c] >= 0) {   // WP-2a window: exact fp16 (also when the quantized block is not resident)
                 v = __half2float(__ushort_as_half(p.v_win[swin[c] * HD + t]));
             } else {
-            constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
+            constexpr int bytes_per_head = (HD / QK4_0) * (KV_MODE == 5 ? (int) sizeof(block_q4_0z) : (int) sizeof(block_q4_0));
             const int b = t / QK4_0;
             const int rem = t % QK4_0;
-            const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + srow[c] * bytes_per_head) + b;
-            const float d = __half2float(__ushort_as_half(blk->d));
             const int j = rem < 16 ? rem : (rem - 16);
-            const uint8_t byte = blk->qs[j];
-            const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
-            v = (KV_MODE == 4 ? (float) q4l_map_v(p.q4_mode)[n] : (float) (n - 8)) * d;
+            if constexpr (KV_MODE == 5) {   // the shear: the block carries the constant
+                const block_q4_0z* blk = reinterpret_cast<const block_q4_0z*>(p.v_q4 + srow[c] * bytes_per_head) + b;
+                const float d = __half2float(__ushort_as_half(blk->d));
+                const float c = __half2float(__ushort_as_half(blk->c));
+                const uint8_t byte = blk->qs[j];
+                const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
+                v = (float) (n - 8) * d + c;
+            } else {
+                const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + srow[c] * bytes_per_head) + b;
+                const float d = __half2float(__ushort_as_half(blk->d));
+                const uint8_t byte = blk->qs[j];
+                const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
+                v = (KV_MODE == 4 ? (float) q4l_map_v(p.q4_mode)[n] : (float) (n - 8)) * d;
+            }
             }
         }
 #pragma unroll
@@ -638,12 +649,20 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
         const float sc = __half2float(__ushort_as_half(p.v_scale[row * (HD / KV_Q8_GROUP) + d / KV_Q8_GROUP]));
         return (float) p.v_q[row * HD + d] * sc;
     } else {   // modes 2, 3, 4: V is rotated Q4_0 (or q4lm32, mode 4, kv_q4.hpp); the caller rotates it back
-        constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
+        constexpr int bytes_per_head = (HD / QK4_0) * (KV_MODE == 5 ? (int) sizeof(block_q4_0z) : (int) sizeof(block_q4_0));
         const int b = d / QK4_0;
         const int rem = d % QK4_0;
+        const int j = rem < 16 ? rem : (rem - 16);
+        if constexpr (KV_MODE == 5) {   // the shear: the block carries the constant
+            const block_q4_0z* blk = reinterpret_cast<const block_q4_0z*>(p.v_q4 + row * bytes_per_head) + b;
+            const float dd = __half2float(__ushort_as_half(blk->d));
+            const float cc = __half2float(__ushort_as_half(blk->c));
+            const uint8_t byte = blk->qs[j];
+            const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
+            return (float) (n - 8) * dd + cc;
+        }
         const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + row * bytes_per_head) + b;
         const float dd = __half2float(__ushort_as_half(blk->d));
-        const int j = rem < 16 ? rem : (rem - 16);
         const uint8_t byte = blk->qs[j];
         const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
         return (KV_MODE == 4 ? (float) q4l_map_v(p.q4_mode)[n] : (float) (n - 8)) * dd;
@@ -1042,7 +1061,7 @@ bool lane_cell_attn() {
 
 // 0 fp16, 1 int8, 2 q4_0, 3 int8 K with q4_0 V, 4 q4lm32/q4lm32s (the Q4_0 blocks with Lloyd levels)
 int attn_kv_mode(const QsaAttnPools& p) {
-    return p.k_q4 != nullptr ? (q4_lloyd(p.q4_mode) ? 4 : 2)
+    return p.k_q4 != nullptr ? (q4_shear(p.q4_mode) ? 5 : (q4_uniform_ls(p.q4_mode) ? 6 : (q4_lloyd(p.q4_mode) ? 4 : 2)))
                              : (p.k_q != nullptr && p.v_q4 != nullptr ? 3 : (p.k_q != nullptr ? 1 : 0));
 }
 
@@ -1071,7 +1090,7 @@ void launch_merge(int v2, const float* part_acc, const float* part_m, const floa
 // kernel where it is built (the parity harness: never the environment).
 void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                          int64_t cap, const QsaShapes& s, float* scratch, int64_t n_q, cudaStream_t st, int kernel) {
-    const int kv_mode = pools.k_q4 != nullptr ? (q4_lloyd(pools.q4_mode) ? 4 : 2)
+    const int kv_mode = pools.k_q4 != nullptr ? (q4_shear(pools.q4_mode) ? 5 : (q4_uniform_ls(pools.q4_mode) ? 6 : (q4_lloyd(pools.q4_mode) ? 4 : 2)))
                         : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3 : (pools.k_q != nullptr ? 1 : 0));
     const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
     // per query: [acc: n_chunks*n_head*HD][m: n_chunks*n_head][l: n_chunks*n_head], all offsets from one stride
@@ -1102,7 +1121,9 @@ void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_
 #endif
 #define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (lane_cell) {
-        if (kv_mode == 4) STRATA_ATTN_LC(4);
+        if (kv_mode == 6) STRATA_ATTN_LC(6);      // q4u32: the uniform grid, the step fitted per block
+        else if (kv_mode == 5) STRATA_ATTN_LC(5);  // q4u32z: the shear
+        else if (kv_mode == 4) STRATA_ATTN_LC(4);
         else if (kv_mode == 3) STRATA_ATTN_LC(3);
         else if (kv_mode == 2) STRATA_ATTN_LC(2);
         else if (kv_mode == 1) STRATA_ATTN_LC(1);
@@ -1320,7 +1341,7 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const int kv_mode = pools.k_q4 != nullptr ? (q4_lloyd(pools.q4_mode) ? 4 : 2)
+    const int kv_mode = pools.k_q4 != nullptr ? (q4_shear(pools.q4_mode) ? 5 : (q4_uniform_ls(pools.q4_mode) ? 6 : (q4_lloyd(pools.q4_mode) ? 4 : 2)))
                         : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3 : (pools.k_q != nullptr ? 1 : 0));
     if (kv_mode == 3 ? (!pools.k_scale || !pools.v_q4)
                      : ((kv_mode == 2 || kv_mode == 4)

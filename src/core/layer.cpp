@@ -251,7 +251,10 @@ bool g_kv_win_frozen = false;
 /// decode ignores the window while the gather would honour it - so a pool is never attached there, see the
 /// loud refusal in `qsa_set_kv_q4_mode`), with at least one exact cell.
 bool qsa_win_wanted() {
-    return g_kv_win && g_kv_q4 && strata::kernels::q4_lloyd(g_kv_q4_mode) && g_kv_win_s + g_kv_win_r > 0;
+    return g_kv_win && g_kv_q4 &&
+           (strata::kernels::q4_lloyd(g_kv_q4_mode) || strata::kernels::q4_shear(g_kv_q4_mode) ||
+            strata::kernels::q4_uniform_ls(g_kv_q4_mode)) &&
+           g_kv_win_s + g_kv_win_r > 0;
 }
 /// Recent ring rows: S exact recent cells, plus B rows so that one append batch's whole window span
 /// [pos0 - S, pos0 + B) is resident at once (every query of a batch has its own horizon - see qsa_kv_win_b).
@@ -318,7 +321,8 @@ void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
     // grid is zeroed so a reader that only checks the counts sees none.
     const char* ew = std::getenv("STRATA_KV_WINDOW");
     g_kv_win = mode == strata::kernels::Q4Mode::kLloydWin || (ew != nullptr && ew[0] == '1');
-    if (g_kv_win && !strata::kernels::q4_lloyd(mode)) {
+    if (g_kv_win && !strata::kernels::q4_lloyd(mode) && !strata::kernels::q4_shear(mode) &&
+        !strata::kernels::q4_uniform_ls(mode)) {
         // K1: the fused decode reads a window only in its Lloyd instantiations (kv_mode 4); a plain q4_0 state
         // maps to kv_mode 2 and would get a pool the fused path ignores and the q4 gather honours. That is an
         // inconsistent state, so it is refused loudly instead of silently half-applied.

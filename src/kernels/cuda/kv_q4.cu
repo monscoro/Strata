@@ -210,13 +210,15 @@ __device__ __forceinline__ uint16_t q4u_group(float x, uint8_t& byte, float& c_o
         constexpr float n = 32.0f;
         const float cm = sc / n;                  // mean(code)
         const float xm = sx / n;                  // mean(x)
-        const float den = sc2 - n * cm * cm;      // sum((code - cm)^2)
-        const float num = scx - n * cm * xm;      // sum((code - cm)*(x - xm))
+        // the products are rounded separately (no FMA): the host reference and the harness do
+        // the same, so the parity test can compare bitwise and the toolchain cannot move it
+        const float den = sc2 - __fmul_rn(n * cm, cm);   // sum((code - cm)^2)
+        const float num = scx - __fmul_rn(n * cm, xm);   // sum((code - cm)*(x - xm))
         if (den > 0.0f) {
             const float s_new = num / den;
             if (s_new > 0.0f) s = s_new;          // the step stays positive: the grid's direction
         }
-        off = xm - s * cm;                        // the grid's left end, at the least-squares offset
+        off = xm - __fmul_rn(s, cm);               // the grid's left end, at the least-squares offset
     }
     const float inv = 1.0f / s;
     int code = (int) rintf((x - off) * inv);
@@ -224,7 +226,7 @@ __device__ __forceinline__ uint16_t q4u_group(float x, uint8_t& byte, float& c_o
     const uint8_t kc = (uint8_t) code;
     const uint8_t khi = __shfl_down_sync(0xffffffffu, kc, 16);
     byte = (uint8_t) (kc | (khi << 4));
-    c_out = off + 8.0f * s;                       // the constant the reader adds
+    c_out = off + __fmul_rn(8.0f, s);             // the constant the reader adds (no FMA)
     return f16_from_f32(s);
 }
 
@@ -571,6 +573,8 @@ void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table,
     else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8);
     else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8K);
     else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_APPEND(Q4Mode::kLloyd8V);
+    else if (mode == Q4Mode::kUniformLs) STRATA_KV_Q4_APPEND(Q4Mode::kUniformLs);
+    else if (mode == Q4Mode::kShear) STRATA_KV_Q4_APPEND(Q4Mode::kShear);
     else STRATA_KV_Q4_APPEND(Q4Mode::kUniform);
     check("kv_append_q4 launch");
 }
@@ -602,6 +606,8 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
         else if (mode == Q4Mode::kLloyd8) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8);
         else if (mode == Q4Mode::kLloyd8K) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8K);
         else if (mode == Q4Mode::kLloyd8V) STRATA_KV_Q4_BATCH(Q4Mode::kLloyd8V);
+        else if (mode == Q4Mode::kUniformLs) STRATA_KV_Q4_BATCH(Q4Mode::kUniformLs);
+        else if (mode == Q4Mode::kShear) STRATA_KV_Q4_BATCH(Q4Mode::kShear);
         else STRATA_KV_Q4_BATCH(Q4Mode::kUniform);
     }
     check("kv_append_q4 batch launch");
@@ -731,8 +737,8 @@ void kv_append_win(uint16_t* k_win, uint16_t* v_win, int32_t* win_tag, int64_t p
     check("kv_append_win batch launch");
 }
 
-#define STRATA_KV_Q4_GATHER(NK, NV)                                                                              \
-    kv_gather_q4_kernel<NK, NV><<<dim3(num_blocks), dim3(32, rows_per_block), 0, (cudaStream_t) stream>>>(        \
+#define STRATA_KV_Q4_GATHER(NK, NV, SHEAR)                                                                       \
+    kv_gather_q4_kernel<NK, NV, SHEAR><<<dim3(num_blocks), dim3(32, rows_per_block), 0, (cudaStream_t) stream>>>(  \
         k_q4, v_q4, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size, k_scratch,     \
         v_scratch, k_win, v_win, win_tag, win_s, win_r, win_b, win_all)
 
@@ -749,12 +755,14 @@ void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* 
     // the fused path agree without a new argument on every backend's stub.
     static const int win_all = [] { const char* e = std::getenv("STRATA_KV_WINDOW_TAG"); return e && e[0] == '1'; }();
     if (q4_lloyd(mode)) {   // the gather reads every level-table mode alike: the scale is in the block
-        if (q4_l8_k(mode) && q4_l8_v(mode)) STRATA_KV_Q4_GATHER(8, 8);
-        else if (q4_l8_k(mode)) STRATA_KV_Q4_GATHER(8, 16);
-        else if (q4_l8_v(mode)) STRATA_KV_Q4_GATHER(16, 8);
-        else STRATA_KV_Q4_GATHER(16, 16);
+        if (q4_l8_k(mode) && q4_l8_v(mode)) STRATA_KV_Q4_GATHER(8, 8, false);
+        else if (q4_l8_k(mode)) STRATA_KV_Q4_GATHER(8, 16, false);
+        else if (q4_l8_v(mode)) STRATA_KV_Q4_GATHER(16, 8, false);
+        else STRATA_KV_Q4_GATHER(16, 16, false);
+    } else if (q4_shear(mode)) {   // the shear: the uniform grid plus the per-block constant
+        STRATA_KV_Q4_GATHER(0, 0, true);
     } else {
-        STRATA_KV_Q4_GATHER(0, 0);
+        STRATA_KV_Q4_GATHER(0, 0, false);
     }
     check("kv_gather_q4 launch");
 }

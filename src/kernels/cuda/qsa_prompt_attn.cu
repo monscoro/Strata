@@ -2521,7 +2521,9 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         // from `pools.q4_mode` and is already the q4_0 prompt path on every non-sm_80 build.  (Mode 4 could carry the
         // level table the way it carries the int8 codes; that is owed if a level-table format ships, and not needed
         // to measure one.)
-        if (q4_lloyd(pools.q4_mode)) return false;
+        // the level tables need a reader this path does not have, and the shear carries a
+        // constant per block (the same reason).  Both run the prefill through the decode kernel.
+        if (q4_lloyd(pools.q4_mode) || q4_shear(pools.q4_mode) || q4_uniform_ls(pools.q4_mode)) return false;
         static const bool q4_off = [] {
             const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
             return v != nullptr && v[0] == '0';

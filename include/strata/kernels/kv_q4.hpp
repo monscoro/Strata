@@ -154,7 +154,19 @@ inline constexpr int kShearPasses = 2;
 
 /// True for the level-table modes and for the shear: every mode whose reader needs more than
 /// `code - 8`.
-inline constexpr bool q4_lloyd(Q4Mode m) { return m != Q4Mode::kUniform; }
+inline constexpr bool q4_lloyd(Q4Mode m) {
+    return m == Q4Mode::kLloyd || m == Q4Mode::kLloydLs || m == Q4Mode::kLloydWin || m == Q4Mode::kLloyd8 ||
+           m == Q4Mode::kLloyd8K || m == Q4Mode::kLloyd8V;
+}
+
+/// The shear: a uniform grid with a per-block offset, so its reader needs the constant too.
+inline constexpr bool q4_shear(Q4Mode m) { return m == Q4Mode::kShear; }
+
+/// The uniform grid with the step fitted per block: its reader is q4_0's (code - 8).
+inline constexpr bool q4_uniform_ls(Q4Mode m) { return m == Q4Mode::kUniformLs; }
+
+/// Every mode whose reader needs more than `code - 8`: the level tables and the shear.
+inline constexpr bool q4_needs_table(Q4Mode m) { return q4_lloyd(m) || q4_shear(m); }
 
 inline constexpr int8_t kQ4lMax = 87;   // == max |level|, the 16-level table
 inline constexpr int8_t kQ4l8Max = 69;  // == max |level|, the 8-level table (2.1519 sigma)
