@@ -196,3 +196,44 @@ Nullpunkts (4,66 bit/celle). Beides erst, wenn der Arm eine Wirkung zeigt.
 Paritätstest); ein Fehler in der *Zuordnung* (der Nullpunkt gehört zur falschen Seite) fällt über den
 Vergleich K gegen V auf; ein Fehler in der Byte-Rechnung fällt über die Rechnung im Repo auf. **Der
 Arm, der ohne Wirkung bleibt, wird nicht weiterverfolgt** — das ist der Kill.
+
+
+## Die Regel, die in die Engine kommt (und ihr Preis)
+
+**Vorab auf dem Host geprüft, bevor CUDA geschrieben wird** (`tools/kv_codec_mse.py` und die
+Engine-Regel nebeneinander auf denselben Blöcken). Das Modell ist `x ≈ o + s·code` mit `code ∈ [0,15]`
+und `s > 0` — das Gitter ist also `[o, o + 15s]`. **Die Konstante für den Leser** (die Kernel-Konvention
+ist `value = s·(code − 8) + c`) ist **`c = o + 8·s`**; die Konstante wird gespeichert, nicht der Nullpunkt.
+
+**Die Regel (zwei Bausteine, beide über Schmetterlings-Summen machbar):**
+1. **Start:** `s = (max − min)/15`, `o = min` — das Gitter deckt den Block ab. (Der Start mit `±amax`
+   ist **falsch** und kostet 1,3 dB: er lässt die obere Gitterhälfte leer, und die LS-Korrektur
+   findet das nicht mehr zurück. Das ist der teuerste Einzelfehler in diesem Schritt.)
+2. **Durchlauf** (je Durchlauf vier Reduktionen: `Σcode`, `Σx`, `Σcode²`, `Σcode·x`): Codes zuweisen
+   (`code = clip(rint((x − o)/s), 0, 15)`), dann die **zentrierte LS-Lösung** für `(o, s)`:
+   `s = [Σ(c−c̄)(x−x̄)] / [Σ(c−c̄)²]`, `o = x̄ − s·c̄`.
+
+**Die Iteration kostet — und sie ist der Grund, warum der Arm Aufwand hat:**
+
+| Durchläufe | Block-MSE (K, 4096 Blöcke) | gegen die Lloyd-Tabelle | Abstand zum Harness |
+|---:|---:|---:|---:|
+| 1 | 9,438023e-03 | +0,814 dB | +0,306 dB |
+| 2 | 9,076392e-03 | +0,984 dB | +0,136 dB |
+| 3 | 8,911394e-03 | +1,064 dB | +0,057 dB |
+| 4 | 8,841831e-03 | +1,098 dB | +0,023 dB |
+| **6** | **8,795968e-03** | **+1,120 dB** | **0,000 dB** |
+
+**Die Engine-Regel und das Harness sind damit dieselbe Rechnung** (6 Durchläufe, 0,000 dB Abstand) —
+das Wirksamkeitsgatter **G1** ist also nicht „innerhalb 5 %", sondern **exakt**: die Engine muss
+**1,291868e-03** (unkalibriert, voller Dump, stride 8) liefern, und jede Abweichung ist ein Fehler im
+Writer.
+
+**Der Preis im Writer:** der Nullpunkt kostet je Block **6 Iterationen mit je vier Schmetterlings-
+Reduktionen** (≈ 80–120 Shuffle-Schritte) gegen **15** heute (das Maximum plus die LS-Skala). Der
+**Writer** wird also deutlich teurer; der **Leser** nicht (eine Addition je Wert). Das ist eine neue
+Gate-Frage: **G6 (der Writer-Preis)** — die Prompt-Lesedauer des Shear-Arms gegen den Produktarm.
+Der Vorschlag steht bei **≤ 1,25×**; die Zahl wird gemessen, nicht geschätzt.
+
+**Und die Konstante, die der Leser addiert:** Median **0,32** (K) bzw. **0,14** (V) in Roheinheiten,
+also **0,92** bzw. **1,07 Schritte** — sie ist klein genug, um in fp16 zu stehen, und der Leser
+rechnet sie in fp32.
