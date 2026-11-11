@@ -3,6 +3,11 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.17 2026-11-11  the 128K measurement with the calibration: it is worth +0.00314
+%                     nats there (paired, t = +2.05), improves the p99 and is significantly
+%                     better on the top-1 (McNemar p = 0.0080), while at 4K it was worth
+%                     nothing - so its size is small and its direction not established
+%                     across lengths.  K2 and K3 fail with and without it
 %   v0.16 2026-11-11  L5 (the selection-following pool) placed next to what the code
 %                     allows: the exact twin exists only at write time and the row is
 %                     positional, so a selection-following pool must predict the selection;
@@ -152,7 +157,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.16, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.17, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -167,7 +172,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.16 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.17 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -432,12 +437,15 @@ Two consequences for how this paper reads its own numbers. The mean KL at 128K i
 Arm & Mean KL & p99 & Top-1 & Tail mean \\
 \midrule
 \texttt{int8} & 0.06435 & 1.6615 & 98.45\,\% & 5.24581 \\
-\texttt{q4lm32w} (16/16) & 0.07176 & 2.0583 & 98.30\,\% & \textbf{3.42218} \\
+\texttt{q4lm32w} (16/16) & 0.07176 & 2.0583 & 98.30\,\% & 3.42218 \\
+\quad + calibration & 0.06861 & 1.9240 & 98.38\,\% & 3.32933 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 The gap to \texttt{int8} is $+0.00741$ nats on the mean ($t = +4.80$, the interval $[+0.00439, +0.01044]$ excludes zero) and it is wider on the p99 ($2.0583$ against $1.6615$): on this corpus the 4-bit bulk loses to the 8-bit anchor in the long context, and the deficit grows with the length instead of shrinking --- the same curve the predecessor measured for its window arm ($+0.00402$ at 4K against $+0.02597$ at 128K). The tail column shows the other half of the picture: at the positions where \texttt{int8} breaks down, the 4-bit arm is the closer one (3.42 against 5.25), so the two codecs trade spike against spread, and at 128K that trade is the wrong way round. So the 5.0-bit target --- five bits per cell and not behind \texttt{int8} --- is **not** reached by this arm on this corpus, and the reason is the bulk codec in the long context, not the overlay: the overlay is what buys the 5.29 against 8.25 bit per cell.
+
+The calibration is not the reason for that gap, but at this length it is no longer useless: on the same arm it is worth $+0.00314$ nats (paired, $t = +2.05$, the interval $[+0.00014, +0.00615]$), it improves the p99 (2.0583 against 1.9240) and it is significantly better on the top-1 (949 positions against 836, an exact McNemar $p = 0.0080$) --- the two statistics it was nominated for. It closes 43\,\% of the gap to \texttt{int8} and it does so on the ordinary positions rather than in the tail (the tail moves by 0.09 nats over 1,311 positions). Its sign is not established, though: on the same pair at 4K the effect was $-0.00079$ and not significant (interval $[-0.00341, +0.00183]$), so the honest reading is a small effect whose direction differs between two lengths, measured once at each. Either way the arm is still $+0.00427$ behind \texttt{int8} (t = +2.91), so K2 and K3 fail with and without the calibration.
 
 One thing this measurement settles, and it is worth settling: the heavy positions are largely the same for both codecs. The rank correlation of the per-position KL between the two arms is 0.848 and half of the top-1,000 positions coincide, while the shape of the distribution is nearly identical (excess kurtosis 211 against 192). The fat tail belongs to the text and the task; the codecs differ in how much mass, and how sharp a spike, they put into it.
 
@@ -550,7 +558,7 @@ The plan's most likely outcomes are a negative result and a 6.0-bit fallback, in
 
 \paragraph{The state after the first ladder step.} One measurement is in, and it decides the codec. The 16-levels-on-both-sides codec with the exact-cell window reaches \texttt{int8}'s level on cwe-4k (paired $+0.00002$ nats, $t = -0.02$), while the shipped 8-level-value probe is $+0.00402$ behind, and the level split is worth $+0.00400$ nats against it (per-position $[+0.00138, +0.00663]$, $t = +2.99$). The per-channel offset --- the lever this paper is named after --- turns out to be a \emph{substitute} for the level table rather than an addition to it: $+0.00677$ nats on the coarse probe, $+0.00218$ with the window (not significant), and nothing on the 16/16 codec. The product reading on 4K is therefore the 16/16 codec with the window and without the calibration: no per-model artifact, no basis discipline in the snapshot, no extra runtime.
 
-At 128K that reading does not hold, and the plan says so. The same arm is $+0.00741$ nats behind \texttt{int8} on the first 128K text ($t = +4.80$), wider on the p99, and the gap grows with the context length rather than shrinking. The 5.0-bit target is therefore not reached by this arm on this corpus, and the reason is the bulk codec in the long context, not the overlay --- the overlay is what buys the 5.29 against 8.25 bit per cell. What the measurements close is the codec axis: the level split is significant and worth $+0.00400$ nats, the per-channel offset is a substitute for it and not a product path, and the stock cache sits $+0.00843$ behind. What they leave open is the ring: an \texttt{int8} ring would halve the overlay's byte price and make the 5.0 mark arithmetically reachable, and that is a geometry question, not a codec one.
+At 128K that reading does not hold, and the plan says so. The same arm is $+0.00741$ nats behind \texttt{int8} on the first 128K text ($t = +4.80$), wider on the p99, and the gap grows with the context length rather than shrinking. The 5.0-bit target is therefore not reached by this arm on this corpus, and the reason is the bulk codec in the long context, not the overlay --- the overlay is what buys the 5.29 against 8.25 bit per cell. The calibration, which is worth nothing on this codec at 4K, is worth $+0.00314$ nats here (paired, $t = +2.05$), improves the p99 and is significantly better on the top-1 ($p = 0.0080$); it closes 43\,\% of the gap and leaves the arm $+0.00427$ behind, so K2 and K3 fail with and without it. What the measurements close is the codec axis: the level split is significant and worth $+0.00400$ nats, the per-channel offset is small and its direction differs between two lengths, and the stock cache sits $+0.00843$ behind. What they leave open is the ring: an \texttt{int8} ring would halve the overlay's byte price and make the 5.0 mark arithmetically reachable, and that is a geometry question, not a codec one.
 
 \begin{thebibliography}{34}
 \setlength{\itemsep}{0pt}\footnotesize\raggedright
