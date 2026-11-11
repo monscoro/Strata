@@ -52,6 +52,7 @@ ARMS = [
     ("t1", "q4lm32w", "q4lm32w", False, {}),
     ("t1", "q4lm32w-center", "q4lm32w", True, {}),
     ("t1", "q4lm8v-win-center", "q4lm8v", True, {"STRATA_KV_WINDOW": "1"}),
+    ("t1", "q4lm8v-win", "q4lm8v", False, {"STRATA_KV_WINDOW": "1"}),
 ]
 
 # a subset of arms, so that a single arm can be measured without re-running the others
@@ -110,22 +111,33 @@ def main():
         rc = run_arm(text, tag, kv, centered, extra) or rc
         time.sleep(30)   # the campaign rule: 30 s between engine starts
     print("=== compare against the fp16 reference (the absolute numbers AND the paired differences) ===", flush=True)
-    runs = [str(OUT / f"{t}-{tag}.tsv") for t, tag, _kv, _c, _e in ARMS if (not ONLY or tag in ONLY)]
-    # the paired series must be measured against the fp16 reference: the paired difference between
-    # two arms is the difference of their KLs against fp16, not their KL against int8 (the C4 run
-    # showed how easily the two get mixed up)
-    cmd = [PY, str(REPO / "tools" / "quant_quality.py"), "compare", runs[0]] + runs[1:] + \
+    # the reference is always the fp16 arm, also when only a subset was run: the paired difference
+    # between two arms is the difference of their KLs against fp16, not their KL against int8 (the
+    # C4 run showed how easily the two get mixed up).  Before 2026-11-11 the reference was
+    # runs[0], which in the RUN_D1_ONLY case was the *new* arm itself -- the compare then had a
+    # single file and aborted (exit 2), and the tail tool measured against the wrong reference.
+    ref = str(OUT / "t1-fp16.tsv")
+    runs = [str(OUT / f"{t}-{tag}.tsv") for t, tag, _kv, _c, _e in ARMS
+            if tag != "fp16" and (not ONLY or tag in ONLY) and Path(OUT / f"{t}-{tag}.tsv").exists()]
+    if not runs:
+        print("no arm to compare against the fp16 reference", flush=True)
+        return 1
+    cmd = [PY, str(REPO / "tools" / "quant_quality.py"), "compare", ref] + runs + \
           ["--paired", "--ids", str(IDS / "t1.ids.json"), "--segments",
            "--json", str(OUT / "compare-fp16.json"), "--paired-json", str(OUT / "paired-fp16.json")]
     rc = subprocess.run(cmd, cwd=str(REPO)).returncode or rc
     print("=== the tail and the top-1, paired (the criteria the calibration was nominated for) ===", flush=True)
-    a = str(OUT / "t1-q4lm32w.tsv")
-    b = str(OUT / "t1-q4lm32w-center.tsv")
-    if Path(a).exists() and Path(b).exists():
-        cmd = [PY, str(REPO / "tools" / "kv_tail_top1.py"), "--ref", runs[0],
-               "--int8", str(OUT / "t1-int8.tsv"), "--a", a, "--b", b,
-               "--ids", str(IDS / "t1.ids.json")]
-        rc = subprocess.run(cmd, cwd=str(REPO)).returncode or rc
+    # the tail tool's reference is the fp16 arm, never the arm under test; the pairs are the two
+    # codecs that the calibration was measured on (16/16 and the shipped 16/8)
+    for a_tag, b_tag in (("q4lm32w", "q4lm32w-center"), ("q4lm8v-win", "q4lm8v-win-center")):
+        a = str(OUT / f"t1-{a_tag}.tsv")
+        b = str(OUT / f"t1-{b_tag}.tsv")
+        if Path(a).exists() and Path(b).exists():
+            print(f"--- pair {a_tag} (a) against {b_tag} (b) ---", flush=True)
+            cmd = [PY, str(REPO / "tools" / "kv_tail_top1.py"), "--ref", ref,
+                   "--int8", str(OUT / "t1-int8.tsv"), "--a", a, "--b", b,
+                   "--ids", str(IDS / "t1.ids.json")]
+            rc = subprocess.run(cmd, cwd=str(REPO)).returncode or rc
     return rc
 
 

@@ -291,3 +291,73 @@ python tools\kv_k1.py --ref ...\b3\t1-fp16.tsv --run ...\b3\t1-int8.tsv --run ..
 Rohdaten (TSVs, stderr, `seg.json`) liegen außerhalb des Repos unter
 `C:\Users\krone\git\Strata-data\bench\2026-11-10-merge-reeval\`; im Repo steht dieses Dokument
 und nach den Läufen der Ergebnisabschnitt darunter.
+
+## Ergebnisse (Stand 2026-11-11)
+
+**Woher das hier steht:** das vollständige Laufprotokoll mit **allen** Zahlen, den **Abweichungen 1–14**
+und den offenen Entscheidungen liegt außerhalb des Repos unter
+`C:\Users\krone\git\Strata-data\bench\2026-11-10-merge-reeval\protocol.md` (184 KB). Die
+**Ergebnisabschnitte** des Miniprojekts (C0–C4, D1) stehen **im Repo** unter
+[bench/results/2026-11-10-centering/README.md](../2026-11-10-centering/README.md); die abgeleiteten
+Vergleichstabellen des 128K-Laufs (alle sechs Arme in **einem** Durchlauf) liegen **im Repo** unter
+[d1/](d1/) (`compare-all6.json`, `paired-all6.json`).
+
+**Stufe A (Kontrollexperiment):** der gemergte Build ist für `int8` **byte-identisch** zum
+pures-upstream-Build (SHA `BC6FBB1A…`, 32.746 Zeilen). Der Merge hat die `int8`-Qualität nicht
+bewegt.
+
+**Stufe B (Re-Baseline):** B1 (sechs Qualitätsarme, cwe-4k) und B2 (sechs Nadeln) sind durch, alle
+Wirksamkeitsgatter grün (SHA, 12/12 Parität, 6/6 + 6/6 Nadeln). Die Ring- und Nullproben sind
+protokolliert.
+
+**Stufe C (Laufzeit, 32K-Nadel, freie Maschine, gleiche Geometrie):**
+
+| Arm | Prompt-Lesedauer | Faktor |
+|---|---:|---:|
+| `int8` | 51,7 s | 1,00× |
+| `q4_0` (uniform, affin) | 50,0 s | 0,97× |
+| `q4lm8v` (Lloyd-Tabelle) | **116,4 s** | **2,25×** |
+| `q4lm8v` + Kalibrierung | 118,5 s | 2,29× |
+| `q4lm8v` + Fenster | 116,5 s | 2,25× |
+
+**Der 2,25×-Preis ist ein Kernel-Struktur-Preis, kein Matrix-Core-Preis** (der Prompt-Schnellpfad
+lehnt die nicht-affine Level-Tabelle ab; `STRATA_HIP_WMMA=1` ändert auf dieser Karte die
+Prompt-Raten nicht). Die Aufklärung und die beiden Kandidaten stehen in
+[docs/research/KV_FASTPATH_LITERATURE.md](../../docs/research/KV_FASTPATH_LITERATURE.md) und in der
+Leiter (Stufe S6).
+
+**Stufe D (das Produkt):** der Produktcodec ist **`q4lm32w` (16 Stufen auf beiden Seiten, mit
+Fenster) OHNE Kalibrierung**.
+
+| Arm (cwe-4k) | KL | Top-1 | ΔKL vs `int8` | t |
+|---|---:|---:|---:|---:|
+| `int8` | 0,01688 | 99,05 % | — | — |
+| `q4_0` (Stock) | 0,02530 | 98,71 % | +0,00843 | −3,99 |
+| `q4lm8v` + Fenster (16/8) | 0,02090 | 98,84 % | +0,00402 | −3,55 |
+| `q4lm8v` + Fenster + Kalibrierung | 0,01871 | 98,87 % | +0,00184 | −1,85 |
+| **`q4lm32w` (16/16)** | **0,01689** | 98,89 % | **+0,00002** | **−0,02** |
+
+**Bei 128K (Text `s00`, 131.060 Positionen) hält der Gleichstand nicht:** der 16/16-Arm liegt
++0,00741 nats hinter `int8` (t = +4,80), der p99 2,0583 gegen 1,6615 → **K2 und K3 fallen**, und
+das 5,0-Bit-Ziel ist auf diesem Korpus **nicht erreicht** (Grund: der Bulk-Codec im Langkontext,
+nicht das Fenster). Der Fat-Tail ist real (Exzess-Kurtosis 211 bei `int8`) und gehört **dem Text**,
+nicht dem Codec (Rangkorrelation 0,848 zwischen `int8` und `q4lm32w`).
+
+**Die Kalibrierung: drei Messungen, das Vorzeichen nicht etabliert.** Sie ist ein **Ersatz-Hebel**,
+kein Produktpfad:
+
+| Codec | 4K | 128K |
+|---|---:|---:|
+| `q4lm8v` + Fenster (16/8, der ausgelieferte) | +0,00218 (n.s.) | **−0,00045** (n.s.) |
+| `q4lm32w` (16/16, der Produktcodec) | −0,00079 (n.s.) | **+0,00314** (t = +2,05, marginal) |
+
+**Die Merge-Gegenprobe ist exakt:** der unkalibrierte 16/8-Fensterarm misst bei 128K **0,07524** —
+auf fünf Nachkommastellen die Zahl des Vorgängers für denselben Arm. Der Merge ist neutral ohne
+Restabweichung; die 0,6 %, die zunächst als Merge-Abweichung gelesen waren, sind die
+Kalibrierungs-Wirkung (+0,00045, nicht signifikant).
+
+**Offen und im Protokoll benannt:** der zweite 128K-Text (zurückgestellt), die Block-Kernaussage der
+Kampagne (im Protokoll zurückgezogen, der Vergleich Werkzeug ↔ Attributions-Skript ist offen), der
+D2-Versuch (Indexer-Auswahl, ergebnisoffen registriert) und der Fast-Path (Entscheidung ist ein
+Host-Zähler im Block-Harness, kein Kernel).
+

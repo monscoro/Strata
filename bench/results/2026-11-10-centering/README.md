@@ -380,6 +380,92 @@ Centering**; die RHT-Varianten haben eine eigene, unbestätigte Erwartung (≈ 0
 zentrierten Signal** bewertet (Variante 3 gegen 2), weil eine Randomisierung einen systematischen
 Anteil nicht entfernt, sondern nur anders verteilt.
 
+### Ergebnis D1 (2026-11-11, abends): alle sechs 128K-Arme — und die Kalibrierung ist auch im Langkontext **kein Produktpfad**
+
+Text `s00` (131.060 Positionen, `data/quant_quality/cwe-128k/t1.ids.json`), Build 0.1.59.1, die
+Produktionsgeometrie bei 128K (Fenster S 256, R 64, Chunk 6.144), fp16 als Referenz, KL-Stützung:
+die 64 wahrscheinlichsten Tokens der Referenz.
+
+| Arm | KL (ganzes Segment) | p99 | Top-1 vs fp16 | PPL |
+|---|---:|---:|---:|---:|
+| `fp16` (Referenz) | — | — | 100,00 % | 2,751 |
+| `int8` (K1-Anker) | 0,06435 | 1,6615 | 98,45 % | 2,697 |
+| `q4lm32w` (16/16) | 0,07176 | 2,0583 | 98,30 % | 2,691 |
+| `q4lm32w` + Centering (16/16) | 0,06861 | 1,9240 | 98,38 % | 2,703 |
+| `q4lm8v` + Fenster (16/8, ohne Centering) | **0,07524** | 2,1567 | 98,16 % | 2,669 |
+| `q4lm8v` + Fenster + Centering (16/8, der ausgelieferte Arm) | 0,07479 | 2,3328 | 98,18 % | 2,758 |
+
+Die gepaarten Differenzen **über die Positionen** (`d1/paired-all6.json`; alle sechs Arme in **einem**
+Vergleichsdurchlauf, damit die Paare vergleichbar sind):
+
+| Paar (A − B) | ΔKL | 95-%-Intervall | t |
+|---|---:|---|---:|
+| `int8` − `q4lm32w` | −0,00741 | [−0,01044, −0,00439] | −4,80 |
+| `int8` − `q4lm32w`+C | −0,00427 | [−0,00714, −0,00139] | −2,91 |
+| `int8` − `q4lm8v`-Fenster | −0,01090 | [−0,01394, −0,00785] | −7,01 |
+| `int8` − `q4lm8v`-Fenster+C | −0,01044 | [−0,01353, −0,00736] | −6,64 |
+| `q4lm32w` − `q4lm32w`+C | **+0,00314** | [+0,00014, +0,00615] | **+2,05** |
+| `q4lm8v`-Fenster+C − `q4lm8v`-Fenster | **−0,00045** | [−0,00362, +0,00271] | −0,28 |
+| `q4lm32w` − `q4lm8v`-Fenster+C | −0,00303 | [−0,00614, +0,00007] | −1,91 |
+
+#### Die Kalibrierungs-Wirkung: jetzt **drei** Messungen, und das Vorzeichen ist nicht etabliert
+
+| Codec | 4K (cwe-4k) | 128K (t1) |
+|---|---:|---:|
+| `q4lm8v` + Fenster (16/8, der ausgelieferte) | +0,00218 (t = +1,78; n.s.) | **−0,00045 (t = −0,28; n.s.)** |
+| `q4lm32w` (16/16, der Produktcodec) | −0,00079 (t = −0,59; n.s.) | **+0,00314 (t = +2,05; marginal)** |
+
+(Vorzeichen: positiv = die Kalibrierung senkt die KL.) **Das Vorzeichen dreht bei beiden Codecs mit
+der Länge**, und nur **eine** der vier Messungen ist überhaupt signifikant (16/16 bei 128K, t = +2,05,
+marginal — das Intervall schließt fast null ein). **Die offene Frage aus C4 ist damit beantwortet:
+die Kalibrierung ist kein Produktpfad, sondern ein Ersatz-Hebel, und ob sie den verlorenen
+Level-Split zurückholt, hängt vom Codec *und* von der Länge ab.**
+
+#### Der Tail und die Top-1 — dort ist die Kalibrierung wirksam
+
+`tools/kv_tail_top1.py`, Referenz fp16, Tail = die 1 % der Positionen, in denen `int8` am schlechtesten
+ist (1.311 Positionen, arm-unabhängig definiert):
+
+| Codec-Paar | Tail-Mittel ohne C → mit C | Δ | Top-1-McNemar (ohne C / mit C richtig) | p |
+|---|---|---:|---|---:|
+| 16/16 | 3,42218 → 3,32933 | −0,09285 | 836 / 949 | **0,0080** |
+| 16/8 (ausgeliefert) | 3,44739 → 3,30761 | −0,13978 | 1.041 / 1.070 | 0,5423 |
+
+**Auf dem 16/16-Produktcodec verbessert die Kalibrierung bei 128K die Top-1-Übereinstimmung mit fp16
+signifikant** (949 gegen 836 richtige Positionen, exakter McNemar p = 0,0080) — der einzige
+signifikante Kalibrierungsbefund der ganzen Kampagne. Auf dem 16/8-Codec: nichts (p = 0,5423). Und im
+Tail (den Positionen, an denen `int8` bricht) sind **beide** kalibrierten Arme besser als ihre
+unkalibrierten Zwillinge — die Kalibrierung hilft genau dort, wo der Fehler ohnehin groß ist, auch
+wenn sie den Mittelwert kaum bewegt. Das ist dasselbe Bild wie bei 4K (die Kalibrierung verbessert
+p99 und Top-1, senkt aber den Mittelwert nicht).
+
+#### Die Merge-Gegenprobe ist **exakt** (und eine frühere Deutung war falsch)
+
+Der Vorgänger berichtet für seinen Fenster-Arm auf diesem Text **0,07524** (`docs/DETAILS.md`:
+„whole segment 8-bit 0,06435, window 0,07524, plain 0,08834"). Unser **unkalibrierter** Arm misst auf
+dem gemergten Build **0,07524** — auf fünf Nachkommastellen identisch. Die 0,6 %, die ich vorher als
+„Merge-Abweichung" abgetan hatte, **sind die Kalibrierungs-Wirkung** (+0,00045, nicht signifikant),
+kein Merge-Effekt. Der Merge ist für den Fenster-Arm **neutral ohne Restabweichung**; der kalibrierte
+Arm (0,07479) weicht ab, weil er ein anderes Format ist. (`int8` stimmt ebenfalls exakt.)
+
+#### Eine Vorab-Erwartung, die nicht eingetroffen ist
+
+Der Zusatzarm war mit der Erwartung registriert worden, der kalibrierte 16/8-Arm solle bei 128K rund
+0,0018 nats **unter** dem 16/16-Arm landen (0,0736 gegen 0,07176). **Gemessen: 0,07479 gegen 0,07176** —
+er landet 0,00303 **über** dem 16/16-Arm (gepaart t = −1,91, nicht signifikant), also **über** dem
+`int8`-Anker um 0,01044 (t = −6,64, signifikant). Die Erwartung war aus der 4K-Messung abgeleitet und
+**falsch**: die Wirkung der Kalibrierung ist auf dem 16/8-Codec im Langkontext nicht nur schwächer als
+erwartet, sondern **negativ**. Das ist der Grund, warum der 16/16-Arm der Produktcodec bleibt.
+
+#### Das Ergebnis in einem Satz
+
+**Auf 128K verliert der 4-Bit-Bulk-Codec gegen den 8-Bit-Anker (der Level-Split holt 0,00400 nats bei
+4K, der Langkontext kostet 0,00741), die Kalibrierung holt auf dem 16/16-Codec bei 128K einen Teil davon
+zurück (+0,00314, marginal, mit signifikant besserer Top-1-Übereinstimmung), aber sie ist auf dem
+ausgelieferten 16/8-Codec im Langkontext wirkungslos (−0,00045) — und der Produktpfad bleibt
+`q4lm32w` (16/16) **ohne** Kalibrierung, weil die Kalibrierung ein Artefakt (12 KB je Modell), die
+Basisdisziplin im Snapshot und 1,8 % Laufzeit kostet.**
+
 ## 5. Was dieses Projekt nicht ist
 
 - **Kein 5,0-Bit-Ziel.** Der Byte-Budget wird durch das Centering **nicht** berührt (kein zusätzliches
@@ -428,10 +514,13 @@ Rohdaten (TSVs, stderr, `seg.json`, S2-Dateien) liegen außerhalb des Repos unte
 
 ## 7. Grenzen, die schon jetzt gelten
 
-- Die Wirkung auf die **128K**-Statistiken ist offen; der Plan (K2/K3 der Leiter) misst 128K erst,
-  wenn ein 4K-Unterschied vorliegt. **Bis dahin gilt der Umfang von C3: ein Text, eine Länge**
-  (cwe-4k). Der geplante 128K-**out-of-sample**-Lauf (Offsets aus cwe-4k, Texte aus den 128K-Draws)
-  ist die einzige Probe, die die *Kalibrierungs-Artefakt*-Hypothese prüft.
+- Die **128K**-Wirkung ist **gemessen** (D1, Text `s00`, 131.060 Positionen, sechs Arme) — und sie
+  bestätigt die 4K-Aussage nicht, sie **präzisiert** sie: die Kalibrierung ist auf dem 16/16-Codec
+  bei 128K **marginal positiv** (+0,00314, t = +2,05, mit signifikant besserer Top-1-Übereinstimmung,
+  McNemar p = 0,0080), auf dem ausgelieferten 16/8-Codec **wirkungslos** (−0,00045, n.s.) — das
+  **Vorzeichen ist über die Länge nicht etabliert**. **Offen bleibt:** der **zweite** 128K-Text
+  (zurückgestellt) und damit die Frage, ob die Wirkung *über* die Texte hinweg trägt; der Umfang
+  dieses Projekts ist also **ein 4K-Text und ein 128K-Text**, nicht zwei Längen und zwei Texte.
 - Die **Schiefe** ist systematisch, aber nur **kanalspezifisch** (kein Layer-Schieft: der Mittelwert
   je Layer liegt bei 0,2 bis 2,0× Rauschen). Ihre Entfernung bräuchte dieselbe kanalspezifische
   Tabelle wie die Offsets (12 KB je Layer und Kopf) — ob sie nach dem Versatz überhaupt noch Stufen
