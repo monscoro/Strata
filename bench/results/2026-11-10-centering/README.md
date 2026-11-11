@@ -215,6 +215,32 @@ das einzige Kriterium, das dem kalibrierten Arm nützt (0,2263 gegen 0,2410 auf 
 wird mit denselben gepaarten Werkzeugen ausgewertet (`tools/kv_tail_top1.py`: der Tail über eine
 **arm-unabhängige** Positionsmenge, der Top-1 mit exaktem McNemar).
 
+### Zusatzarm (2026-11-11, 12:50, auf Wunsch des Nutzers): `q4lm8v` + Fenster + Centering bei 128K
+
+**Begründung:** das ist die **ausgelieferte** Konfiguration (der Vorgänger-Produktarm) **mit** der
+Kalibrierung — und damit der einzige Arm, an dem die Kalibrierung im Langkontext überhaupt noch
+etwas entscheiden kann. Drei Gründe:
+1. **Die Merge-Gegenprobe** für den ausgelieferten Arm (der Vorgänger berichtet für seinen
+   Fenster-Arm auf demselben Text T2: Ganzsegment 0,07524, p99 0,0210, Tail-Mittel 0,00437) — und
+   die „T2" ist, wie der `gold.json` zeigt, unser `s00`.
+2. **Die Kalibrierung im Langkontext**: auf 4K war ihre gepaarte Wirkung auf diesen Arm
+   **+0,00218** (nicht signifikant, Intervall [−0,00022, +0,00459]). Ob sie bei 128K trägt, ist
+   damit offen.
+3. **Der direkte Vergleich mit dem 16/16-Arm im Langkontext** — auf 4K ist der Unterschied zwischen
+   „16/8 + Fenster + Kalibrierung" (0,01871) und „16/16 + Fenster" (0,01689) **nicht signifikant**
+   (t = +1,73, Intervall [−0,00052, +0,00416]). Bei 128K ist der 16/16-Arm hinter `int8`
+   (+0,00741) — die Frage, ob der kalibrierte 16/8-Arm dort *besser* ist als der 16/16, ist damit
+   offen und messbar.
+
+**Gatter (vor dem Lauf):** der Arm muss (a) 131.060 Positionen und 8/8 Segmente liefern, (b) eine
+**andere** SHA als der unkalibrierte 16/16-Arm haben (Wirksamkeitsgatter) und (c) im gepaarten
+Vergleich gegen `int8` ausgewertet werden (K2/K3, Tail, Top-1). **Die Erwartung ist eine
+Rechnung, keine Hoffnung:** die Wirkung der Kalibrierung ist **pro Zelle** kontextunabhängig, also
+sollte der kalibrierte 16/8-Arm bei 128K rund 0,0018 nats unter dem 16/16-Arm landen (0,0736 gegen
+0,07176) und damit **weiterhin hinter `int8`** (0,06435). Ein Ergebnis *über* dem 16/16-Arm wäre
+die erste Konfiguration, in der die Kalibrierung im Langkontext etwas gewinnt.
+
+
 ### Ergebnis (2026-11-10): der Bias kostete ein Drittel des Fehlers
 
 Auf den **echten** Zellen (C1a/C1b: 12 QSA-Layer × 32.746 Zellen × 2 KV-Köpfe, Block-MSE auf

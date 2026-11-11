@@ -37,16 +37,24 @@ IDS = REPO / "data" / "quant_quality" / "cwe-128k"
 BASE_ENV = ["STRATA_KV_WINDOW_S=256", "STRATA_KV_WINDOW_R=64", "STRATA_KV_WINDOW_BATCH=6144",
             "STRATA_VERIFY_ASYNC_LAUNCH=1"]
 
-# text, arm, --kv, calibrated
+# text, arm, --kv, calibrated, extra env
 # The fp16 arm is the reference the absolute KL is measured against (the same reference the
 # predecessor's 128K numbers use), so it is run again here: that also checks on the merged build
 # what the predecessor measured on 128K (int8 whole segment 0.10715 on T1, 0.06435 on T2).
+# The q4lm8v+window+calibration arm is the *shipped* configuration with the calibration added:
+# it reproduces the predecessor's window arm on the merged build and answers whether the
+# calibration pays in the long context, where the 4K measurement could not decide it (its own
+# paired effect at 4K was +0.00218, not significant).
 ARMS = [
-    ("t1", "fp16", "fp16", False),
-    ("t1", "int8", "int8", False),
-    ("t1", "q4lm32w", "q4lm32w", False),
-    ("t1", "q4lm32w-center", "q4lm32w", True),
+    ("t1", "fp16", "fp16", False, {}),
+    ("t1", "int8", "int8", False, {}),
+    ("t1", "q4lm32w", "q4lm32w", False, {}),
+    ("t1", "q4lm32w-center", "q4lm32w", True, {}),
+    ("t1", "q4lm8v-win-center", "q4lm8v", True, {"STRATA_KV_WINDOW": "1"}),
 ]
+
+# a subset of arms, so that a single arm can be measured without re-running the others
+ONLY = [a for a in os.environ.get("RUN_D1_ONLY", "").split(",") if a]
 
 
 def sha256(path: Path) -> str:
@@ -63,12 +71,15 @@ def strata_running():
                for line in raw.decode("utf-8", errors="replace").splitlines())
 
 
-def run_arm(text, tag, kv, centered):
+def run_arm(text, tag, kv, centered, extra=None):
+    extra = extra or {}
     ids = IDS / f"{text}.ids.json"
     out = OUT / f"{text}-{tag}.tsv"
     env = list(BASE_ENV)
     if centered:
         env.append(f"STRATA_KV_CENTER={CENTER}")
+    for k, v in extra.items():
+        env.append(f"{k}={v}")
     cmd = [PY, str(REPO / "tools" / "quant_quality.py"), "run",
            "--config", str(CFG), "--ids", str(ids), "--out", str(out), "--kv", kv,
            "--prefill", "6144"]
@@ -92,11 +103,13 @@ def main():
         print("a strata.exe is running; refusing to start (one GPU job at a time)", flush=True)
         return 1
     rc = 0
-    for text, tag, kv, centered in ARMS:
-        rc = run_arm(text, tag, kv, centered) or rc
+    for text, tag, kv, centered, extra in ARMS:
+        if ONLY and tag not in ONLY:
+            continue
+        rc = run_arm(text, tag, kv, centered, extra) or rc
         time.sleep(30)   # the campaign rule: 30 s between engine starts
     print("=== compare against the fp16 reference (the absolute numbers AND the paired differences) ===", flush=True)
-    runs = [str(OUT / f"{t}-{tag}.tsv") for t, tag, _kv, _c in ARMS]
+    runs = [str(OUT / f"{t}-{tag}.tsv") for t, tag, _kv, _c, _e in ARMS if (not ONLY or tag in ONLY)]
     # the paired series must be measured against the fp16 reference: the paired difference between
     # two arms is the difference of their KLs against fp16, not their KL against int8 (the C4 run
     # showed how easily the two get mixed up)
