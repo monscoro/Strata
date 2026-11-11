@@ -3,6 +3,11 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.14 2026-11-11  the shape of the error at 128K: a fat tail (excess kurtosis
+%                     211, p99 = 25.8x the mean, 74 % of the error mass in 0.76 % of
+%                     the positions) that is discrete - it sits on the occurrences of
+%                     the most frequent coded word, the one whose count the task asks
+%                     the model to track - and it is already there at int8
 %   v0.13 2026-11-11  the earlier 1.9 dB reading of the block measurement is withdrawn:
 %                     neither of the harness's two centering modes reproduces that column,
 %                     so its provenance is unknown and the number is not quoted as a
@@ -134,7 +139,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.13, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.14, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -149,7 +154,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.13 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.14 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -397,6 +402,10 @@ The predecessor's measurements answer, partially, where the remaining error live
 \paragraph{Where the bias comes from: the data, not the transform.} A fixed per-channel offset is a fixed vector in the transform space, and an exactly orthogonal transform maps it back exactly --- so a bias that *vanished* under the back-transformation could only be an artifact of the transform's arithmetic, not of the data. The two halves of that question are measured separately here: the channel probe measures the key means \emph{before} the rotation, and the cell dump holds the \emph{rotated} rows, so un-rotating the dump's mean and comparing it with the probe's is a direct test. It comes out at a ratio of **1.000** in every layer and every head: the bias in the transform space is exactly the image of a real bias in the channel space, and the round trip $H(H(y)) - y$ is exactly zero on the dumped cells. The bias is the data's\,\cite{strata-bias}.
 
 The applied literature reads it the same way and goes further: the post-Hadamard channels of a trained model *still differ in mean*, and the centering is therefore composed with the transform rather than kept outside it\,\cite{hadanorm}; a KV-cache rotation orders its channels by a per-channel statistic measured \emph{after} the rotation\,\cite{rotatekv}, which only makes sense if that structure is real and stable. The numerics of the transform are a separate matter: the error of a fast Walsh--Hadamard in reduced precision is a rounding error, reducible with compensated summation, not a systematic bias. What \emph{is} a real trap is the opposite of the artifact hypothesis --- offsets measured in the wrong basis. A bias is basis-dependent, and the public fork that applies the same correction to the KV cache carries a guard that refuses a bias measured in the wrong basis\,\cite{llamacpp-center}; the measurement error that this paper had to correct was of exactly that kind, an offset set measured on the key side only and merged over heads, applied to both sides.
+
+\paragraph{The shape of the error: a fat tail, and where it sits.} Not only where the error sits but how it is distributed matters at 128K, and the distribution is not Gaussian. Measured on the 128K text against the fp16 reference, the per-position KL of the \texttt{int8} arm has an excess kurtosis of 211, its p99 is 25.8 times its mean, and 99\,\% of the positions are essentially perfect (median 0.00085) while 0.76\,\% of them carry 74\,\% of the error. The tail is not noise: it is discrete. Decoding the prompt with the model's own tokenizer and locating the heavy positions against the text shows that 845 of the top-1,000 positions are occurrences of the single most frequent coded word (9,928 occurrences in the text), and the next most frequent words take the next places --- the very words whose frequency the task asks the model to track. The model has to keep a counter for each of them in its KV cache, and at every occurrence of the most frequent one that counter is at its most fragile, which is where the quantized and the fp16 models disagree. So the fat tail is a property of the task and the context length, not of the codec: it is already there at \texttt{int8}, and it grows with the length (p99 over mean 11.2 at 4K, 25.8 at 128K).
+
+Two consequences for how this paper reads its own numbers. The mean KL at 128K is a statement about about 2,400 positions (1.8\,\% of the corpus), not about the corpus; the p99 and a paired tail are the statistics that describe a codec, and the ladder's criteria were written that way before this was measured. And a published p99 for this corpus that reads a hundred times smaller would have made the same distribution look mild --- which is a reason to prefer a re-measured number to a remembered one.
 
 \paragraph{And a third source sits inside the bulk: a fixed per-channel offset.} The deficit is not only a coverage question. The bulk's own codec spends part of its range on something that is not signal: the cached K and V rows carry a fixed per-channel offset, and the scale is a maximum statistic, so that offset inflates the scale of every block and is paid for by every value in it. The mechanism is worth stating precisely, because it is easy to get wrong: the offset does **not** make the codec drift (the measured drift of the 4-bit codec is as small as the anchor's, $1.4\cdot10^{-4}$ sd), it makes the codec **noisier** --- the block's maximum grows by the bias's share, the step grows with it, and the quantization noise grows with the step. Removing the offset before the rotation is worth 0.17\,dB of block error on the key side and 0.36\,dB on the value side (Section~\ref{sec:target}) --- less than the level table and the per-block scale together --- and end to end $+0.00677$ nats on the plain 4-bit arm. This is the one lever of this paper that is measured rather than proposed, and it is orthogonal to the window: the overlay buys exact cells, the offset buys back the range the bulk wastes. The same measurement, however, shows its limit: the offset and the level table buy back the same range, so on the 16-level-on-both-sides codec the offset has nothing left to buy (Table~\ref{tab:center}).
 
