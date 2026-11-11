@@ -3,6 +3,13 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.15 2026-11-11  the 128K measurement: the 4K tie does not survive.  The product
+%                     arm (16/16 + window) is +0.00741 nats behind int8 on the first
+%                     128K text (t = +4.80), wider on the p99, and the gap grows with
+%                     the context length.  The 5.0-bit target is not reached by this arm
+%                     on this corpus, and the reason is the bulk codec in the long
+%                     context, not the overlay.  The tail belongs to the text (rank
+%                     correlation 0.848 between the arms)
 %   v0.14 2026-11-11  the shape of the error at 128K: a fat tail (excess kurtosis
 %                     211, p99 = 25.8x the mean, 74 % of the error mass in 0.76 % of
 %                     the positions) that is discrete - it sits on the occurrences of
@@ -139,7 +146,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.14, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.15, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -154,7 +161,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.14 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.15 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -407,6 +414,27 @@ The applied literature reads it the same way and goes further: the post-Hadamard
 
 Two consequences for how this paper reads its own numbers. The mean KL at 128K is a statement about about 2,400 positions (1.8\,\% of the corpus), not about the corpus; the p99 and a paired tail are the statistics that describe a codec, and the ladder's criteria were written that way before this was measured. And a published p99 for this corpus that reads a hundred times smaller would have made the same distribution look mild --- which is a reason to prefer a re-measured number to a remembered one.
 
+\paragraph{And at 128K the 4K tie does not survive.} The table above is a 4K measurement, and 4K is where this plan's anchors live. The 128K texts are a different corpus with a different length, and there the same arm falls behind \texttt{int8} --- and not by a hair. Measured on the first 128K text against its own fp16 reference (131,060 positions, the same build, the same ids file):
+
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{At 128K. The product arm (16 levels on both sides, with the exact-cell window) against the \texttt{int8} anchor, fp16 as the reference, 131,060 positions. The tail is the 1\,\% of positions where \texttt{int8} is worst --- defined once, arm-independently. The 4K measurement of the same arm was a tie ($+0.00002$, $t = -0.02$); here it is behind.}
+\label{tab:128k}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Arm & Mean KL & p99 & Top-1 & Tail mean \\
+\midrule
+\texttt{int8} & 0.06435 & 1.6615 & 98.45\,\% & 5.24581 \\
+\texttt{q4lm32w} (16/16) & 0.07176 & 2.0583 & 98.30\,\% & \textbf{3.42218} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The gap to \texttt{int8} is $+0.00741$ nats on the mean ($t = +4.80$, the interval $[+0.00439, +0.01044]$ excludes zero) and it is wider on the p99 ($2.0583$ against $1.6615$): on this corpus the 4-bit bulk loses to the 8-bit anchor in the long context, and the deficit grows with the length instead of shrinking --- the same curve the predecessor measured for its window arm ($+0.00402$ at 4K against $+0.02597$ at 128K). The tail column shows the other half of the picture: at the positions where \texttt{int8} breaks down, the 4-bit arm is the closer one (3.42 against 5.25), so the two codecs trade spike against spread, and at 128K that trade is the wrong way round. So the 5.0-bit target --- five bits per cell and not behind \texttt{int8} --- is **not** reached by this arm on this corpus, and the reason is the bulk codec in the long context, not the overlay: the overlay is what buys the 5.29 against 8.25 bit per cell.
+
+One thing this measurement settles, and it is worth settling: the heavy positions are largely the same for both codecs. The rank correlation of the per-position KL between the two arms is 0.848 and half of the top-1,000 positions coincide, while the shape of the distribution is nearly identical (excess kurtosis 211 against 192). The fat tail belongs to the text and the task; the codecs differ in how much mass, and how sharp a spike, they put into it.
+
 \paragraph{And a third source sits inside the bulk: a fixed per-channel offset.} The deficit is not only a coverage question. The bulk's own codec spends part of its range on something that is not signal: the cached K and V rows carry a fixed per-channel offset, and the scale is a maximum statistic, so that offset inflates the scale of every block and is paid for by every value in it. The mechanism is worth stating precisely, because it is easy to get wrong: the offset does **not** make the codec drift (the measured drift of the 4-bit codec is as small as the anchor's, $1.4\cdot10^{-4}$ sd), it makes the codec **noisier** --- the block's maximum grows by the bias's share, the step grows with it, and the quantization noise grows with the step. Removing the offset before the rotation is worth 0.17\,dB of block error on the key side and 0.36\,dB on the value side (Section~\ref{sec:target}) --- less than the level table and the per-block scale together --- and end to end $+0.00677$ nats on the plain 4-bit arm. This is the one lever of this paper that is measured rather than proposed, and it is orthogonal to the window: the overlay buys exact cells, the offset buys back the range the bulk wastes. The same measurement, however, shows its limit: the offset and the level table buy back the same range, so on the 16-level-on-both-sides codec the offset has nothing left to buy (Table~\ref{tab:center}).
 
 Together these facts point one way: the bulk must become a better code than 4-bit Lloyd --- and stop spending range on a fixed offset --- and the ring must become cheaper per protected cell. Neither alone reaches 5.0: a smaller fp16 ring loses the statistics \texttt{int8} wins, and a better bulk without the byte side stays above the ceiling.
@@ -512,7 +540,9 @@ The window's successor has a precise job: store at most 5.0 bit/cell --- 39\% be
 
 The plan's most likely outcomes are a negative result and a 6.0-bit fallback, in that order. That is not a weakness of the plan; it is what a pre-registered target looks like before the data exist. If the \texttt{int8} ring plus a better bulk reaches 5.0, the window is not improved but replaced: the same 128K context would cost about 960\,MiB instead of 1,584, with no statistic behind \texttt{int8}. If it does not, the negative result is the deliverable, and the shipped window stays the honest memory point at 5.29.
 
-\paragraph{The state after the first ladder step.} One measurement is in, and it decides the codec. The 16-levels-on-both-sides codec with the exact-cell window reaches \texttt{int8}'s level on cwe-4k (paired $+0.00002$ nats, $t = -0.02$), while the shipped 8-level-value probe is $+0.00402$ behind, and the level split is worth $+0.00400$ nats against it (per-position $[+0.00138, +0.00663]$, $t = +2.99$). The per-channel offset --- the lever this paper is named after --- turns out to be a \emph{substitute} for the level table rather than an addition to it: $+0.00677$ nats on the coarse probe, $+0.00218$ with the window (not significant), and nothing on the 16/16 codec. The product reading is therefore the 16/16 codec with the window and without the calibration: no per-model artifact, no basis discipline in the snapshot, no extra runtime, and a prompt read that the window does not slow down. What the plan still owes is the 128K evidence on both texts --- and there the p99, the one statistic on which the calibration was nominally ahead, is a criterion of its own and has to be tested with the same paired tools.
+\paragraph{The state after the first ladder step.} One measurement is in, and it decides the codec. The 16-levels-on-both-sides codec with the exact-cell window reaches \texttt{int8}'s level on cwe-4k (paired $+0.00002$ nats, $t = -0.02$), while the shipped 8-level-value probe is $+0.00402$ behind, and the level split is worth $+0.00400$ nats against it (per-position $[+0.00138, +0.00663]$, $t = +2.99$). The per-channel offset --- the lever this paper is named after --- turns out to be a \emph{substitute} for the level table rather than an addition to it: $+0.00677$ nats on the coarse probe, $+0.00218$ with the window (not significant), and nothing on the 16/16 codec. The product reading on 4K is therefore the 16/16 codec with the window and without the calibration: no per-model artifact, no basis discipline in the snapshot, no extra runtime.
+
+At 128K that reading does not hold, and the plan says so. The same arm is $+0.00741$ nats behind \texttt{int8} on the first 128K text ($t = +4.80$), wider on the p99, and the gap grows with the context length rather than shrinking. The 5.0-bit target is therefore not reached by this arm on this corpus, and the reason is the bulk codec in the long context, not the overlay --- the overlay is what buys the 5.29 against 8.25 bit per cell. What the measurements close is the codec axis: the level split is significant and worth $+0.00400$ nats, the per-channel offset is a substitute for it and not a product path, and the stock cache sits $+0.00843$ behind. What they leave open is the ring: an \texttt{int8} ring would halve the overlay's byte price and make the 5.0 mark arithmetically reachable, and that is a geometry question, not a codec one.
 
 \begin{thebibliography}{34}
 \setlength{\itemsep}{0pt}\footnotesize\raggedright
