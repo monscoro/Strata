@@ -356,8 +356,10 @@ auf fünf Nachkommastellen die Zahl des Vorgängers für denselben Arm. Der Merg
 Restabweichung; die 0,6 %, die zunächst als Merge-Abweichung gelesen waren, sind die
 Kalibrierungs-Wirkung (+0,00045, nicht signifikant).
 
-**Offen und im Protokoll benannt:** der zweite 128K-Text (zurückgestellt), die Block-Kernaussage der
-Kampagne (im Protokoll zurückgezogen, der Vergleich Werkzeug ↔ Attributions-Skript ist offen), der
-D2-Versuch (Indexer-Auswahl, ergebnisoffen registriert) und der Fast-Path (Entscheidung ist ein
-Host-Zähler im Block-Harness, kein Kernel).
+**Offen und im Protokoll benannt:** der zweite 128K-Text (zurückgestellt), der **End-to-End-Arm für
+den gescherten Codec** (der affine Preis ist im Blockmaß gemessen, die nats-Zahl fehlt), **D2**
+(Indexer-Auswahl, ergebnisoffen registriert) und der Fast-Path (die drei Preise sind gemessen: der
+Tabelleneintrag im Operandenbau, das uniforme Gitter ohne und mit per-Block-Nullpunkt). Die
+Block-Kernaussage der Kampagne ist **bestätigt** (der Bias kostet 2,01 dB Block-MSE; die früheren
+0,17/0,36 dB waren ein Artefakt eines trunkierten Zellsatzes).
 

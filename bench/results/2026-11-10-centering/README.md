@@ -261,6 +261,17 @@ gemacht haben: (1) der **K-Offset wurde auch auf V angewendet** — die S2-Sonde
 und V haben verschiedene Offsets; (2) die **S2-Sonde mittelt über die beiden KV-Köpfe**, ihre Zahl ist
 damit weder ein Kopf- noch ein V-Offset. **Die Tabelle muss je Kopf und je Seite sein.**
 
+**Korrektur 2026-11-11 (Abweichung 15): die offene Blockfrage ist geklärt, die Kernaussage steht.**
+Das Kampagnen-Werkzeug (`tools/kv_codec_mse.py`) und das Attributions-Skript
+(`tools/kv_center_attrib.py`) **stimmen auf dem vollen Dump auf sechs Nachkommastellen überein**:
+`lloyd16+max` 8,448640e-03 (Werkzeug) gegen (1,4488e-02 + 2,4088e-03)/2 = 8,4484e-03 (Attribution),
+zentriert 5,317906e-03 gegen 5,31791e-03 — zusammen **2,01 dB**. Die Angaben **„0,17 dB (K) und
+0,36 dB (V)"**, die in Paper und Leiter standen, kamen aus einem Lauf des Attributions-Skripts über
+einen **trunkierten** Zellsatz (`--max-cells`): dort werden die Offsets aus zu wenigen Zellen
+geschätzt und tragen fast kein Signal. **Die frühere Rücknahme der Kernaussage (Abweichung 11) ist
+damit widerrufen** — sie beruhte auf demselben trunkierten Lauf. Die Seitenzahlen des vollen Dumps:
+**K −1,70 dB, V −4,63 dB** (je Layer zwischen −1,03 dB (Layer 7, K) und −7,02 dB (Layer 47, V)).
+
 **C0 (der eigentliche Kill) hat nicht gefeuert:** über Text und Länge (cwe-4k gegen cwe-8k) liegt die
 Korrelation der Kanalmittelwerte bei **0,9489** und die mittlere Abweichung bei **0,0799 sd** (Gate:
 ≥ 0,90 und ≤ 0,25 sd). Der Build-Effekt 2026-10-27 (Engine 0.1.47) gegen den aktuellen Build
@@ -470,9 +481,12 @@ Basisdisziplin im Snapshot und 1,8 % Laufzeit kostet.**
 
 - **Kein 5,0-Bit-Ziel.** Der Byte-Budget wird durch das Centering **nicht** berührt (kein zusätzliches
   Bit im Cache; die 12 KB liegen im Modell, nicht im KV).
-- Kein Ersatz für die Level-Tabelle (0,30 dB) und nicht für die per-Block-Skala (0,31 dB). Das
-  Centering ist eine **dritte, orthogonale** Hebelwirkung auf derselben Bulk-Seite — wenn es
-  trägt, verschiebt es den Rest (0,17 dB) nicht, es kommt dazu.
+- Kein Ersatz für die Level-Tabelle (0,30 dB) und nicht für die per-Block-Skala (0,31 dB) — und
+  umgekehrt: es ist auch **kein Addendum** zu ihnen. Im Blockmaß ist das Centering mit **2,01 dB**
+  sogar größer als beide zusammen (0,61 dB); end-to-end sind die beiden Hebel **Substitute**: auf dem
+  16/16-Codec gibt das Centering nichts (−0,00079 nats, n.s.), weil die Level-Tabelle dieselbe
+  verschwendete Spannung zurückholt; auf dem 16/8-Probe ist es umgekehrt, dort holt das Centering
+  (+0,00677 nats) genau die Spannung zurück, die die 8-Stufen-V-Tabelle verschenkt.
 - **Kein Ersatz für den Window-Overlay.** Das Fenster lieferte den großen Sprung (KL 0,0318 → 0,0209
   auf cwe-4k, gemessen 2026-11-10); das Centering ist eine Bulk-Hebelwirkung. Beide zusammen tragen
   0,0318 → 0,0187.

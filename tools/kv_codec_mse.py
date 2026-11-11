@@ -254,7 +254,19 @@ def main():
     means = read_s2_means(args.s2)
     offsets_rot = {layer: fwht(v) for layer, v in means.items()}
 
-    recs = read_dump(args.dump, want_layers=set(range(args.layers)) if args.layers else None)
+    recs = read_dump(args.dump)
+    if args.layers:
+        # The dump's layers are the model's QSA layers (3, 7, 11, ... 47), not 0..N-1: a filter on
+        # range(N) matched nothing and the tool answered "no records in the dump" (deviation 17).
+        # Take the first N layers in the order the dump holds them.
+        wanted = []
+        for r in recs:
+            if r[0] not in wanted:
+                wanted.append(r[0])
+            if len(wanted) == args.layers:
+                break
+        recs = [r for r in recs if r[0] in set(wanted)]
+        print(f"layers: {sorted(wanted)}")
     if not recs:
         raise SystemExit("no records in the dump")
     print(f"dump: {len(recs)} records, layers {sorted(set(r[0] for r in recs))}")

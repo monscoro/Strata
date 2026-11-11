@@ -59,7 +59,9 @@ LDS/Shared Memory, dann die **BF16**-Werte in die MFMA) ist also genau **unsere 
 - **„Apply rotation and LUT-based quantization to K, and use standard uniform quantization for V."**
   (Keys sind quantisierungsempfindlicher als Values.) Bei uns ist es genau andersherum gemessen: der
   **Level-Split** (16/8 → 16/16) liegt auf der **V**-Seite (1,10 dB Block-MSE), und die
-  **Kalibrierung** wirkt auf V stärker (−0,36 dB) als auf K (−0,17 dB). Das ist kein Widerspruch,
+  **Kalibrierung** wirkt auf V stärker (−4,63 dB Block-MSE) als auf K (−1,70 dB) — die Blockmessung
+  auf dem **vollen** Zellsatz (Abweichung 15 im Protokoll; die früheren 0,17/0,36 dB waren ein
+  Artefakt eines trunkierten Zellsatzes). Das ist kein Widerspruch,
   sondern zwei verschiedene Knöpfe: die *Präzision* (Level-Anzahl) und die *Darstellung*
   (Rotation+LUT). Die AMD-Aussage betrifft die Darstellung.
 - **„Use Walsh-Hadamard rotation instead of random rotation … both more kernel-friendly and more
@@ -184,6 +186,82 @@ Frage: **wie viel vom Lloyd-Max-Vorteil bleibt, wenn die Karte auf eine pro-Bloc
 beschränkt wird?** Das ist eine **Block-MSE-Frage** und damit eine **Host-Frage ohne Kernel**
 (`tools/kv_codec_mse.py`: „uniform + per-Block-Nullpunkt" gegen „lloyd16 + max", je mit und ohne
 die per-Kanal-Kalibrierung).
+
+
+## 3c. Der Architekturentscheid, **gemessen** (2026-11-11): was die affine Beschränkung kostet
+
+**Der Zähler, den die Leiter verlangt hat, ist gelaufen:** `tools/kv_affine_price.py` auf den
+**Engine-Zellen** (der Dump `cells-cwe4k.bin`, 12 QSA-Layer, 768 Records, 1.572.480 Blöcke bei
+stride 8) — dieselben Zellen und dieselben Implementierungen wie die Kampagne (die vier bekannten
+Varianten sind **bitweise identisch** zum Kampagnen-Werkzeug: 1,124507e-02 / 1,177749e-02 /
+1,024466e-02 / 1,100851e-02 auf denselben Blöcken, Block für Block geprüft).
+
+### Die Zahlen (Block-MSE, unkalibriert; die dB-Spalte gegen `lloyd16+max`)
+
+| Variante | MSE | K | V | dB |
+|---|---:|---:|---:|---:|
+| `uniform+max` (`q4_0`, der Anker) | 1,820408e-03 | 3,125573e-03 | 5,152434e-04 | +0,33 |
+| `lloyd16+max` (die Engine-Tabelle `q4lm32`) | 1,688660e-03 | 2,895490e-03 | 4,818299e-04 | 0,00 |
+| `lloyd16+LS` (die Engine-FIT-Variante) | 1,573514e-03 | 2,698241e-03 | 4,487873e-04 | −0,31 |
+| **`uniform+LS`** (uniformes Gitter, Skala per LS, **Nullpunkt 0**) | 1,738780e-03 | 2,985407e-03 | 4,921535e-04 | **+0,13** |
+| **`uniform+LS+z`** (die Scherung: Nullpunkt je Block) | **1,291868e-03** | 2,220486e-03 | 3,632490e-04 | **−1,16** |
+
+Kalibriert (`--center`, die Engine-Tabelle): dieselbe Richtung — Uniformitätspreis **0,413 dB**,
+Scherungspreis **1,285 dB**, die Scherung **1,18 dB** besser als `lloyd16+max`. Die implementierbare
+Regel (zwei LS-Durchläufe) liegt **0,36 dB** (unkalibriert) bzw. **0,44 dB** (kalibriert) von der
+erschöpfenden Oracle entfernt.
+
+### Die drei Preise — und damit die Antwort
+
+| Preis | Wert | Bedeutung |
+|---|---:|---|
+| **Uniformitätspreis** (`lloyd16+LS` / `uniform+LS`) | **0,43 dB** | die **Form** (nicht-uniforme Stufen) kostet das — bei **denselben** Bytes |
+| **Scherungspreis** (`uniform+LS` / `uniform+LS+z`) | **1,29 dB** | die **Platzierung** (der Nullpunkt) kauft das — aber **ein Extra-Budget** (0,5 bit/Zelle) |
+| der kernelfreie Weg (`lloyd16+max` / `uniform+LS`) | 0,13 dB | der Weg ganz ohne Kernel-Änderung |
+
+### Warum der Nullpunkt so viel holt: es ist der **Bias**
+
+Die rotierten K/V-Zeilen tragen einen **festen Kanal-Offset** (der C1-Befund: der Blockmaß-Fehler
+sinkt um 2,01 dB, wenn man ihn vorher abzieht). Ein **um null zentriertes** uniformes Gitter
+verschenkt deshalb Range: der fitted Nullpunkt liegt im Median **0,94 Schritte** vom Gitterzentrum
+(90 %-Quantil 2,27), und die Konstante, die der Kernel je Block addieren müsste, ist **unter einer
+halben Stufe** groß. **Der per-Block-Nullpunkt entfernt den Bias pro Block** — ohne Tabelle, ohne
+Basisdisziplin im Snapshot, ohne Artefakt.
+
+**Er ist aber kein Ersatz für die per-Kanal-Kalibrierung:** die Kalibrierung holt 2,01 dB, der
+per-Block-Nullpunkt 1,29 dB, **beide zusammen 3,18 dB** (1,6887e-03 → 8,1188e-04). Der Kanal-Offset
+ist ein Vektor über alle Blöcke, der Block-Nullpunkt ein Skalar je Block.
+
+### Was das für die Architektur heißt — und was nicht
+
+1. **Der kernelfreie Weg ist billig, aber er kostet 0,43 dB** (gegen die beste Lloyd-Variante). Das
+   ist **weniger**, als die Theorie für Gauß-Daten nahelegt (Lloyd-Max gegen den besten
+   Uniform-Quantizer mit 16 Stufen: +0,88 dB; auf 32-Wert-Blöcken ist die *freie* Form sogar
+   8 dB besser als jede feste Form — der transductive Anpassungseffekt kleiner Blöcke).
+2. **Der affine Shear ist nicht „gut genug", er ist besser** (+0,86 dB gegen `lloyd16+LS`) — **aber
+   auf anderen Bytes** (5,0 statt 4,5 bit/Zelle; mit einem 5-Bit-Nullpunkt 4,66) **und mit einem
+   Kernel-Term** (K: die Query-Gruppensummen, je Kopf einmal — billig; V: eine gewichtete Summe je
+   Gruppe — ein zusätzlicher Reduktionsschritt).
+3. **Keine End-to-End-Aussage.** Die Block-MSE übersetzt sich nicht 1:1 in nats; die einzige
+   vermessene Brücke der Kampagne ist ein Datenpunkt (1,10 dB Block ↔ +0,00400 nats, der
+   Level-Split, t = +2,99). **Eine Beobachtung, kein Gesetz.**
+4. **Der Nullpunkt ist ein Codec, kein Fast-Path.** Er braucht ein eigenes Byte-Format (ein
+   Nullpunkt je 32-Wert-Block) und einen End-to-End-Arm — er gehört in eine **eigene Stufe**, nicht
+   in S6.
+
+### Und die Verwandtschaft mit der Literatur
+
+Der per-Block-Nullpunkt ist genau das, was die Literatur „Zero-Point" nennt (OffQ, KIVI) — nur
+**pro Block** statt pro Kanal. Und er ist die **angewandte Mathematik**, die die Anregung
+gemeint hat: die Lloyd-Tabelle ist der optimale Compander (Max 1960), und ein **verschobenes
+uniformes Gitter** ist die **Ingenieursform** des Companders (μ-Law, A-Law) — die Frage „wie viel
+vom Lloyd-Max-Vorteil bleibt bei pro-Block-Affinität" ist damit **nicht** mit „nichts" beantwortet,
+sondern mit **„bei gleichem Budget 0,43 dB Verlust, bei einem Extra-Halbit 0,86 dB Gewinn"**.
+
+**Nebenbefund (ein Werkzeugfehler, im Protokoll als Abweichung 17):** die Option `--layers` in
+`tools/kv_codec_mse.py` filtert mit `range(N)`; die Layer des Dumps sind aber **3, 7, 11, … 47**,
+also lieferte `--layers 1` „no records". Das ist der Grund, warum der Vergleichslauf der Kampagne
+notgedrungen auf „Layer 3+7" stand.
 
 ## 4. RDNA4: die Matrix-Core-Achse ist **nicht** unser Fast-Path — und die Community misst sie uneinheitlich
 
