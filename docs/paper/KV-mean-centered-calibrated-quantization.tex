@@ -3,6 +3,11 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.11 2026-11-11  the yardstick checked: int8's own KV codec carries no mean
+%                     drift (1.2e-04 sd on the key side against the data's own 0.2673
+%                     sd) and its clamp never fires in 402 million values, so the gap
+%                     between the arms is noise and not drift; and the third source of
+%                     error restated as noise amplification rather than a shift
 %   v0.10 2026-11-11  where the per-channel bias comes from (measured: the ratio of the
 %                     un-rotated dump mean to the probe mean is 1.000 in every layer, the
 %                     round trip is exactly zero, so the bias is the data and not an
@@ -119,7 +124,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.10, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.11, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -134,7 +139,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.10 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.11 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -214,6 +219,8 @@ The numbers in Tables~\ref{tab:center} and~\ref{tab:center-effect} are this pape
 \emph{The gates are effectiveness gates, not only quality gates.} Every arm's transcript is hashed. The \texttt{int8} arm is byte-identical to the reference run, and an arm that is supposed to change something must produce a \emph{different} hash. This is not a formality: the first run of the calibrated arm produced an identical transcript --- the verification path rotated the rows on its own, so the arm did nothing --- and a quality table alone would have shown a plausible number for it. A number that does not move because the arm did nothing is the failure mode a hash catches and a KL does not.
 
 \emph{The statistics are paired.} The comparison of two arms is a paired per-segment difference over the eight segments (the text cancels), with a paired $t$, and per position a 95\,\% interval. ``Not behind'' is only claimed where the interval allows it.
+
+\emph{The yardstick carries no bias of its own.} \texttt{int8} is the anchor every arm is measured against, so it is worth asking whether that anchor drifts. It does not: its KV codec stores an fp16 scale per 64 values and an 8-bit code per value ($\texttt{scale} = \texttt{fp16}(\max|x|/127)$, $\texttt{code} = \mathrm{clamp}(\mathrm{rint}(x/\mathrm{scale}), -127, 127)$), a symmetric grid with round-to-nearest, and measured on the engine's own cells its drift of the per-channel mean is $1.2\cdot10^{-4}$ sd on the key side and $4.8\cdot10^{-5}$ sd on the value side --- three orders of magnitude below the channel bias the data itself carries ($0.2673$ sd). The clamp is inert: it can only bite if the fp16 scale rounds down by more than $0.5/127$, and the fp16 rounding is at most $4.9\cdot10^{-4}$, a factor of eight short; no value in 402 million hit it. What the scale's own rounding does do is shrink the extreme of a group by $|\varepsilon|\cdot\max|x|$ when it rounds down --- and the second fp16 rounding, on the product, cancels it almost exactly (the reconstructed extreme is off by $3\cdot10^{-7}$ sd). So the gap between the arms and the anchor is noise, not drift, and it has to be explained as noise.
 
 \emph{The calibration table.} The offsets are per layer, per KV head and per channel, with K and V separate: 3,072 values per side, 12\,KB in fp16. They are read from a dump of the engine's own rows (12 layers $\times$ 32,746 cells $\times$ 2 KV heads); the dump holds the rotated rows and the table lives in the channel space, so the transform is undone once --- the Walsh--Hadamard is an involution. The table is opt-in through a loader switch, the \texttt{int8} path stays byte-identical, and the values are added back on the output path with one vector add per token and head, because the attention weights sum to one. The corrections are subtracted before the rotation and added back after it, in that order.
 
@@ -381,7 +388,7 @@ The predecessor's measurements answer, partially, where the remaining error live
 
 The applied literature reads it the same way and goes further: the post-Hadamard channels of a trained model *still differ in mean*, and the centering is therefore composed with the transform rather than kept outside it\,\cite{hadanorm}; a KV-cache rotation orders its channels by a per-channel statistic measured \emph{after} the rotation\,\cite{rotatekv}, which only makes sense if that structure is real and stable. The numerics of the transform are a separate matter: the error of a fast Walsh--Hadamard in reduced precision is a rounding error, reducible with compensated summation, not a systematic bias. What \emph{is} a real trap is the opposite of the artifact hypothesis --- offsets measured in the wrong basis. A bias is basis-dependent, and the public fork that applies the same correction to the KV cache carries a guard that refuses a bias measured in the wrong basis\,\cite{llamacpp-center}; the measurement error that this paper had to correct was of exactly that kind, an offset set measured on the key side only and merged over heads, applied to both sides.
 
-\paragraph{And a third source sits inside the bulk: a fixed per-channel offset.} The deficit is not only a coverage question. The bulk's own codec spends part of its range on something that is not signal: the cached K and V rows carry a fixed per-channel offset, and the scale is a maximum statistic, so that offset inflates the scale of every block and is paid for by every value in it. Removing it before the rotation is worth 0.17\,dB of block error on the key side and 0.36\,dB on the value side (Section~\ref{sec:target}) --- less than the level table and the per-block scale together --- and end to end $+0.00677$ nats on the plain 4-bit arm. This is the one lever of this paper that is measured rather than proposed, and it is orthogonal to the window: the overlay buys exact cells, the offset buys back the range the bulk wastes. The same measurement, however, shows its limit: the offset and the level table buy back the same range, so on the 16-level-on-both-sides codec the offset has nothing left to buy (Table~\ref{tab:center}).
+\paragraph{And a third source sits inside the bulk: a fixed per-channel offset.} The deficit is not only a coverage question. The bulk's own codec spends part of its range on something that is not signal: the cached K and V rows carry a fixed per-channel offset, and the scale is a maximum statistic, so that offset inflates the scale of every block and is paid for by every value in it. The mechanism is worth stating precisely, because it is easy to get wrong: the offset does **not** make the codec drift (the measured drift of the 4-bit codec is as small as the anchor's, $1.4\cdot10^{-4}$ sd), it makes the codec **noisier** --- the block's maximum grows by the bias's share, the step grows with it, and the quantization noise grows with the step. Removing the offset before the rotation is worth 0.17\,dB of block error on the key side and 0.36\,dB on the value side (Section~\ref{sec:target}) --- less than the level table and the per-block scale together --- and end to end $+0.00677$ nats on the plain 4-bit arm. This is the one lever of this paper that is measured rather than proposed, and it is orthogonal to the window: the overlay buys exact cells, the offset buys back the range the bulk wastes. The same measurement, however, shows its limit: the offset and the level table buy back the same range, so on the 16-level-on-both-sides codec the offset has nothing left to buy (Table~\ref{tab:center}).
 
 Together these facts point one way: the bulk must become a better code than 4-bit Lloyd --- and stop spending range on a fixed offset --- and the ring must become cheaper per protected cell. Neither alone reaches 5.0: a smaller fp16 ring loses the statistics \texttt{int8} wins, and a better bulk without the byte side stays above the ceiling.
 
