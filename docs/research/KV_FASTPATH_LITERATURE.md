@@ -263,6 +263,72 @@ sondern mit **„bei gleichem Budget 0,43 dB Verlust, bei einem Extra-Halbit 0,8
 also lieferte `--layers 1` „no records". Das ist der Grund, warum der Vergleichslauf der Kampagne
 notgedrungen auf „Layer 3+7" stand.
 
+
+## 3d. **Was der Nullpunkt tut** — die Analyse, gemessen (2026-11-11)
+
+Dieser Abschnitt beantwortet die Rückfrage „macht die gescherte Variante nicht auch eine Mittelwert- oder
+Center-Korrektur?" — und die Antwort ist **nein, nicht dieselbe**. Die Messung: dieselben Zellen wie
+oben (Layer 3, je 256 Zellen → 16.384 Blöcke), die K- und die V-Seite getrennt.
+
+### Der Nullpunkt ist eine **Form**-Korrektur, keine Mittelwert-Korrektur
+
+| | K | V |
+|---|---:|---:|
+| Korrelation: **Nullpunkt** ↔ **Blockmittelwert** | +0,51 | +0,63 |
+| Korrelation: **Rest** (Nullpunkt − Mittelwert) ↔ **Blockschiefe** | **+0,89** | **+0,89** |
+| Median \|Blockmittelwert\| / Streuung des Blocks | 0,11 | 0,14 |
+| Median Schiefe des Blocks | +0,035 | +0,044 |
+| Median Nullpunkt (in Code-Einheiten; die Kernel-Konvention ist 8) | 7,44 | 7,35 |
+| Median Beitrag des Blockmittelwerts zum Nullpunkt | **0,03 Schritte** | — |
+
+**Der Blockmittelwert ist nahezu null** (Median −0,0026 auf der K-Seite, 0,11 Streuungen) und trägt
+im Median **0,03 Schritte** zum gefitteten Nullpunkt bei. Was den Nullpunkt bestimmt, ist die **Schiefe**
+der Blockverteilung (r = +0,89 mit dem Rest): die Verteilung liegt dichter auf einer Seite, und ein um
+null zentriertes Gitter gibt Range für die andere Seite aus.
+
+### Die Verschiebung ist klein — und trotzdem wirkt sie
+
+| | Median \|Fehler\| im Bulk | geclippt | Stufenweite \|s\| | Anteil der Clips am Fehler |
+|---|---:|---:|---:|---:|
+| `uniform+LS` (Nullpunkt 0) | 0,0868 | 5,84 % der Werte | 0,367 | 4,8 % |
+| `uniform+LS+z` (geschert) | **0,0744** | 8,18 % der Werte | 0,349 | 4,8 % |
+| `lloyd16+max` (die Engine-Tabelle) | 0,0795 | — | — | — |
+
+**Zwei Erklärungen, die man naheliegend annimmt, sind falsch** und wurden geprüft: die Stufenweite ist
+**fast gleich** (0,367 gegen 0,349), und das Clipping ist **nicht** die Geschichte (die Clips tragen in
+beiden Fällen 4,8 % des Gesamtfehlers; die gescherte Variante clippt sogar *mehr*). Was passiert: die
+gescherte Variante holt im **Bulk** 14 % (Medianfehler 0,0868 → 0,0744) und zahlt das mit dem Tail,
+dessen Fehleranteil klein bleibt.
+
+### Es ist eine **dritte** Art, den Bias zu entfernen
+
+| | **was** | **wo** | **Wirkung** (Block-MSE) | **Preis** |
+|---|---|---|---:|---|
+| **Kalibrierung** | ein **Vektor** je (Layer, Kopf, Kanal) | **vor** der Rotation, für alle Blöcke | **2,00 dB** | 12 KB je Modell, Basisdisziplin im Snapshot, V-Add-Back |
+| **Nullpunkt** | die **Form/Lage** je Block | am Encoder, **ohne** Tabelle | **1,16 dB** | **0,5 bit/Zelle** + eine Kernel-Konstante je Block |
+| **Rotation** | verteilt nur (‖H·μ‖ = ‖μ‖) | — | 0 | — |
+
+**Sie sind additiv, nicht substituierend:** 2,00 + 1,16 = **3,18 dB** (gemessen: roh 1,688660e-03 →
+kalibriert 1,065307e-03 → kalibriert **und** geschert 8,118799e-04). Der Kanaloffset ist ein fester
+Vektor, der über alle Blöcke gleich ist; der Blockanteil schwankt von Block zu Block.
+
+### Die Regel, die für den Plan daraus folgt
+
+**Wo man die Korrektur anbringt, entscheidet, was sie kostet.** Dieselbe Sache — den verschobenen
+Block richtig legen — ist **im Modell** billig (12 KB einmal, für alle Blöcke, keine Cache-Bits) und
+**im Cache** teuer (0,5 bit *pro Zelle* plus Kernel-Arbeit). Die Kalibrierung ist die eine Variante,
+der Nullpunkt die andere. Deshalb ist die Reihenfolge der Eingriffe im Pipeline eine **Designfrage**,
+und deshalb kann die Frage „welche Center-Korrektur?" nicht ohne die Frage „wo?" gestellt werden.
+
+### Was daraus **nicht** folgt
+
+- **Keine End-to-End-Aussage.** Der Blockfehler übersetzt sich nicht 1:1 in nats (die einzige
+  vermessene Brücke ist ein Punkt: 1,10 dB ↔ +0,00400 nats, der Level-Split).
+- **Der Nullpunkt ist kein Ersatz für die Kalibrierung** (1,16 gegen 2,00 dB, und additiv).
+- **Der Nullpunkt ist ein Codec, kein Fast-Path:** er braucht ein eigenes Byte-Format (ein
+  Nullpunkt je 32-Wert-Block, +2 Bytes je 32 Werte → 5,0 bit/Zelle; ein 8-Bit-Nullpunkt gäbe 4,66)
+  und eine End-to-End-Messung, bevor er über seine Qualität entscheidet.
+
 ## 4. RDNA4: die Matrix-Core-Achse ist **nicht** unser Fast-Path — und die Community misst sie uneinheitlich
 
 ### 4a. Unsere eigene Messung (der Kern)
