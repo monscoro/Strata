@@ -3,6 +3,12 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v0.10 2026-11-11  where the per-channel bias comes from (measured: the ratio of the
+%                     un-rotated dump mean to the probe mean is 1.000 in every layer, the
+%                     round trip is exactly zero, so the bias is the data and not an
+%                     artifact of the transform), the paired tail and top-1 test that
+%                     keeps the product decision, and the literature that reads the
+%                     post-Hadamard mean as a real property (HadaNorm, RotateKV)
 %   v0.9  2026-11-10  the block measurement corrected: with the offsets the engine
 %                     actually uses, the per-channel offset is worth 0.17 dB on the key
 %                     side and 0.36 dB on the value side, not the 1.9 dB an earlier probe
@@ -113,7 +119,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.9, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 0.10, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -128,7 +134,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.9 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 0.10 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -289,6 +295,8 @@ A fourth reading comes from the stock row, and it puts the work in proportion. T
 
 The product reading of the rows together is therefore: \textbf{the 16/16 codec with the window, without the calibration}. It reaches \texttt{int8}'s level on this corpus, it needs no per-model artifact, no basis discipline in the snapshot and no extra runtime, and it is the arm the ladder's first step selects. The calibration stays a lever for the 8-level-value probe and for any codec that wastes range --- a useful answer, but not the one this plan started from.
 
+The two statistics on which the calibrated 16/16 arm looks better --- the p99 (0.2263 against 0.2410) and the top-1 agreement (98.97\,\% against 98.89\,\%) --- are each a quantile or a count without a paired test, and both were put to one. The top-1 difference is not significant: the two arms disagree on 346 of 32,746 positions, 186 in favour of the calibrated arm and 160 against it, an exact McNemar $p = 0.18$. On a tail defined once and independently of the arms --- the 1\,\% of positions where \texttt{int8}'s KL is largest --- the uncalibrated arm is the better one (mean KL 1.080 against 1.211), while both are far ahead of \texttt{int8} (1.445). So the reading that survives is the one the paired mean already gave, and the p99 has to be re-checked on the 128K texts, where it is a criterion of its own (K3), with the same paired tools.
+
 \subsection{The target, fixed before the first run}
 
 The target has six criteria. All are checked in the order given; a criterion that fails ends the arm. The statistics are the predecessor's, so the comparison is paired and same-harness.
@@ -368,6 +376,10 @@ The predecessor's measurements answer, partially, where the remaining error live
 \paragraph{2K is saturated.} The window is already indistinguishable from \texttt{int8} at 2K ($t{=}-1.92$, window ahead in 2 of 8 segments). A target statistic that no arm can fail is not a test; 2K is reported, not used.
 
 \paragraph{A fixed per-channel offset rides along with the rotation.} The channel statistics measured before and after the transform (the S2 probe of 2026-10-27, in-repo) carry a mean that the plan had not read yet. The standardized channel mean $|\mathrm{mean}|/\mathrm{sd}$ has median 0.2673 before the transform and 0.2825 after it, against 0.0044 as the sampling expectation at this token count: the offset is real, and the transform does not remove it --- it turns a fixed per-channel offset into a fixed bias in every rotated coordinate, because the same offsets add up with the Hadamard signs. The offsets are channel-specific rather than a common mode (the mean of the channel means is 0.007 to 0.068 of the typical channel standard deviation, layer by layer). This matters here because the block scale is a maximum statistic, $d = \mathrm{amax}/l_{\max}$, with $\mathrm{amax}$ the shuffle maximum over the 32 values of a block: a fixed bias inflates that maximum, and the inflation is paid in resolution by every value of the block. Centering the keys before the transform is exactly preserving --- $\langle q, m\rangle$ shifts every logit of one query by the same constant, so the softmax does not move, and centering the values shifts the output by $m$, because the attention weights sum to one --- and it is the lever the 2026 literature opens\,\cite{optr}. From the moments alone the block scale looks 15\% to 30\% too large, which would be one to two decibels of mean-squared error; measured on the engine's own cells, with the offsets the engine itself uses, the effect is 0.17\,dB on the key side and 0.36\,dB on the value side --- an order of magnitude less than the estimate from the moments, and the reason a plan should measure the estimate. (An earlier reading of this measurement reported 1.9\,dB; that number came from a probe variant whose offsets belong to a different sample and to the key side only, and it does not describe the correction the engine applies.) The offset is stable across a second text and a second length (correlation 0.9489, mean deviation 0.0799\,sd), so the table it needs is a per-model artifact rather than a per-run one.
+
+\paragraph{Where the bias comes from: the data, not the transform.} A fixed per-channel offset is a fixed vector in the transform space, and an exactly orthogonal transform maps it back exactly --- so a bias that *vanished* under the back-transformation could only be an artifact of the transform's arithmetic, not of the data. The two halves of that question are measured separately here: the channel probe measures the key means \emph{before} the rotation, and the cell dump holds the \emph{rotated} rows, so un-rotating the dump's mean and comparing it with the probe's is a direct test. It comes out at a ratio of **1.000** in every layer and every head: the bias in the transform space is exactly the image of a real bias in the channel space, and the round trip $H(H(y)) - y$ is exactly zero on the dumped cells. The bias is the data's.
+
+The applied literature reads it the same way and goes further: the post-Hadamard channels of a trained model *still differ in mean*, and the centering is therefore composed with the transform rather than kept outside it\,\cite{hadanorm}; a KV-cache rotation orders its channels by a per-channel statistic measured \emph{after} the rotation\,\cite{rotatekv}, which only makes sense if that structure is real and stable. The numerics of the transform are a separate matter: the error of a fast Walsh--Hadamard in reduced precision is a rounding error, reducible with compensated summation, not a systematic bias. What \emph{is} a real trap is the opposite of the artifact hypothesis --- offsets measured in the wrong basis. A bias is basis-dependent, and the public fork that applies the same correction to the KV cache carries a guard that refuses a bias measured in the wrong basis\,\cite{llamacpp-center}; the measurement error that this paper had to correct was of exactly that kind, an offset set measured on the key side only and merged over heads, applied to both sides.
 
 \paragraph{And a third source sits inside the bulk: a fixed per-channel offset.} The deficit is not only a coverage question. The bulk's own codec spends part of its range on something that is not signal: the cached K and V rows carry a fixed per-channel offset, and the scale is a maximum statistic, so that offset inflates the scale of every block and is paid for by every value in it. Removing it before the rotation is worth 0.17\,dB of block error on the key side and 0.36\,dB on the value side (Section~\ref{sec:target}) --- less than the level table and the per-block scale together --- and end to end $+0.00677$ nats on the plain 4-bit arm. This is the one lever of this paper that is measured rather than proposed, and it is orthogonal to the window: the overlay buys exact cells, the offset buys back the range the bulk wastes. The same measurement, however, shows its limit: the offset and the level table buy back the same range, so on the 16-level-on-both-sides codec the offset has nothing left to buy (Table~\ref{tab:center}).
 
@@ -519,6 +531,16 @@ ACL Findings 2024, arXiv:2403.01241.
 Z.~Su, Z.~Chen, W.~Shen, H.~Wei, L.~Li, H.~Yu, K.~Yuan.
 \emph{RotateKV: Accurate and Robust 2-Bit KV Cache Quantization for LLMs via Outlier-Aware Adaptive Rotations}.
 arXiv:2501.16383, 2025 (IJCAI 2025).
+
+\bibitem{hadanorm}
+G.~Federici et~al.
+\emph{HadaNorm: Adaptive Channel Centering for Post-Hadamard Quantization}.
+2025. (Cited via the transform survey below; observed in the survey's account: post-Hadamard channels still differ in mean, so a dynamic mean-centering is composed with the transform.)
+
+\bibitem{great-inversion}
+E.~Jokar.
+\emph{Transforms for LLM Quantization: The Great Inversion and Format Co-Design}.
+arXiv:2608.25188, 2026. (A survey of the transform stage: 200 works, 43 transform methods classified, and the inversion between allocation-flexible coding and the shared-scale quantizer a deployed kernel performs.)
 
 \bibitem{quarot}
 S.~Ashkboos, A.~Mohtashami, M.~L.~Croci, B.~Li, P.~Cameron, M.~Jaggi, D.~Alistarh, T.~Hoefler, J.~Hensman.
