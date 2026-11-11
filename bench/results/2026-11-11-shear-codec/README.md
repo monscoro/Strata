@@ -70,6 +70,26 @@ Name, weil die Kalibrierung ihre Tabelle (`STRATA_KV_CENTER=<datei>`) braucht un
 tragen kann. Die Arm-Matrix ist damit **2 × 2**: {ohne, mit} Nullpunkt × {ohne, mit} Kalibrierung,
 plus die zwei Anker (`int8`, `q4lm32w`).
 
+### Der Zielpunkt ist `q4u32zc` — die anderen drei Modi sind die **Ablation**
+
+**Der avisierte Zielpunkt des Arms ist `q4u32zc`**: der Shear **und** die per-Kanal-Kalibrierung
+zusammen. Der Grund ist die gemessene Additivität: die Kalibrierung holt 2,00 dB Blockfehler (ein
+**Vektor** je Layer/Kopf/Kanal), der per-Block-Nullpunkt 1,16 dB (eine **Form** je Block), **beide
+zusammen 3,18 dB** — sie korrigieren verschiedene Anteile, und wer nur einen davon nimmt, verschenkt
+den anderen. Die drei anderen Modi (`q4u32`, `q4u32c`, `q4u32z`) sind die **Ablation**, die zeigt,
+welcher Teil wie viel trägt; sie sind kein Ziel, sondern die Zerlegung des Ziels.
+
+**Und die Byte-Folge, die daraus folgt (sie ist der Grund, warum das Ziel ein Qualitäts-, kein
+Ratenpunkt ist):** die Konstante des Nullpunkts kostet **einen Wert je 32-Wert-Block** — als fp16
+**0,5 bit/Zelle** (der Bulk: 4 Bits Codes + 0,5 Skala + 0,5 Konstante = **5,0 bit/Zelle**), als 6-Bit
+Konstante in Schritten (die Konstante liegt im Median 0,92 Schritten vom Gitterzentrum, die
+Auflösung 1/16 Schritt ist weit unter dem Quantisierungsfehler) **0,19 bit/Zelle** (der Bulk
+**4,69 bit/Zelle**). Mit dem Ring des Fensters (0,79 bit/Zelle) sind das **5,79** (fp16) bzw. **5,48**
+(6 Bit) bit/Zelle gegen die **5,29** des ausgelieferten Fensters. **Der Zielpunkt des Papiers, 5,0
+bit/celle, ist damit genau der Bulk des Shears ohne den Ring** — mit dem Ring ist er nicht zu
+erreichen. **Das heisst: der Shear ist ein Qualitätspunkt, und der Ratenpunkt bleibt eine andere
+Frage.** Diese Rechnung gehoert ins Paper, sobald der Arm eine Wirkung zeigt.
+
 **Die sechs Arme werden in EINEM Lauf gefahren** (ein `quant_quality.py compare` gegen die fp16-Referenz),
 damit die gepaarten Differenzen vergleichbar sind — genau der Fehler, der in Abweichung 10 passiert ist.
 
