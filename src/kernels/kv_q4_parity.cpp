@@ -516,6 +516,7 @@ int main() {
         ck(cudaMemcpy(h_shk.data(), d_shk, h_shk.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost), "d2h");
         ck(cudaMemcpy(h_shv.data(), d_shv, h_shv.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost), "d2h");
         double worst = 0.0;
+        long bad = 0;
         for (int i = 0; i < sh_max_ids; ++i) {
             const int cell = shids[i];
             for (int is_v = 0; is_v < 2; ++is_v) {
@@ -523,11 +524,31 @@ int main() {
                     const float* orig = (is_v ? sh_v[cell].data() : sh_k[cell].data()) + h * D;
                     const uint16_t* g = (is_v ? h_shv.data() : h_shk.data()) + (i * H + h) * D;
                     for (int d = 0; d < D; ++d) {
-                        const double e = std::fabs((double) k::f32_from_f16(g[d]) - (double) orig[d]);
+                        const float got = k::f32_from_f16(g[d]);
+                        const double e = std::fabs((double) got - (double) orig[d]);
+                        if (!(e < 1e30)) {   // inf or NaN
+                            if (bad == 0) {
+                                std::printf("  BAD gathered value: i=%d is_v=%d h=%d d=%d raw=0x%04x got=%f orig=%f\n",
+                                            i, is_v, h, d, g[d], got, orig[d]);
+                                const long long page = (long long) table[cell / P];
+                                const long long row = (page * H + h) * P + (cell % P);
+                                const uint8_t* pp = (is_v ? h_sv.data() : h_sk.data()) + row * sbytes_per_head;
+                                const k::block_q4_0z* blk = reinterpret_cast<const k::block_q4_0z*>(pp) + (d / 32);
+                                std::printf("       der Block: d=0x%04x (%.5f)  c=0x%04x (%.5f)  qs[0]=0x%02x\n",
+                                            blk->d, k::f32_from_f16(blk->d), blk->c, k::f32_from_f16(blk->c),
+                                            blk->qs[0]);
+                            }
+                            ++bad;
+                            continue;
+                        }
                         if (e > worst) worst = e;
                     }
                 }
             }
+        }
+        if (bad > 0) {
+            std::fprintf(stderr, "FAIL: %ld gathered values are inf or NaN (the shear's reader)\n", bad);
+            ++g_fail;
         }
         std::printf("  -> the shear's max reconstruction error after the gather: %.4f (OK)\n", worst);
 

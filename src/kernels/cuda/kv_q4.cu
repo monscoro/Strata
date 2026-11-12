@@ -412,21 +412,29 @@ __global__ void kv_gather_q4_kernel(const uint8_t* __restrict__ k_q4, const uint
         }
     }
 
-    const block_q4_0* k_blk = reinterpret_cast<const block_q4_0*>(k_q4 + row * bytes_per_head) + b;
-    const block_q4_0* v_blk = reinterpret_cast<const block_q4_0*>(v_q4 + row * bytes_per_head) + b;
-    const float kd = f32_from_f16(k_blk->d);
-    const float vd = f32_from_f16(v_blk->d);
-    // the shear's constant (the offset in the reader's units): v = s*(code-8) + c
-    float kc = 0.0f, vc = 0.0f;
+    // The shear's block is 20 bytes (the codes, the scale, the constant), so EVERY field has to
+    // be read through the 20-byte struct: a block_q4_0* would advance 18 bytes per block and
+    // read the wrong block from the second one on.
+    const int j = t < 16 ? t : (t - 16);
+    float kd, vd, kc = 0.0f, vc = 0.0f;
+    uint8_t k_byte, v_byte;
     if constexpr (SHEAR) {
         const block_q4_0z* kz = reinterpret_cast<const block_q4_0z*>(k_q4 + row * bytes_per_head) + b;
         const block_q4_0z* vz = reinterpret_cast<const block_q4_0z*>(v_q4 + row * bytes_per_head) + b;
+        kd = f32_from_f16(kz->d);
+        vd = f32_from_f16(vz->d);
         kc = f32_from_f16(kz->c);
         vc = f32_from_f16(vz->c);
+        k_byte = kz->qs[j];
+        v_byte = vz->qs[j];
+    } else {
+        const block_q4_0* k_blk = reinterpret_cast<const block_q4_0*>(k_q4 + row * bytes_per_head) + b;
+        const block_q4_0* v_blk = reinterpret_cast<const block_q4_0*>(v_q4 + row * bytes_per_head) + b;
+        kd = f32_from_f16(k_blk->d);
+        vd = f32_from_f16(v_blk->d);
+        k_byte = k_blk->qs[j];
+        v_byte = v_blk->qs[j];
     }
-    const int j = t < 16 ? t : (t - 16);
-    const uint8_t k_byte = k_blk->qs[j];
-    const uint8_t v_byte = v_blk->qs[j];
     const int kn = (t < 16) ? (k_byte & 0x0F) : (k_byte >> 4);
     const int vn = (t < 16) ? (v_byte & 0x0F) : (v_byte >> 4);
     const int kq = (NK == 0) ? (kn - 8) : (int) ((NK == 8) ? kQ4l8Map[kn] : kQ4lMap[kn]);
