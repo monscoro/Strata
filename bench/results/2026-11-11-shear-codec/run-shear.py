@@ -39,6 +39,7 @@ WIN = {"STRATA_KV_WINDOW": "1"}
 
 # tag, --kv, calibrated, extra env
 ARMS = [
+    ("fp16", "fp16", False, {}),          # the reference the absolute KL is measured against
     ("int8", "int8", False, {}),
     ("q4lm32w", "q4lm32w", False, {}),          # the mode carries the window
     ("q4lm32w-center", "q4lm32w", True, {}),
@@ -96,6 +97,8 @@ def main():
     runs = [str(OUT / f"cwe4k-{t}.tsv") for t, kv, c, e in ARMS
             if (not ONLY or t in ONLY) and (OUT / f"cwe4k-{t}.tsv").exists()]
     if len(runs) >= 2:
+        # the reference is the fp16 arm (the first one): the absolute KL and the paired differences
+    # are measured against it
         cmd = [PY, str(REPO / "tools" / "quant_quality.py"), "compare"] + runs + \
               ["--paired", "--ids", str(IDS), "--segments",
                "--json", str(OUT / "compare-all.json"), "--paired-json", str(OUT / "paired-all.json")]
