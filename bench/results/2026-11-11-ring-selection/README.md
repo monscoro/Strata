@@ -172,7 +172,7 @@ Fenster × 12 Layer, `skipped 0`; der Destruktor meldet 32.766 gestartete und 32
 |---|---|---|
 | **D2-a** | Breite der Auswahl je Query | **2035,0** Zellen im Mittel; **98,44 %** der Queries liegen am Deckel (2.051); Identität (p+1 ≤ 2.051) nur 1,56 % |
 | **D2-b** | Überdeckung des positionalen Rings (R=64 + S=256) | **8,22 %** aller ausgewählten Ids (Sink 0,95 %, Fenster 7,27 %), je Layer 5,9–13,2 %. Der Ring ist 0,24 % der Zellen → **33,7×** angereichert. E1s 8,55 % ist damit bestätigt |
-| **D2-c** | Vereinigung \|∪ der letzten N Queries\| | N=1: 2.051 · N=2: 2.932 · **N=4: 4.396** · N=8: 6.554 · N=64: 20.837 · **N=4096: 58.758** (max 117.641 = 90 % des Kontexts); 31 Anker je Layer |
+| **D2-c** | Vereinigung \|∪ der letzten N Queries\| | N=1: 2.051 · N=2: 2.932 · **N=4: 4.396** · N=8: 6.554 · N=64: 20.837 · **N=4096: 58.758** (Maximum 117.641 = 90 % des Gesamtkontexts); 31 Anker je Layer |
 | **D2-d** | Churn (Anteil *neuer* Zellen) | Lag 1: **44,96 %** (je Layer 34,1–56,4) · Lag 8: 68,31 % · Lag 64: 74,73 % |
 | **D2-e** | Alter der gelesenen Zellen | Median **8.191** Zellen; 7,3 % jünger als 256; **53,4 %** älter als 4.096; Gipfel bei 16k–32k |
 | **D2-f** | tail-Positionen (1 % = 1.311 Positionen) | ausgewählt 100 %, von einer späteren Query gelesen 100 %, von der letzten 12,5 %, eigene Query 99,2 %, **Anteil an allen Auswahlen 1,22 %** (2 %-Set: 2,62 %) |
