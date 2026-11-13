@@ -82,3 +82,106 @@ Zeit).
 * Keine Aussage über **andere Texte**: cwe-4k, 32.746 Positionen, 8 Segmente.
 * Keine Aussage über **128K**. Der Abstand zu `int8` ist dort größer (−0,00741 nats); dieser Lauf
   entscheidet die **Richtung** und die Fairness der Referenz, nicht die 128K-Frage.
+
+---
+
+# Nachtrag 2026-11-13, 14:20: das Ergebnis
+
+Der Lauf ist durch: drei Arme, 17,4 / 17,4 / 18,2 min, 30 s Pause dazwischen. Der Reproduktionsarm
+ist **byte-identisch** zum Kampagnenarm (`d6e65140272b…`, 32.746 Zeilen, 8 Segmente), also sind die
+sieben Altarme und die drei neuen in **einem** gepaarten Vergleich gültig — alle Zahlen unten kommen
+aus einem einzigen `compare`-Durchlauf über zehn Arme mit `fp16` als Referenz.
+
+## Die absoluten Zahlen (cwe-4k, 32.746 Positionen, KL gegen fp16)
+
+| Arm | mittlere KL | Top-1 | p99 |
+|---|---:|---:|---:|
+| `fp16` | 0,00000 | 100,00 % | 0,0000 |
+| **R1** `int8` | 0,01688 | 99,05 % | 0,1888 |
+| **R2a** `int8`+ROT | **0,01579** | 99,06 % | 0,1671 |
+| **R2b** `int8`+ROT+C | **0,01476** | 99,03 % | 0,1575 |
+| `q4lm32w` (Produkt) | 0,01689 | 98,89 % | 0,2410 |
+| `q4lm32w`+C | 0,01768 | 98,97 % | 0,2263 |
+| `q4u32` | 0,01739 | 98,89 % | 0,2653 |
+| `q4u32`+C | 0,01782 | 98,96 % | 0,2062 |
+| `q4u32z` (Shear) | 0,01877 | 98,89 % | 0,2212 |
+
+## Die Gates, wie sie vorher festgelegt waren
+
+| | Differenz | Mittel | 95-%-Intervall (8 Segmente, zweiseitig) | einseitige obere Grenze | t | Gate |
+|---|---|---:|---|---:|---:|---|
+| **E1a** | R2a − R1 | −0,00108 | [−0,00321, +0,00104] | +0,00063 | −1,18 | informativ |
+| **E1b** | R2b − R1 | −0,00212 | [−0,00481, +0,00057] | +0,00005 | −1,82 | informativ |
+| **E5** | R2b − R2a | −0,00103 | [−0,00481, +0,00274] | +0,00201 | −0,63 | informativ |
+| **E2** | `q4lm32w`+C − R2b | **+0,00293** | [−0,00117, +0,00702] | **+0,00623** | +1,65 | **NICHT BESTANDEN** |
+| **E3** | `q4u32` − R2b | **+0,00263** | [−0,00084, +0,00611] | **+0,00544** | +1,75 | **NICHT BESTANDEN** |
+| **E4** | `q4u32z` − `q4u32` (Ganztext) | +0,00138 | [−0,00056, +0,00332] | +0,00295 | +1,64 | Vorzeichen falsch |
+| **E4** | `q4u32z` − `q4u32` (Antwort-Region) | −0,00193 | [−0,00409, +0,00022] | −0,00020 | −2,07 | einseitig ja, zweiseitig grenzwertig |
+
+## Der Hauptbefund: die alte Parität war gegen eine unbehandelte Referenz
+
+Die Kampagne hatte `q4lm32w` gegen `int8` mit **+0,00002** nats als Parität gelesen. Das war gegen
+`int8` **ohne** Rotation und **ohne** Kalibrierung. Mit derselben Vorverarbeitung und derselben
+Kalibrierung auf beiden Seiten ist die Referenz **besser**:
+
+* `q4lm32w`+C − R2b = **+0,00293** nats (per Position +0,00293, t 2,42, Intervall [+0,00056, +0,00529] —
+  schließt 0 aus),
+* der **ausgelieferte** Arm ohne Kalibrierung, `q4lm32w` − R2b = **+0,00213** nats (Segment-t 1,67;
+  per Position t 1,71, Intervall [−0,00032, +0,00459]).
+
+Damit ist die **Nichtunterlegenheitsgrenze nicht gezeigt** — weder über die Segment-CI (obere Grenze
++0,00623 bzw. +0,00544 gegen die vorab fixierten +0,0020) noch über den Punkt-Schätzer (+0,00293 bzw.
++0,00263 gegen +0,0010). *„Nicht gezeigt" ist nicht „widerlegt":* die Segment-Intervalle enthalten 0,
+die Auflösung des Textes (0,00200) ist selbst von derselben Größe wie der Effekt. Was der Lauf sagt,
+ist präzise: **die Parität ist nicht belegt, und der Punkt-Schätzer zeigt in die falsche Richtung.**
+
+Das ist genau der Punkt der Kollegen-Mail. Er ist mit *einem* zusätzlichen Arm-Paar entschieden, nicht
+mit einer neuen Behauptung über den Codec.
+
+**Und die Vorverarbeitung selbst ist nicht aufgelöst:** R2a − R1 = −0,00108 (t −1,18) und
+R2b − R2a = −0,00103 (t −0,63). Die Rotation und die Kalibrierung *helfen* `int8` in der Tendenz
+(0,01688 → 0,01579 → 0,01476), aber keiner der beiden Schritte ist einzeln signifikant. Der faire
+Vergleich ist trotzdem der richtige: die Referenz darf nicht schlechter sein als sie sein kann, nur
+weil ihr eine Behandlung fehlt.
+
+## Der Widerspruch im Tail — und er ist echt
+
+Die Nebenbefunde drehen die Richtung **auf den schweren Positionen** (Tail definiert über die KL von
+R2a, also armunabhängig):
+
+| A gegen R2a | Tail-Mittel A | Δ im Tail | t | Top-1 (McNemar) |
+|---|---:|---:|---:|---|
+| `q4lm32w` | 1,018 | **−0,329** | −3,04 | R2a besser, p = 0,0025 |
+| `q4u32` | 1,089 | **−0,258** | −2,24 | R2a besser, p = 0,0028 |
+| `q4u32z` | 1,144 | **−0,203** | −2,08 | R2a besser, p = 0,0020 |
+
+Im schlimmsten 1 % **von `int8`** ist jeder q4-Arm deutlich besser (bis 0,33 nats), und trotzdem
+gewinnt `int8` das Top-1 über alle Positionen und liegt bei p99 vorn (0,167 gegen 0,241). Das ist keine
+Widersprüchlichkeit, sondern die Fehlerform: **`int8` hat wenige katastrophale Positionen und viele
+fast fehlerfreie; q4 hat mehr kleine Fehler und weniger Ausreißer.** Für die 128K-Frage ist das die
+relevante Spur — dort war der Abstand ebenfalls tail-getrieben.
+
+*Grenze dieses Befunds:* der Tail ist über `int8` definiert. Er sagt „auf den Positionen, wo `int8` am
+schlechtesten ist, ist q4 besser", **nicht** „q4 hat keine schlechten Positionen" — p99 und Top-1 sagen
+das Gegenteil.
+
+## Ein Fehler in dieser Vorregistrierung (E4)
+
+Die Zahl, aus der E4 gebaut wurde (+0,00193, t 2,07), steht in der **Antwort-Region**, nicht im
+Ganztext. Die Vorregistrierung nannte die Tabelle nicht. Im Ganztext ist das Vorzeichen umgekehrt
+(`q4u32z` − `q4u32` = **+0,00138**, der Shear also *schlechter*), und das war am 2026-11-12 genauso —
+der Fehler ist meiner beim Abschreiben, nicht im Codec. E4 wird deshalb **nicht als bestanden
+gezählt**: in der Antwort-Region reproduziert der Shear seinen Befund exakt (byte-gleiche JSON-Werte:
+−0,00193, t −2,07 über dieselben 8 Segmente), im Ganztext trägt er nicht. Auch in der Antwort-Region
+ist der Befund nur **einseitig** fest (obere Grenze −0,00020); zweiseitig berührt das Intervall die 0
+(+0,00022).
+
+## Was dieser Lauf nicht sagt
+
+* Nichts über **Laufzeit** (eigene Stufe, getrennte Writer-/Reader-Zeit).
+* Nichts über **128K** und nichts über andere Texte.
+* Nichts darüber, **warum** die Kalibrierung auf `int8` so wenig auflöst (E5, t −0,63) — sie ist für
+  `kLloydWin` gebaut, und das ist eine Formatfrage, keine Wirkungsfrage.
+* `q4lm32w`+C ist im Mittel **schlechter** als `q4lm32w` (0,01768 gegen 0,01689), bei besserem p99 und
+  Top-1. Die Kampagne hatte das schon so gemessen; dieser Lauf bestätigt es gegen die neue Referenz.
+

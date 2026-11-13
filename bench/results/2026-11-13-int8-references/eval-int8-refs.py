@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+DATA = Path(r"C:\Users\krone\git\Strata-data\bench\2026-11-13-int8-references")
 
 # the pre-declared non-inferiority bound (README.md, fixed 2026-11-13 before the run)
 BOUND_UPPER = 0.0020     # the one-sided 95 % upper bound of q4 - int8 must be below this
@@ -53,9 +54,28 @@ def verdict(kind, mean, lo, hi):
     return "informativ", "kein Gate"
 
 
+def pair_of(tab, a, b):
+    """A - B from the table, whichever order the compare pass wrote it in.
+
+    quant_quality.py names a pair after the order of the arms it was given, so half of the questions here
+    are stored the other way round.  The reversal flips the sign of the mean, the t and the end points; the
+    spread (sd, sem) does not change."""
+    s = tab.get(f"{a} - {b}")
+    if s is not None:
+        return s
+    s = tab.get(f"{b} - {a}")
+    if s is None:
+        return None
+    out = dict(s)
+    out["mean"], out["t"] = -s["mean"], -s["t"]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", default=str(HERE))
+    ap.add_argument("--dir", default=str(DATA),
+                    help="the bench directory holding arms/paired-int8refs.json; the raw data live "
+                         "outside the repo, in Strata-data")
     ap.add_argument("--table", default="whole", choices=["whole", "answer"],
                     help="the whole-segment table (the campaign's primary) or the answer region")
     args = ap.parse_args()
@@ -72,20 +92,22 @@ def main():
     n = None
     for tag, question, kind, a, b in CASES:
         key = f"{a} - {b}"
-        s = tab.get(key)
+        s = pair_of(tab, a, b)
         if s is None:
             print(f"{tag}: MISSING pair {key}\n")
             continue
         n = s["n"]
         mean, sem = s["mean"], s["sem"]
         lo = mean - T975.get(n, 2.306) * sem
-        hi = mean + T950.get(n, 1.8595) * sem
-        v, why = verdict(kind, mean, lo, hi)
+        hi2 = mean + T975.get(n, 2.306) * sem
+        hi1 = mean + T950.get(n, 1.8595) * sem
+        v, why = verdict(kind, mean, lo, hi1)
         print(f"{tag}  {question}")
         print(f"     {a} - {b}")
         print(f"     mean {mean:+.5f}  sem {sem:.5f}  sd {s['sd']:.5f}  t {s['t']:+.2f}  "
               f"segments up {s['up']}/{s['n']}")
-        print(f"     95 % interval [{lo:+.5f}, {hi:+.5f}]   (one-sided upper {hi:+.5f})")
+        print(f"     two-sided 95 % interval [{lo:+.5f}, {hi2:+.5f}];  "
+              f"one-sided 95 % upper {hi1:+.5f}")
         print(f"     -> {v}: {why}\n")
     if n and n != 8:
         print(f"note: {n} segments, not 8 -- the t values above assume the campaign's geometry")
