@@ -105,6 +105,17 @@ option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF
 # The QSA layer trace (src/core/layer.cpp): one stderr line per QSA layer, for the hunt of a wrong KV path.  It is
 # compiled out by default, so a release build pays nothing for it; ON builds the line in (debug builds only).
 option(STRATA_QSA_LAYER_TRACE "Compile the QSA layer trace into the engine (one stderr line per QSA layer)" OFF)
+# The QSA selection dump (src/core/verify.cpp): Block-Ids per token and QSA layer, for D2 (indexer selection
+# behaviour).  Compiled out by default; ON builds the dump path in.  At run time it is enabled through
+# STRATA_QSA_SELECT_DUMP=1 and writes sel_dump.bin (or $STRATA_QSA_SELECT_DUMP_PATH) in the CWD.
+option(STRATA_QSA_SELECT_DUMP "Compile the QSA selection dump into the engine (D2 instrument: Block-Ids per token and layer)" OFF)
+if(STRATA_QSA_SELECT_DUMP)
+  # Global and not per target: the switch adds members to `Verifier` (include/strata/core/verify.hpp), so every
+  # translation unit that includes the header must see the same class layout - verify.cpp, generate.cpp and the
+  # tests alike. Per-target definitions would give two different `Verifier`s in one link. The SYCL port (sycl/) is
+  # a configure of its own and has no dump; this option does not reach it.
+  add_compile_definitions(STRATA_QSA_SELECT_DUMP=1)
+endif()
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
 # switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
 # The rocBLAS tables are switched at run time (STRATA_AMD_COMMUNITY_TUNING=0).

@@ -120,3 +120,38 @@ Per-Kanal-Offset ein **Ersatz** dafür und kein Produktpfad; der Stock-Cache +0,
   dann als ein eigener Schritt mit eigenem Vertrag (G11).
 - Keine Antwort auf die 5,0-Marke selbst: die ist eine Byte-Frage und wird im Ring-Tier entschieden,
   nicht im Ring-Inhalt.
+
+## 6. Nachtrag 2026-11-13: das Instrument steht — und die Größenangabe war falsch
+
+**Das Format (nachgelesen im Code, nicht geschätzt).** Der Dump ist kein Strom aus Block-Ids, sondern je
+Fenster und QSA-Layer ein Datensatz: vier int64 (`pos0`, `layer`, `nq`, `cap`) und danach `nq * cap`
+int32. `cap` ist die Zeilenbreite (`qsa_selection_width`, hier **2.051** = 2.048 Top-K-Zellen + 3
+Block-Ids), und gültig sind nur die ersten `min(pos0 + Zeile + 1, cap)` Ids einer Zeile — unterhalb der
+Kapazität ist die Auswahl die Identität.
+
+**Die „13 MB" waren um Faktor 1000 falsch.** 131.060 Token × 2.051 Zellen × 12 Layer × 4 B ≈ **12,9 GB**
+(plus 16 B Kopf je Datensatz, ~25 MB). Die Registrierung oben rechnete mit 2.048 Einträgen und in MB;
+beides ist hier korrigiert. Auf C: lagen 369 GB frei, der Lauf ist unkritisch — aber die Zahl im Text
+war falsch und bleibt als Korrektur stehen.
+
+**Warum die Kopie auf der Karte sitzt.** Das Fenster ist ein aufgezeichneter Graph; ein Host-Copy darin
+bricht die Aufzeichnung, und ein Host-Copy danach sähe nur die **letzte** Layer-Zeile, weil `sel_` ein
+von allen Layern wiederverwendeter Puffer ist. Die Ids gehen deshalb je Layer als Graph-Knoten
+(`cudaMemcpyAsync`, D2D) in einen Staging-Puffer `[layer][row][cap]`; der Host liest ihn einmal je
+Fenster in `window_logprobs()`.
+
+**Die Zähler, und warum sie in `run()` stehen.** Der Staging-Aufruf ist Host-Code: er läuft einmal beim
+Aufzeichnen und bei einem Replay **nie** — er kann also keine Fenster zählen. Gezählt wird, was zählt:
+`run()` (ein Start = ein Fenster, dessen Kopien laufen) und der Drain. Ein Mismatch wird im Destruktor
+gemeldet; ein Fenster ohne Logprobs wird als „gestartet, nie gedrained" gemeldet, nicht still
+verschluckt.
+
+**Empirisch geprüft (Smoke-Test: 700 Token, `--prefill 512`, gfx1200):** 36 Staging-Aufrufe, davon 0
+vom Zeilen-/Layer-Guard abgewiesen; **176 Fenster gestartet, 175 gedrained** (das letzte Fenster hat
+keine Logprobs — genau die erwartete Differenz von 1); 68,9 MB Dump; Auswertung: `skipped 0`. Die
+Auswertung wurde gegen dieses Fenster plausibilisiert: im Identitäts-Regime ist die mittlere Breite
+350,0 = (1+…+700)/700, und der Churn bei Lag 1 ist 0,29 % ≈ 1 neue Zelle von ~350 — die eine neue Zelle
+je Query ist die, die mit jeder Query dazukommt.
+
+**Was hier noch nicht steht:** die Zahlen D2-a … D2-f des 128K-Laufs und die Ausgänge von G9/G10. Sie
+folgen als eigener Nachtrag, wenn der Lauf durch ist — und sie werden berichtet, wie sie fallen.
