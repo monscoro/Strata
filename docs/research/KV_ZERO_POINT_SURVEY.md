@@ -182,6 +182,15 @@ einmal offline auf rotierten Keys gelöst ✓).
    (UE8M0, 8 Bit) statt fp16 → der Bulk bei **4,25 bit/Element** (statt unserer 4,5 ✓) **und ohne
    Artefakt** ✓✓ (die Konstante c = 0,156 ist global ✓✓) — gegen unsere Kalibrierung (12 KB je
    Modell + Basisdisziplin ✓).
+   **Nachtrag 2026-11-13, auf unserem Gitter gemessen** (`bench/results/2026-11-13-ultraquant-scale/`,
+   1.571.808 Blöcke aus `cells-cwe4k.bin`): die **Byte**-Form ist eine Verbesserung (18 → 17 B,
+   −5,6 %), die **Numerik** nicht. Der Snap kostet **2,43 dB** (`2^round`), im besten Fall
+   **1,81 dB** (der Writer wählt den besseren von `2^floor`/`2^ceil`) — ~0,0020 nats, also eine volle
+   128K-Paritätsauflösung. Unser **fp16**-`d` kostet gegen die ungerundete Rechnung **0,000 dB**:
+   das zweite Byte ist numerisch gratis, das gesparte wäre es nicht. Und `c` ist bei uns durch eine
+   **kostenlose** LS-Passade ersetzt und dadurch besser: `c = 0,156` liegt **2,29 dB** hinter dem
+   LS-Fit, `c = 0,125` (unser Gitter, Spitze 8) **0,98 dB**. Die Konstante ist gitterabhängig und als
+   Startwert richtig, als Ersatz für den Fit nicht.
 
 **Und ihr Performance-Befund ist unsere 2,25×-Zahl, von der anderen Seite:** ihr TurboQuant-Kern
 (Software-Codebook) kostet **2,45×** die FP8-Kernelzeit ✓✓✓ — **unser 2,25× ist dieselbe
