@@ -154,3 +154,169 @@ gefeiert.**
 
 `C:\Users\krone\git\Strata-data\bench\2026-11-13-128k-fair\arms\` (neu) und
 `C:\Users\krone\git\Strata-data\bench\2026-11-10-merge-reeval\d1\` (die sechs vorhandenen Arme).
+
+---
+
+## Das Ergebnis (nach dem Lauf)
+
+Drei Arme, ein Job, 30 s zwischen den Starts, kein Build. Alle drei auf demselben Build
+(0.1.59.1), `cwe-128k`/`t1`, **131.060 Positionen** je Arm:
+
+| Arm | Zeit | SHA-256 |
+|---|---:|---|
+| R2a `int8` + Rotation | 4.884,7 s | `1f0257996d03…` |
+| R2b `int8` + Rotation + Kalibrierung | 4.684,8 s | `407c882f6a5e…` |
+| `q4u32` + Fenster (S 256 / R 64 / Chunk 6.144) | 5.043,6 s | `debdee3a8cd3…` |
+
+Die **vorab definierte Defektprüfung** (R2a > 3× R1 ⇒ Pfad defekt) ist **nicht** eingetreten:
+R2a/R1 = **0,970**. Der `int8`+ROT-Pfad ist auf 128K benutzbar, G1/G3 sind entscheidbar.
+
+| Arm | mittlere KL gegen fp16 | Top-1 | p99 |
+|---|---:|---:|---:|
+| `fp16` (Referenz) | 0 | 100 % | 0 |
+| R1 `int8` | 0,06435 | 98,45 % | 1,6615 |
+| **R2a** `int8`+ROT | **0,06238** | 98,49 % | 1,5133 |
+| **R2b** `int8`+ROT+C | **0,06419** | 98,41 % | 1,7455 |
+| `q4lm32w` (Produkt) | 0,07176 | 98,30 % | 2,0583 |
+| `q4lm32w`+C | 0,06861 | 98,38 % | 1,9240 |
+| `q4lm8v-win` (ausgeliefert, 16/8) | 0,07524 | 98,16 % | 2,1567 |
+| `q4lm8v-win`+C | 0,07479 | 98,18 % | 2,3328 |
+| **`q4u32`** | **0,06949** | 98,31 % | 1,9837 |
+
+### Die Gates, wie sie vor dem Lauf festlagen
+
+| Gate | Paar | Punkt | obere Grenze | Grenze | Urteil |
+|---|---|---:|---:|---:|---|
+| **G1** | `q4lm32w+C − R2b` | **+0,00442** (t 2,90) | **+0,00741** (Bootstrap +0,00696) | +0,00254 | **NICHT BESTANDEN** |
+| **G2** | `R2b − R2a` | **+0,00181** (t 1,29) | +0,00456 (Bootstrap +0,00326) | < 0 | **NICHT BESTANDEN** |
+| **G3** | `q4u32 − R2b` | **+0,00530** (t 3,44) | **+0,00832** (Bootstrap +0,00821) | +0,00254 | **NICHT BESTANDEN** |
+| **P1** | `q4lm32w − q4lm32w+C` | +0,00314 (t 2,05) | — | +0,00314 | **BESTANDEN** |
+
+**P1 hat den Vortest exakt reproduziert** (+0,0031433, t 2,0518) — der Auswerter rechnet richtig,
+und die sechs Altarme sind mit den drei neuen gepaart vergleichbar.
+
+### G1: der Produktarm ist der fairen Referenz auf 128K unterlegen
+
+`q4lm32w+C − R2b` = **+0,00442** nats, 95-%-Intervall [+0,00144, +0,00741] je Position,
+Block-Bootstrap [+0,00196, +0,00696]. Die vorab fixierte Grenze war **+0,00254**; die obere Grenze
+liegt bei **2,9×** dieser Grenze.
+
+**Und die Referenz ist dabei noch die *milde* Wahl.** R2b ist mit **0,06419** schlechter als R2a
+(0,06238) — die Kalibrierung hat die `int8`-Referenz auf 128K *verschlechtert* (G2). Gegen die
+**bessere** faire Referenz R2a wird der Abstand größer, nicht kleiner:
+
+| Paar | Punkt | t |
+|---|---:|---:|
+| `q4lm32w+C − R2b` (vorab fixiert) | +0,00442 | 2,90 |
+| `q4lm32w+C − R2a` (bessere Referenz) | **+0,00623** | 4,23 |
+| `q4u32 − R2b` (vorab fixiert) | +0,00530 | 3,44 |
+| `q4u32 − R2a` (bessere Referenz) | **+0,00711** | 4,83 |
+
+Das Gate ist also nicht an einer zu strengen Referenz gescheitert, sondern trotz einer zu
+nachsichtigen.
+
+### G2: die Kalibrierung gewinnt auf `int8` nicht — sie verliert
+
+`R2b − R2a` = **+0,00181** (t 1,29). Das per-Position-Intervall [−0,00095, +0,00456] enthält die 0,
+der **Block-Bootstrap [+0,00034, +0,00326] schließt sie aus** — und zwar auf der *positiven* Seite.
+Die Annahme hinter der Vorabschätzung (die Kalibrierung verbessert die Referenz wie auf 4K) trägt auf
+128K damit **nicht**; das Vorzeichen dreht zwischen den Längen (4K −0,00103, t 0,96; 128K +0,00181).
+
+Die Kalibrierung ist **codec-abhängig**. Wirkung = kalibriert − unkalibriert (negativ ist besser),
+auf 128K:
+
+| Arm | Wirkung der Kalibrierung auf 128K |
+|---|---|
+| `q4lm32w` (16/16) | **−0,00314** (besser, t −2,05) |
+| `q4lm8v-win` (16/8) | −0,00045 (t −0,28, nicht signifikant) |
+| `int8` | **+0,00181** (schlechter, Bootstrap schließt 0 aus) |
+
+Zwei der drei Arme sind signifikant, und sie zeigen in **entgegengesetzte** Richtungen.
+
+### G3: auch der Fast-Path-Kandidat ist unterlegen — aber er ist der beste q4-Arm
+
+`q4u32 − R2b` = **+0,00530** (t 3,44), obere Grenze +0,00832 → **nicht bestanden**.
+
+Der Nebenbefund ist trotzdem der praktisch interessanteste dieser Stufe: **`q4u32` (0,06949) liegt
+auf dem Niveau des kalibrierten Produktarms** —
+
+| Paar | Punkt | 95-%-Intervall | t |
+|---|---:|---|---:|
+| `q4lm32w+C − q4u32` | **−0,00088** | [−0,00389, +0,00214] | −0,57 |
+| `q4lm32w − q4u32` | **+0,00226** | [−0,00076, +0,00529] | 1,47 |
+| `q4lm8v-win − q4u32` | **+0,00575** | [+0,00267, +0,00882] | 3,66 |
+
+`q4u32` ist von `q4lm32w+C` **nicht zu unterscheiden** (−0,00088, Intervall um 0) und gegen
+`q4lm32w` um 0,00226 besser — dieser Betrag liegt allerdings **unter** der Auflösung des Textes
+(0,00254) und ist als Unterschied zwischen zwei Armen nicht belastbar (das gepaarte Intervall
+enthält die 0).
+
+Was daran zählt: `q4u32` braucht **keine Kalibrierungstabelle** (die `center-table.bin` dieses
+Modells ist 48 KB groß) und kommt im Decode mit einem einheitlichen Schritt ohne Tabellenzugriff aus
+(statische Analyse: `qsa_decode_attn.cu:130`; **nicht** gemessen ist, ob das schneller ist). Auf beiden
+Längen liegt er auf dem Niveau des kalibrierten 16/16-Arms: 128K −0,00088 (n. s.), 4K +0,00263
+(t 1,94, Intervall enthält 0) gegen +0,00293 (t 2,42) für `q4lm32w+C` — beide gegen die faire
+Referenz. Das ist eine **relative** Aussage innerhalb der q4-Familie, **keine** Nichtunterlegenheit
+gegen `int8` — die ist mit G1/G3 gemessen und gescheitert.
+
+### Der Abstand schrumpft relativ, wächst absolut
+
+| Text | faire Referenz | `q4lm32w+C` | absolut | relativ |
+|---|---:|---:|---:|---:|
+| cwe-4k | 0,01476 | 0,01769 | +0,00293 | **+19,8 %** |
+| cwe-128k | 0,06419 (R2b) | 0,06861 | +0,00442 | **+6,9 %** |
+
+Der q4-Codec skaliert mit der Länge **relativ besser** als `int8` (19,8 % → 6,9 %), **absolut
+schlechter** (+0,00293 → +0,00442). Für die Nichtunterlegenheitsfrage zählt absolut in nats — dort
+scheitert das Gate. Das Bild „q4 holt relativ auf" ist die gute Nachricht dieser Stufe, aber es ist
+keine Parität.
+
+### Meine Vorabschätzung war zu pessimistisch — und warum
+
+Vorab notiert: **+0,006 bis +0,008** („G1 scheitert nach der Vorhersage"). Gemessen: **+0,00442**.
+Die Richtung war richtig, die Schätzung lag um **26–45 %** zu hoch (je nach Ende des vorab notierten
+Bandes). Der Grund ist benennbar: die Schätzung setzte `int8 − R2b ≈ int8 − R2a` und unterstellte
+damit, dass die Kalibrierung die **Referenz** verbessert (4K-Größe R1 → R2b: −0,00212). Sie
+verbessert sie auf 128K nicht, sie verschlechtert sie (+0,00181) — die Referenz bleibt praktisch bei
+R1 (`R2b − R1` = −0,00015, t −0,11). Der Referenzabstand ist damit um genau diesen Betrag kleiner
+als geschätzt.
+
+### Zwei Befunde, die die 4K-Stufe **nicht** reproduziert
+
+1. **Der Tail-Vorteil von q4 ist auf 128K weg.** Auf 4K holte `q4lm32w` auf dem schlimmsten 1 % von
+   `int8`+ROT **−0,329** nats (t −3,04). Auf 128K, auf demselben Kriterium (die 1.311 Positionen mit
+   der größten KL von R2a): R1 3,408 · R2b 3,332 · **`q4u32` 3,381** · `q4lm32w+C` 3,390 ·
+   `q4lm32w` **3,601**. Kein q4-Arm gewinnt den Tail; `q4lm32w` ist dort gegen **beide** `int8`-Arme
+   schlechter (R1 +0,19, R2b +0,27). Die Unterschiede der übrigen Arme liegen bei ≤0,2 nats auf einer
+   Basis von 3,4.
+2. **Top-1:** `q4lm32w+C` gegen R2b ist mit **894 | 934 (p = 0,36)** nicht unterscheidbar,
+   `q4u32` gegen R2b verliert dagegen deutlich (**864 | 1000, p = 0,0018**). Auf 4K war es
+   umgekehrt (`q4lm32w` besser, McNemar p = 0,0025). Top-1 ist kein Endpunkt dieser Stufe, aber die
+   Aussage „q4 hat die bessere Fehlerform" ist längenabhängig und damit nicht als Eigenschaft des
+   Codecs zu führen.
+
+### Was diese Stufe entscheidet, und was nicht
+
+**Entschieden:** der Produktcodec (`q4lm32w`, 16/16 + Fenster) ist der **fairen** `int8`-Referenz auf
+128K **nicht** nicht-unterlegen (+0,00442, obere Grenze +0,00741 gegen 0,00254). Die
+Mittelkalibrierung wirkt auf 128K **codec-abhängig** (−0,00314 auf 16/16, −0,00045 auf 16/8,
++0,00181 auf `int8`) und hilft der Referenz nicht. Der Fast-Path-Kandidat `q4u32` ist der beste
+q4-Arm auf 128K (Punktschätzung), aber ebenfalls unterlegen, und er erreicht das Niveau des
+kalibrierten Produktarms ohne Tabelle.
+
+**Nicht entschieden:** ob eine andere Geometrie (mehr Ringzeilen, anderes S/R) den Abstand schließt —
+das wäre ein eigener Arm. Nichts über `t2` (nicht gefahren, wie vorab festgelegt). Nichts über
+Laufzeit (`q4u32` liest ohne Tabelle — statische Analyse, `qsa_decode_attn.cu:130` —, aber die
+Prompt-Zeiten sind Einzelmessungen und hier kein Endpunkt). Nichts über andere Modelle. Nichts über
+die **Ursache** des Tail-Verhaltens.
+
+## Rohdaten des Laufs
+
+`C:\Users\krone\git\Strata-data\bench\2026-11-13-128k-fair\` — `arms/` (drei TSVs + `seg.json`),
+`compare-fp16.json` (absolute Zahlen der acht Nicht-Referenz-Arme), `paired-fp16.json` (die Paare der
+sechs Altarme; die Paare mit `q4u32` stehen in `run.log`), `gates.json` (die Gates mechanisch),
+`run.log`. Reproduzieren:
+
+```sh
+python bench/results/2026-11-13-128k-fair/run-128k-fair.py
+```
