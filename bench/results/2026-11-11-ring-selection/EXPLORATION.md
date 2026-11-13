@@ -42,6 +42,23 @@ rechnen nicht dasselbe ✓).
 **Ergebnisform:** eine Zahlentabelle mit (nominale n, n_eff, das Mittel beider Statistiken, die
 Top-Beiträge je Position) für **alle** 21 Armpaarungen des Shear-Arms ✓.
 
+### Der Befund vom 2026-11-13 (Teil 1 ist vorläufig abgeschlossen)
+
+**Die Gewichtung erklärt die Umkehr nicht** (die Segmentgrößen streuen um 0,2 % ✓). **Die beiden
+Statistiken verwenden nicht dieselbe Positionsmenge** (die Segmenttabelle 8 × 4095 = 32.760, die
+Positionstabelle 32.746 — **14 Positionen** ✓✓), **weil die Segmentzuordnung des Vergleichswerkzeugs
+einer festen Zeilenzahl folgt statt den Ids-Grenzen** ✓✓ (die Ids-Segmente sind 4088 … 4096 groß ✓✓).
+**⇒ Die Umkehr ist eine Frage von ~14 Positionen** ✓✓✓ (die tail-Beiträge sind von der Größenordnung
+10 ✓✓). **⇒ Die Reihenfolge: erst das Werkzeug korrigieren (die Segmentzuordnung den Ids folgen
+lassen ✓✓), dann entscheiden** ✓✓✓ — und danach sind Segment- und Positionsmittel bei praktisch
+gleichen Segmentgrößen **identisch** ✓✓ und die Frage „welche Statistik gilt" eine Formalität ✓✓ (die
+benannt werden muss ✓✓).
+
+**Eine Warnung an mich selbst (im Protokoll festgehalten ✓✓):** die erste eigene Nachrechnung war
+**nicht** die KL ✗✗ (die TSV trägt die Top-k-Listen ✓✓, nicht die per-Position-KL ✓✓) — die daraus
+gewonnenen Zahlen sind **ungültig** ✓✓ und werden nicht zitiert ✓✓. **Die erste eigene Zahl wird
+gegen das Werkzeug geprüft, bevor sie irgendwo steht** ✓✓✓.
+
 ## Teil 2: Die Indexer-Stabilität, positionsabhängig
 
 **Die Frage:** fallen **hohe Auswahlvolatilität** und **besonders empfindliche Modellpositionen**
