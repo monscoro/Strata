@@ -48,11 +48,16 @@ Top-Beiträge je Position) für **alle** 21 Armpaarungen des Shear-Arms ✓.
 Statistiken verwenden nicht dieselbe Positionsmenge** (die Segmenttabelle 8 × 4095 = 32.760, die
 Positionstabelle 32.746 — **14 Positionen** ✓✓), **weil die Segmentzuordnung des Vergleichswerkzeugs
 einer festen Zeilenzahl folgt statt den Ids-Grenzen** ✓✓ (die Ids-Segmente sind 4088 … 4096 groß ✓✓).
-**⇒ Die Umkehr ist eine Frage von ~14 Positionen** ✓✓✓ (die tail-Beiträge sind von der Größenordnung
-10 ✓✓). **⇒ Die Reihenfolge: erst das Werkzeug korrigieren (die Segmentzuordnung den Ids folgen
-lassen ✓✓), dann entscheiden** ✓✓✓ — und danach sind Segment- und Positionsmittel bei praktisch
-gleichen Segmentgrößen **identisch** ✓✓ und die Frage „welche Statistik gilt" eine Formalität ✓✓ (die
-benannt werden muss ✓✓).
+**⇒ Die Reihenfolge: erst die Ausgaben des Werkzeugs zeilenweise nachrechnen** ✓✓ (für ein Paar:
+welche Ausgabe zählt welche Größe ✓✓), **dann entscheiden** ✓✓✓.
+
+**⚠ Korrektur vom 2026-11-13, 11:05:** mein erster Befund (die beiden Ausgaben verwendeten **14
+verschiedene Positionen** ✓✓ und die Umkehr sei eine Frage von ~14 Positionen ✓✓) **trägt nicht** ✗✗✗ —
+beim Nachlesen des Codes zeigen `paired_stats` und `paired_positions` **dieselbe** per-Position-Serie
+✓✓. **Die Gewichtung scheidet aus** ✓✓ (die Segmentgrößen streuen um 0,2 % ✓✓), **die Umkehr ist
+real** ✓✓ (die Ausgaben: +0,00193 gegen −0,00138 nats für dasselbe Paar ✓✓), **die Ursache ist
+offen** ✓✓. Der nächste Schritt ist die **zeilenweise Nachrechnung eines Paares** ✓✓ (eine Stunde
+Host-Arbeit ✓✓, kein Lauf ✓✓).
 
 **Eine Warnung an mich selbst (im Protokoll festgehalten ✓✓):** die erste eigene Nachrechnung war
 **nicht** die KL ✗✗ (die TSV trägt die Top-k-Listen ✓✓, nicht die per-Position-KL ✓✓) — die daraus
