@@ -75,7 +75,7 @@ class Layer:
         self.union = {N: [] for N in union_ns}
         self.tail_sel = 0
         self.own_hits = 0
-        self.own_n = 0
+        self.self_sel = np.zeros(n_pos, dtype=bool)   # the query AT p selected the cell p (the tail-bias artefact)
 
 
 def analyze(dump, n_pos, cap_expected, tails, r, s, ring, anchor, union_ns, progress):
@@ -147,7 +147,8 @@ def analyze(dump, n_pos, cap_expected, tails, r, s, ring, anchor, union_ns, prog
                 if tails is not None:
                     st.tail_sel += int(tails[row].sum())
                 st.own_hits += int((row == p).any())
-                st.own_n += 1
+                if (row == p).any():
+                    st.self_sel[p] = True   # the incomplete-tail bias makes this almost always true; say how often
                 st.any_sel[row] = True
                 st.last_sel[row] = qi
 
@@ -304,7 +305,7 @@ def main():
     print("\nD2-f  tail-Positionen unter den Auswahlen")
     f_all = {}
     for frac, (tp, _m) in tails_masks.items():
-        own = sum(int(layers[l].any_sel[tp].sum()) for l in layers) / (len(layers) * len(tp))
+        own = float(np.mean([st.self_sel[tp].mean() for st in layers.values()]))
         # "gelesen": die Zelle p wird von einer SPAETEREN Query gelesen (irgendein Layer)
         later = np.zeros(len(tp), dtype=bool)
         anyl = np.zeros(len(tp), dtype=bool)
