@@ -750,9 +750,9 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
     if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
         const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2 +
-               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
+               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, strata::kernels::Q4Mode::kUniform) + 64;
     }
-    if (g_kv_q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
+    if (g_kv_q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s, g_kv_q4_mode) + 64;
     return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
@@ -802,7 +802,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.kv_mode = p.mode;
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
-    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
+    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode);
     st.kv_elastic = -1;
     if (g_kv_elastic && p.mode == 0) {
         // the elastic K/V: each array at a chunk boundary of the state's own range, the first cells mapped
@@ -910,7 +910,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.host = strata::kernels::KvHostPools{};
     if (p.mode != 0) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
-        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
+        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st), st.kv_q4_mode) + 4 * 256;
         uint8_t* h = nullptr;
         uint8_t* d = nullptr;
         /*
@@ -999,14 +999,14 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
                    rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2);
         strata::big_fill_zero(*cs, st.v_q4,
                    rows *
-                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim));
+                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim, st.kv_q4_mode));
     } else if (st.kv_q4) {
         strata::big_fill_zero(*cs, st.k_q4,
                    rows *
-                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim));
+                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim, st.kv_q4_mode));
         strata::big_fill_zero(*cs, st.v_q4,
                    rows *
-                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim));
+                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim, st.kv_q4_mode));
     } else if (st.kv_int8) {
         strata::big_fill_zero(*cs, st.k_q, rows * s.head_dim);
         strata::big_fill_zero(*cs, st.v_q, rows * s.head_dim);

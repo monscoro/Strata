@@ -33,19 +33,10 @@ struct block_q4_0 {
 
 static_assert(sizeof(block_q4_0) == 18, "block_q4_0 must be 18 bytes");
 
-/// Bytes per cell and KV head: 8 blocks of 32 for head_dim 256 -> 144.
-/// The q4 block's size: 18 bytes for every shipped mode, 20 for the shear (the constant travels
-/// with the block).  Set once, when the mode is set (qsa_set_kv_q4_mode), so every sizing call
-/// site stays as it is.
-inline uint64_t g_kv_q4_block_bytes = sizeof(block_q4_0);
-inline uint64_t kv_q4_bytes_per_head(int head_dim) {
-    return (uint64_t) (head_dim / QK4_0) * g_kv_q4_block_bytes;
-}
-
-/// Bytes per cell (one token, one layer): K and V of every KV head.
-inline uint64_t kv_q4_bytes_per_cell(const QsaShapes& s) {
-    return (uint64_t) s.n_head_kv * kv_q4_bytes_per_head((int) s.head_dim) * 2;
-}
+// The block's size travels with the mode, not with a process-wide variable: 18 bytes for every
+// shipped mode, 20 for the shear (its block carries the constant).  The sizing helpers below take
+// the mode, and every call site passes the one its state or its arm is in (kv_q4.hpp,
+// `kv_q4_bytes_per_head`); a mode-less helper would let a shear state report 18-byte rows.
 
 // ---- `--kv q4lm32` / `--kv q4lm32s`: the same blocks, Max-Lloyd's levels instead of ggml's uniform grid ---------
 //

@@ -307,10 +307,6 @@ bool qsa_kv_q4() { return g_kv_q4; }
 void qsa_set_kv_q4_layer(int layer) { g_kv_q4_layer = layer; }
 void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
     g_kv_q4_mode = mode;
-    // the shear's block carries the constant as well (20 bytes); every shipped mode keeps 18
-    strata::kernels::g_kv_q4_block_bytes =
-        (mode == strata::kernels::Q4Mode::kShear) ? sizeof(strata::kernels::block_q4_0z)
-                                                    : sizeof(strata::kernels::block_q4_0);
     g_kv_q4 = g_kv_q4 || (mode != strata::kernels::Q4Mode::kUniform);
     kv_q4_mask_parse();
     // Window overlay (kv_q4.hpp), orthogonal to the level table: `--kv q4lm32w` (kLloydWin) is the overlay on
@@ -906,9 +902,9 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
     if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
         const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2 +
-               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
+               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, strata::kernels::Q4Mode::kUniform) + 64;
     }
-    if (q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
+    if (q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s, g_kv_q4_mode) + 64;
     return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
@@ -1018,7 +1014,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.kv_mode = p.mode;
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
-    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
+    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode);
     st.kv_elastic = -1;
     if (g_kv_elastic && p.mode == 0) {
         // the elastic K/V: each array at a chunk boundary of the state's own range, the first cells mapped
@@ -1130,7 +1126,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.host = strata::kernels::KvHostPools{};
     if (p.mode != 0) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
-        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
+        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st), st.kv_q4_mode) + 4 * 256;
         uint8_t* h = nullptr;
         uint8_t* d = nullptr;
         if ((h = kv_host_alloc(bytes)) == nullptr ||
@@ -1199,10 +1195,10 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     if (st.kv_hybrid) {
         cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
         cudaMemsetAsync(st.k_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
-        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode), cs);
     } else if (st.kv_q4) {
-        cudaMemsetAsync(st.k_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
-        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+        cudaMemsetAsync(st.k_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode), cs);
+        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode), cs);
     } else if (st.kv_int8) {
         cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
         cudaMemsetAsync(st.v_q, 0, rows * s.head_dim, cs);

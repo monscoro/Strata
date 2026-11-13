@@ -139,7 +139,8 @@ struct KvStreamCounters {
 /// Synchronous read of the counters (debug and the end-of-request summary).
 KvStreamCounters kv_stream_counters(const KvStreamMap& m);
 
-/// Bytes of one block (page) of K and V together.
-uint64_t kv_block_bytes(const QsaShapes& s, int fmt);
+/// Bytes of one block (page) of K and V together.  `mode` sizes the q4 rows (the shear's block is
+/// 20 bytes); a state passes its own `kv_q4_mode`.
+uint64_t kv_block_bytes(const QsaShapes& s, int fmt, Q4Mode mode);
 
 }  // namespace strata::kernels

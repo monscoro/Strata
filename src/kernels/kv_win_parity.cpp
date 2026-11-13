@@ -133,8 +133,8 @@ struct Phase {
             return false;
         }
         n_pages = (NMAX + s.page_size - 1) / s.page_size + 1;
-        k_q4 = dalloc<uint8_t>((size_t) n_pages * H * (size_t) s.page_size * k::kv_q4_bytes_per_head(D));
-        v_q4 = dalloc<uint8_t>((size_t) n_pages * H * (size_t) s.page_size * k::kv_q4_bytes_per_head(D));
+        k_q4 = dalloc<uint8_t>((size_t) n_pages * H * (size_t) s.page_size * k::kv_q4_bytes_per_head(D, k::Q4Mode::kUniform));
+        v_q4 = dalloc<uint8_t>((size_t) n_pages * H * (size_t) s.page_size * k::kv_q4_bytes_per_head(D, k::Q4Mode::kUniform));
         k_win = dalloc<uint16_t>((size_t) ROWS * H * D);
         v_win = dalloc<uint16_t>((size_t) ROWS * H * D);
         tag = dalloc<int32_t>((size_t) RING);

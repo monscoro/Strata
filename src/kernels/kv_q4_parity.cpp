@@ -262,7 +262,7 @@ int main() {
     int32_t* d_table = dalloc<int32_t>(pages);
     ck(cudaMemcpy(d_table, table.data(), pages * sizeof(int32_t), cudaMemcpyHostToDevice), "memcpy table");
 
-    const size_t pool_bytes = (size_t) pages * H * P * k::kv_q4_bytes_per_head(D);
+    const size_t pool_bytes = (size_t) pages * H * P * k::kv_q4_bytes_per_head(D, k::Q4Mode::kUniform);
     uint8_t* d_k_q4 = dalloc<uint8_t>(pool_bytes);
     uint8_t* d_v_q4 = dalloc<uint8_t>(pool_bytes);
     float* d_kcur = dalloc<float>(H * D);

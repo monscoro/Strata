@@ -236,6 +236,7 @@ __device__ __forceinline__ uint16_t q4u_group(float x, uint8_t& byte, float& c_o
 // offset and nothing else.  One least-squares pass over the block, the same rule the harness's
 // "uniform+LS" mirrors (tools/kv_affine_price.py).
 __device__ __forceinline__ uint16_t q4u_ls_group(float x, int lane, uint8_t& byte) {
+    (void) lane;   // the lanes agree through the shuffles; the parameter mirrors q4_group's signature
     float amax = fabsf(x), mval = x;
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) {
@@ -245,6 +246,10 @@ __device__ __forceinline__ uint16_t q4u_ls_group(float x, int lane, uint8_t& byt
     }
     float d = mval / -8.0f;
     const float id = d != 0.0f ? 1.0f / d : 0.0f;
+    // An all-zero (or all-NaN) block leaves id = 0, so the cast is 8.5 -> 8 and the code is 8: l = 0,
+    // den = 0, the pass is skipped and d is returned unchanged -- the same guard q4_group uses, so
+    // __float2int_rz never sees an infinity here.  (A NaN in the input already leaves the block
+    // meaningless to every reader; this writer does not special-case it, as q4_group does not.)
     int q = __float2int_rz(x * id + 8.5f);
     const uint8_t qc = (uint8_t) (q < 0 ? 0 : (q > 15 ? 15 : q));
     // one least-squares pass with the assignment held: d = sum(l*x) / sum(l*l), l = code - 8

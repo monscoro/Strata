@@ -4406,9 +4406,17 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: the offsets do not fit into VRAM\n");
             return 2;
         }
-        cudaMemcpy(cdev, chost.data(), chost.size() * sizeof(float), cudaMemcpyHostToDevice);
+        if (cudaMemcpy(cdev, chost.data(), chost.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: the offsets did not reach VRAM\n");
+            (void) cudaFree(cdev);
+            return 2;
+        }
         strata::core::qsa_set_kv_center(cdev, cdev + (size_t) cg.n_layers * cper, (int) cg.n_layers,
                                          (int) cg.n_head_kv, (int) cg.head_dim);
+        // cdev stays allocated on purpose: qsa_set_kv_center keeps the two device pointers (layer.cpp's
+        // g_kv_center_k/_v) and every QSA layer, the prefill and the verifier read them until the process
+        // exits. Freeing it here would be a use-after-free, not a fix. One allocation per process
+        // (n_layers x n_head_kv x head_dim x 2 floats), reclaimed at exit.
         std::fprintf(stderr, "strata generate: the centering is on: %d layers' offsets from %s (K and V, per KV head and channel)\n",
                      centries, cpath);
     }
@@ -19746,10 +19754,12 @@ int main(int argc, char** argv) {
                     const bool h = st.kv_mode != 0;
                     std::vector<std::pair<const void*, int64_t>> a;
                     if (st.kv_q4) {
-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim, st.kv_q4_mode);
                         a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
                     } else if (st.kv_hybrid) {
-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        // the hybrid's V half is rotated q4_0 whatever the process-wide mode is
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim,
+                                                                                            strata::kernels::Q4Mode::kUniform);
                         a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
                              {h ? st.host.k_scale : st.k_scale, scb}};
                     } else if (st.kv_int8) {

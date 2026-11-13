@@ -873,10 +873,11 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
     if (q0.kv_hybrid) {   // K8V4: the three runs of kKvHybrid; pools_of() then reads as the hybrid pools (mode 3)
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.k_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
-        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim,
+                                                                              strata::kernels::Q4Mode::kUniform), ok);
     } else if (q0.kv_q4) {
-        st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
-        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+        st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, q0.kv_q4_mode), ok);
+        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, q0.kv_q4_mode), ok);
     } else if (q0.kv_int8) {
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.v_q = o.take<int8_t>(rows * s.head_dim, ok);
@@ -887,10 +888,12 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
         st.v_pool = o.take<uint16_t>(rows * s.head_dim, ok);
     }
 }
-strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, const int32_t* table) {
+strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, const int32_t* table,
+                                       strata::kernels::Q4Mode mode) {
     strata::kernels::QsaAttnPools p;
     p.k_pool = h.k_pool; p.v_pool = h.v_pool; p.k_q = h.k_q; p.v_q = h.v_q; p.k_scale = h.k_scale; p.v_scale = h.v_scale;
     p.k_q4 = h.k_q4; p.v_q4 = h.v_q4;
+    p.q4_mode = mode;   // the readers pick their table from it, the movers their row width
     p.page_table = table;
     return p;
 }
@@ -2785,7 +2788,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     err = "prefill: releasing KV staging pool";
                     return false;
                 }
-                strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), state.host,
+                strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table, state.kv_q4_mode), state.host,
                     core::qsa_kv_format(state), (p0 + s.page_size - 1) / s.page_size, s, m.kv_copy);
                 /*
                 DPCT1010: SYCL uses exceptions to report errors and does
@@ -3321,7 +3324,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 return false;
                             }
                             kv_pending = -1;
-                        } else strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), st.host,
+                        } else strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table, st.kv_q4_mode), st.host,
                                                             core::qsa_kv_format(st),
                                                             (p0 + s.page_size - 1) / s.page_size, s, m.cs);
                         pt.mark(kPfQsa, cs);
@@ -3365,7 +3368,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
                                       host_w, staged ? &m.stage : nullptr);
                         if (host_by_dma)
-                            strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table), st.host,
+                            strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table, st.kv_q4_mode), st.host,
                                                                 core::qsa_kv_format(st), p0 / s.page_size,
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
@@ -3573,7 +3576,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             }
                         }
                     }
-                    const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table)
+                    const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table, st.kv_q4_mode)
                                                                        : core::qsa_attn_pools(st);
                     pt.mark(kPfQsaAttn, cs);
                     // perf-review D-1: the whole chunk on tensor cores, one block per (query, KV head), FP32-level
