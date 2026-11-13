@@ -200,11 +200,22 @@ Varianten sind **bitweise identisch** zum Kampagnen-Werkzeug: 1,124507e-02 / 1,1
 
 | Variante | MSE | K | V | dB |
 |---|---:|---:|---:|---:|
-| `uniform+max` (`q4_0`, der Anker) | 1,820408e-03 | 3,125573e-03 | 5,152434e-04 | +0,33 |
-| `lloyd16+max` (die Engine-Tabelle `q4lm32`) | 1,688660e-03 | 2,895490e-03 | 4,818299e-04 | 0,00 |
-| `lloyd16+LS` (die Engine-FIT-Variante) | 1,573514e-03 | 2,698241e-03 | 4,487873e-04 | −0,31 |
-| **`uniform+LS`** (uniformes Gitter, Skala per LS, **Nullpunkt 0**) | 1,738780e-03 | 2,985407e-03 | 4,921535e-04 | **+0,13** |
-| **`uniform+LS+z`** (die Scherung: Nullpunkt je Block) | **1,291868e-03** | 2,220486e-03 | 3,632490e-04 | **−1,16** |
+| `uniform+max` (`q4_0`, der Anker) | 9,102041e-03 | 1,562787e-02 | 2,576217e-03 | +0,33 |
+| `lloyd16+max` (die Engine-Tabelle `q4lm32`) | 8,443299e-03 | 1,447745e-02 | 2,409149e-03 | 0,00 |
+| `lloyd16+LS` (die Engine-FIT-Variante) | 7,867572e-03 | 1,349121e-02 | 2,243936e-03 | −0,31 |
+| **`uniform+LS`** (uniformes Gitter, Skala per LS, **Nullpunkt 0**) | 8,693901e-03 | 1,492703e-02 | 2,460767e-03 | **+0,13** |
+| **`uniform+LS+z`** (die Scherung: Nullpunkt je Block) | **6,459338e-03** | 1,110243e-02 | 1,816245e-03 | **−1,16** |
+
+**Korrektur 2026-11-13 (Abweichung 20 im Protokoll):** diese Tabelle stand bis heute **fünfmal zu
+klein** hier (1,820408e-03 usw.). Der Zähler in `tools/kv_affine_price.py` (`Acc.n[side]`) wurde bei
+jeder Variante erhöht, also fünfmal je Datensatz und Seite, und jede MSE war damit 1/5 ihres Werts.
+Der Fehler ist behoben (`Acc` zählt jetzt je Variante und Seite), die Zahlen oben sind mit dem
+korrigierten Werkzeug auf demselben Dump und demselben `--stride 8` neu gerechnet. Die **dB-Werte
+waren als Verhältnisse unberührt** (0,434 / 1,290 / 0,857 dB wie zuvor 0,43 / 1,29 / 0,86), und
+**jede Entscheidung der Kampagne beruhte auf dB** — die Schlussfolgerungen ändern sich nicht, die
+absoluten Zahlen schon. Eine unabhängige Rechnung auf **allen** 4.095 Positionen (ohne `stride 8`,
+12.574.464 Blöcke, `tools/kv_residual_offset.py`) bestätigt sie: 9,087669e-03 / 8,432340e-03 /
+7,857215e-03 / 8,680457e-03 / 6,464105e-03.
 
 Kalibriert (`--center`, die Engine-Tabelle): dieselbe Richtung — Uniformitätspreis **0,413 dB**,
 Scherungspreis **1,285 dB**, die Scherung **1,18 dB** besser als `lloyd16+max`. Die implementierbare
@@ -229,7 +240,7 @@ halben Stufe** groß. **Der per-Block-Nullpunkt entfernt den Bias pro Block** �
 Basisdisziplin im Snapshot, ohne Artefakt.
 
 **Er ist aber kein Ersatz für die per-Kanal-Kalibrierung:** die Kalibrierung holt 2,01 dB, der
-per-Block-Nullpunkt 1,29 dB, **beide zusammen 3,18 dB** (1,6887e-03 → 8,1188e-04). Der Kanal-Offset
+per-Block-Nullpunkt 1,29 dB, **beide zusammen 3,18 dB** (8,4433e-03 → 4,0594e-03). Der Kanal-Offset
 ist ein Vektor über alle Blöcke, der Block-Nullpunkt ein Skalar je Block.
 
 ### Was das für die Architektur heißt — und was nicht
@@ -308,8 +319,9 @@ dessen Fehleranteil klein bleibt.
 | **Nullpunkt** | die **Form/Lage** je Block | am Encoder, **ohne** Tabelle | **1,16 dB** | **0,5 bit/Zelle** + eine Kernel-Konstante je Block |
 | **Rotation** | verteilt nur (‖H·μ‖ = ‖μ‖) | — | 0 | — |
 
-**Sie sind additiv, nicht substituierend:** 2,00 + 1,16 = **3,18 dB** (gemessen: roh 1,688660e-03 →
-kalibriert 1,065307e-03 → kalibriert **und** geschert 8,118799e-04). Der Kanaloffset ist ein fester
+**Sie sind additiv, nicht substituierend:** 2,00 + 1,16 = **3,18 dB** (gemessen: roh 8,443299e-03 →
+kalibriert 5,326535e-03 → kalibriert **und** geschert 4,059400e-03; bis 2026-11-13 standen hier die
+fünffach zu kleinen Werte, siehe die Korrektur in §3c). Der Kanaloffset ist ein fester
 Vektor, der über alle Blöcke gleich ist; der Blockanteil schwankt von Block zu Block.
 
 ### Korrektur (2026-11-13): wie viel davon ist wirklich der **Offset**?

@@ -10,10 +10,10 @@ Alles hier ist aus früheren Läufen und wird **nicht** neu gemessen (Quellen in
 
 | Größe | Wert | Quelle |
 |---|---:|---|
-| Block-MSE `uniform+LS` (kernelfrei, `q4u32`) | 1,738780e-03 | `docs/research/KV_FASTPATH_LITERATURE.md` §3c |
-| Block-MSE `uniform+LS+z` (Shear, `q4u32z`) | 1,291868e-03 | ebd. |
-| Shear-Gewinn gegen `uniform+LS` | **4,4691e-04 MSE = 1,29 dB** | ebd. |
-| `lloyd16+max` (Produkt `q4lm32`) | 1,688660e-03 | ebd. |
+| Block-MSE `uniform+LS` (kernelfrei, `q4u32`) | 8,693901e-03 | `docs/research/KV_FASTPATH_LITERATURE.md` §3c (korrigiert 2026-11-13) |
+| Block-MSE `uniform+LS+z` (Shear, `q4u32z`) | 6,459338e-03 | ebd. |
+| Shear-Gewinn gegen `uniform+LS` | **2,2346e-03 MSE = 1,29 dB** | ebd. |
+| `lloyd16+max` (Produkt `q4lm32`) | 8,443299e-03 | ebd. |
 | `q4u32` − `q4u32z` end-to-end, 4K | +0,00193 nats (t = 2,07) | `protocol.md` 2914 |
 | `q4u32` − `q4u32`+C end-to-end, 4K | +0,00321 nats (t = 2,04) | ebd. 2915 |
 | Block→nats-Brücke über drei Hebel | 0,00116–0,00167 nats/dB | ebd. 2926–2930 |
@@ -51,7 +51,7 @@ Blöcke** geteilt (64 bzw. 128 Werte je Offset).
 ### Die drei Hypothesen
 
 * **H0-a (Writer):** der Fixed-Code-Offset holt den größten Teil des Shear-Gewinns zurück, ohne
-  Neucodierung. *Gate:* er holt **≥ 90 %** der Shear-Differenz von 4,4691e-04 MSE zurück.
+  Neucodierung. *Gate:* er holt **≥ 90 %** der Shear-Differenz von 2,2346e-03 MSE zurück.
   *Falsifikation:* < 60 % → die gemeinsame Anpassung von Codes, Skala und Offset ist nötig.
 * **H0-b (Speicherung):** 6 Bit reichen. *Gate:* der 6-Bit-Offset behält **≥ 95 %** des exakten
   Gewinns, und die Sättigung (Werte außerhalb ±1 Schritt) bleibt **< 1 %** der Blöcke.
@@ -173,12 +173,16 @@ Der Shear auf denselben Blöcken: **6,464105e-03** (−1,351 dB gegen `uniform+L
    Das ist 5,8× bzw. 14× die Gleichverteilung — eine schwere Flanke, aber kein „wenige Kanäle
    erklären alles".
 
-## Offene Abweichung (nicht aufgelöst)
+## Die Abweichung ist aufgelöst (Abweichung 20)
 
-Die **absoluten** MSE liegen um Faktor ≈ 5,0 über der Tabelle in §3c (8,680e-03 gegen 1,738780e-03
-für `uniform+LS`), während **alle Verhältnisse exakt übereinstimmen** (`lloyd16+max/uniform+max` =
-0,928 in beiden; `uniform+LS/lloyd16+max` = 1,031 gegen 1,030; Shear-Dämpfung −1,351 gegen −1,29 dB).
-Eine Zentrierung erklärt den Faktor nicht (sie senkt nur um ~1,4×). Alle Aussagen oben sind
-**Verhältnisse** und damit von diesem Faktor unberührt; die absolute Zahl wird bis zur Klärung nicht
-zitiert.
+Die **absoluten** MSE lagen um Faktor ≈ 5,0 über der Tabelle in §3c (8,680e-03 gegen 1,738780e-03),
+während alle Verhältnisse exakt übereinstimmten. Ursache ist ein **Zählfehler** in
+`tools/kv_affine_price.py`: `Acc.n[side]` wurde bei **jeder Variante** erhöht, also fünfmal je
+Datensatz und Seite — jede MSE war 1/5 ihres Werts. Der Fehler ist behoben; dieselbe Rechnung liefert
+jetzt **8,693901e-03 / 6,459338e-03** (stride 8) und bestätigt die Zahlen aus H0
+(8,680457e-03 / 6,464105e-03 auf allen Positionen). Die **dB-Werte waren unberührt**
+(1,290 gegen 1,290), deshalb ändert sich keine Schlussfolgerung der Kampagne — nur die absoluten
+Zahlen in §3c/§3d. Der kleine Rest-Unterschied im Shear (1,351 dB auf allen Positionen gegen
+1,290 dB bei `stride 8`) ist die Stichprobe: `stride 8` nimmt 1/8 der Positionen.
+
 

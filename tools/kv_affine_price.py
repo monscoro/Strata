@@ -176,20 +176,33 @@ def blocks_of(arr, nblk):
 
 
 class Acc:
-    """The accumulators: the mean squared error per block, per side, and the zero point's spread."""
+    """The accumulators: the mean squared error per block, per side, and the zero point's spread.
+
+    Der Zaehler wird **je Variante und Seite** gefuehrt.  Frueher stand hier ein gemeinsamer
+    Zaehler ``n[side]``, der bei jedem ``add`` hochgezaehlt wurde -- also fuenfmal je (Record,
+    Seite), weil fuenf Varianten addiert werden.  Jede MSE war damit **1/5 des Werts** (Abweichung
+    20 im Protokoll: Faktor exakt 4,99-5,00 auf allen fuenf Varianten).  Die dB-Werte waren als
+    Verhaeltnisse unberuehrt, die absoluten MSE nicht."""
 
     def __init__(self):
         self.err = {}
-        self.n = {"K": 0, "V": 0}
 
     def add(self, name, e, side):
-        self.err[(name, side)] = self.err.get((name, side), 0.0) + float(e)
-        self.n[side] += 1
+        s = self.err.get((name, side))
+        if s is None:
+            self.err[(name, side)] = [float(e), 1]
+        else:
+            s[0] += float(e)
+            s[1] += 1
 
     def mse(self, name):
         """The mean over both sides (the campaign's measure) and the two sides separately."""
-        k = self.err.get((name, "K"), 0.0) / max(self.n["K"], 1)
-        v = self.err.get((name, "V"), 0.0) / max(self.n["V"], 1)
+        def side_mean(side):
+            s = self.err.get((name, side))
+            return s[0] / max(s[1], 1) if s else float("nan")
+
+        k = side_mean("K")
+        v = side_mean("V")
         return 0.5 * (k + v), k, v
 
 

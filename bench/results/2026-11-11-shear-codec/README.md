@@ -118,7 +118,11 @@ gepaarten Differenzen vergleichbar sind — genau der Fehler, der in Abweichung 
 
 - **G1 (Wirksamkeit, das Wichtigste):** die **Block-MSE der Engine-Implementierung** muss die
   Harness-Vorhersage treffen. Die Vorhersage steht in `tools/kv_affine_price.py` (auf **denselben**
-  Zellen): `uniform+LS` 1,738780e-03 und `uniform+LS+z` 1,291868e-03 (unkalibriert, voller Dump).
+  Zellen): `uniform+LS` 8,693901e-03 und `uniform+LS+z` 6,459338e-03 (unkalibriert, voller Dump).
+  **Korrektur 2026-11-13 (Abweichung 20):** hier standen 1,738780e-03 / 1,291868e-03, also **1/5**.
+  Der Zähler im Werkzeug wurde bei jeder Variante erhöht statt je Variante und Seite; die absoluten
+  MSE waren fünfmal zu klein, die dB-Werte (und damit G1 als *Verhältnis*) nicht. Wer die Prüfung
+  nachrechnet, nimmt die Zahlen von heute.
   **Tolleranz: 5 %.** Verfehlt die Engine diesen Wert, ist die Implementierung falsch und der Arm
   zählt nicht — die **Paritätsprüfung** (`kv_q4_parity`) muss zusätzlich die Rekonstruktion
   zellenweise gegen den Writer prüfen.
@@ -274,8 +278,9 @@ ist `value = s·(code − 8) + c`) ist **`c = o + 8·s`**; die Konstante wird ge
 
 **Die Engine-Regel und das Harness sind damit dieselbe Rechnung** (6 Durchläufe, 0,000 dB Abstand) —
 das Wirksamkeitsgatter **G1** ist also nicht „innerhalb 5 %", sondern **exakt**: die Engine muss
-**1,291868e-03** (unkalibriert, voller Dump, stride 8) liefern, und jede Abweichung ist ein Fehler im
-Writer.
+**6,459338e-03** (unkalibriert, voller Dump, stride 8) liefern, und jede Abweichung ist ein Fehler im
+Writer. *(Korrektur 2026-11-13: hier stand 1,291868e-03, der fünffach zu kleine Wert aus Abweichung
+20; der dB-Abstand von 0,000 war und bleibt das Kriterium.)*
 
 **Der Preis im Writer:** der Nullpunkt kostet je Block **6 Iterationen mit je vier Schmetterlings-
 Reduktionen** (≈ 80–120 Shuffle-Schritte) gegen **15** heute (das Maximum plus die LS-Skala). Der
