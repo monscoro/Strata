@@ -126,6 +126,91 @@ Shuffle-Schritte heute); die Literatur nennt fuer den Offset **30–40 %** der K
 5. **Keine publizierte Praezisionskosten** eines 8-Bit/5-Bit-Fixed-Point-Offsets **in Schritten der
    Gruppenskala** — nur Formate (AWQ 4-Bit-ZP, `Q4_K` 6-Bit-Min, INT8-ZP bei GyRot) ohne dB-Angabe.
 
+## 5b. Die beiden Papiere, **in unserem Zusammenhang** (2026-11-13)
+
+### UltraQuant (AMD, arXiv:2606.20474v3) — die Hardware-Aussage, die unsere Fast-Path-Frage entscheidet
+
+**Das Format:** MXFP4 — FP4-E2M1-Codes (4 Bit) + **UE8M0**-Skalen (8 Bit) je **32 Kanäle** →
+17 Bytes je Gruppe = **4,25 bit/Element** ✓✓ (unsere Blockgröße ist dieselbe ✓✓). Die Dequantisierung
+**faltet in die Matrix-Cores**: `v_mfma_scale_f32_16x16x128_f8f6f4` liest FP4-Keys, FP8-Queries und die
+UE8M0-Skalen in **einer** Instruktion ✓✓ — die Keys werden nie in BF16 materialisiert ✓.
+
+**Die Skalenregel („constant-optimized scaling", §5.3):** die Skala ist **eine Zweierpotenz**
+(`E = round(log2(c·m))`, `m` = der Absmax der Gruppe) und **`c` ist EINE globale Konstante**
+(**c = 0,156**, modellunabhängig ✓✓ — über MiniMax **und** Qwen hinweg ohne Nachkalibrierung ✓✓,
+einmal offline auf rotierten Keys gelöst ✓).
+
+**Drei Befunde, die direkt in unseren Plan gehen:**
+
+1. **Ihre Ablation B.1 ist unsere Messung von der anderen Seite:** „switching the adaptation
+   statistic from a single per-token ℓ2 norm to a **per-block absmax** (groups of 32) is the
+   load-bearing change: it is what recovers accuracy, **independent of the codebook**" — und: „with
+   the per-block scale in place **the codebook itself barely matters** — replacing the calibrated
+   Lloyd magnitudes with a **uniform grid stays within single-seed noise**" ✓✓✓.
+   **Das ist genau unser Arm-Befund:** die Lloyd-Form kostet gegen das uniforme Gitter nur
+   **+0,00050 nats (n.s.)** ✓✓ — **bei 2,25× Prompt-Preis** ✓✓✓. **Die Formatentscheidung ist die
+   Skalenregel, nicht das Codebook** ✓✓.
+2. **Ihr Argument gegen per-Token-Faktoren ist unser Korrekturterm:** „**a per-token factor cannot be
+   folded into the attention score (it does not pass through the softmax), so it would add a stored
+   scalar and runtime multiply with no quality gain**" ✓✓. **Unser per-Block-Offset ist genau ein
+   solcher Faktor** ✓✓ → **auf der K-Seite ist er nicht faltbar** ✗ → **der Shear ist der falsche Hebel
+   für den Fast-Path** ✓✓ (und die Messung sagt es unabhängig: der Offset bringt 0,00193 nats, die
+   Lloyd-Form kostet 0,00050 — **der Offset ist damit der teurere Hebel, und er ist derjenige, der
+   die Hardware-Abschaltung verhindert** ✓✓✓).
+3. **Die Skalenform ist eine konkrete Verbesserung unseres Formats:** die Skala als **Exponent**
+   (UE8M0, 8 Bit) statt fp16 → der Bulk bei **4,25 bit/Element** (statt unserer 4,5 ✓) **und ohne
+   Artefakt** ✓✓ (die Konstante c = 0,156 ist global ✓✓) — gegen unsere Kalibrierung (12 KB je
+   Modell + Basisdisziplin ✓).
+
+**Und ihr Performance-Befund ist unsere 2,25×-Zahl, von der anderen Seite:** ihr TurboQuant-Kern
+(Software-Codebook) kostet **2,45×** die FP8-Kernelzeit ✓✓✓ — **unser 2,25× ist dieselbe
+Software-Dequant-Strafe** ✓✓ (die Strafzahl, die UltraQuant mit FP4+UE8M0 beseitigt ✓✓). Und ihre
+Kernaussage: „**4-bit KV buys capacity, not kernel speed**" ✓✓ — das ist **unser Fenster-Argument**
+✓✓ (das Fenster kauft Kapazität ✓ = die Genauigkeit der Ring-Zellen ✓).
+
+### InnerQ (arXiv:2602.23200) — die zweite Bestätigung, und zwei Tricks zum Stehlen
+
+**Die Innendimension-Gruppierung** (die Gruppen laufen entlang der **inneren** Dimension, G = 32
+über die head_dim ✓✓) — **das ist unsere Blockgröße und unsere Blockrichtung** ✓✓✓: „the values of
+the same group in each channel of K have the same scale factor — this enables compute units
+processing the same channel group to load the scale factor **once** and reuse it" ✓✓. **Unsere
+Geometrie ist die hardware-aware** ✓ (und der Abstand zum Nachbarblock wächst mit der Länge ✓).
+
+**Die per-Kanal-Normalisierung des K, „computed once during the prefill stage and **folded into the
+model parameters**" ✓✓✓** — **das ist unsere Kalibrierung, aber ohne Artefakt-Tabelle** ✓✓: statt
+einer 12-KB-Tabelle je Modell wird die Kanalnorm in `W_Q`/`W_K` **gefaltet** ✓ (der Rechenaufwand
+verschwindet ✓✓). **Das ist eine billigere Form desselben Hebels** ✓✓ — und die Frage, ob sie bei
+uns trägt, ist eine eigene Messung ✓ (die Form ändert die Basisdisziplin ✓✓).
+
+**Der Nullpunkt kostet 0,5 bit/Element bei G = 32** ✓✓ (**exakt unser Wert** ✓✓✓) — und **er kostet
+Latenz**: „InnerQHybrid is slightly slower due to its higher computational demand and **the need to
+load additional zero-points for some groups**" ✓✓ (bei 99 % sparsity der Maske ✓) — **passend zu
+QServe: die Subtraktion ist nicht in die Epilogue fusierbar** ✓✓.
+
+**Zwei Tricks, die wir stehlen können:**
+- **Das Sign-Bit der fp16-Skala als Modus-Maske** ✓✓ („since scale factors are strictly positive, we
+  repurpose their sign bit to encode ℳ" ✓✓) — **ein Bit pro Gruppe gratis** ✓✓ (bei uns: die Maske
+  „symmetrisch/asymmetrisch" je Gruppe ✓✓ — **genau die Entscheidung, die der Shear je Gruppe trifft** ✓✓
+  → **der Shear als *Maske* statt als *Konstante*** ✓✓✓ = **0,19 bit/Zelle statt 0,5** ✓✓ und
+  **kein Extra-Skalar** ✓✓ — **das ist die ökonomische Form des Shears** ✓✓✓).
+- **Die Maske dicht speichern statt sie zu streuen** ✓✓ („we store the zero-points as a dense matrix
+  to avoid the latency overhead associated with sparse representations" ✓✓) — die Latenz schlägt die
+  Sparsamkeit ✓✓ (auch für uns eine Lehre ✓).
+
+**Und ein Befund für unser Fenster:** „the benefit of the high-precision sink window **diminishes as
+the sequence length increases**" ✓✓ (und KIVI→KIVISink: +1,7 Punkte ✓✓) → **unsere Ring-Geometrie
+(S = 256 recent + R = 64 sinks ✓) sollte die Aufteilung an die Länge anpassen** ✓✓ — bei 128K weniger
+Sinks ✓✓ (das ist eine Fenster-Frage ✓✓, unabhängig vom Indexer ✓).
+
+**Und ihre Beobachtung, die unserer widerspricht (und die unser Arm entscheidet):** „our experiments
+reveal that **hybrid quantization rarely uses asymmetric quantization for groups**" ✓✓ — bei ihnen
+(3 Bit, pro-Token-Gruppen ✓) ist die asymmetrische Form selten die bessere ✓; **bei uns** ist der
+per-Block-Offset **+0,00193 nats wert** ✓✓ (der 4K-Arm ✓). Der Unterschied: **unsere Gruppen sind
+über die head_dim gebildet (Innendimension ✓✓) und unsere Daten sind nach der Rotation schief**
+(der Offset folgt der Schiefe ✓✓) — theirs sind pro Token ✓ (dort ist die Verteilung symmetrischer
+nach der Normalisierung ✓✓). **Der Widerspruch ist damit erklärt und die Verallgemeinerung unserer
+Aussage fällt weg** ✓✓: *der Offset hilft, wo die Gruppe schief ist* ✓✓.
+
 ## 6. Was daraus fuer unseren Plan folgt
 
 - **Der Nullpunkt ist kein exotischer Eingriff, sondern in der Literatur Standard** (OffQ, TriAxialKV,
