@@ -281,19 +281,25 @@ verbessert sie auf 128K nicht, sie verschlechtert sie (+0,00181) — die Referen
 R1 (`R2b − R1` = −0,00015, t −0,11). Der Referenzabstand ist damit um genau diesen Betrag kleiner
 als geschätzt.
 
-### Zwei Befunde, die die 4K-Stufe **nicht** reproduziert
+### Was die 4K-Stufe reproduziert — und was nicht
 
-1. **Der Tail-Vorteil von q4 ist auf 128K weg.** Auf 4K holte `q4lm32w` auf dem schlimmsten 1 % von
-   `int8`+ROT **−0,329** nats (t −3,04). Auf 128K, auf demselben Kriterium (die 1.311 Positionen mit
-   der größten KL von R2a): R1 3,408 · R2b 3,332 · **`q4u32` 3,381** · `q4lm32w+C` 3,390 ·
-   `q4lm32w` **3,601**. Kein q4-Arm gewinnt den Tail; `q4lm32w` ist dort gegen **beide** `int8`-Arme
-   schlechter (R1 +0,19, R2b +0,27). Die Unterschiede der übrigen Arme liegen bei ≤0,2 nats auf einer
-   Basis von 3,4.
-2. **Top-1:** `q4lm32w+C` gegen R2b ist mit **894 | 934 (p = 0,36)** nicht unterscheidbar,
-   `q4u32` gegen R2b verliert dagegen deutlich (**864 | 1000, p = 0,0018**). Auf 4K war es
-   umgekehrt (`q4lm32w` besser, McNemar p = 0,0025). Top-1 ist kein Endpunkt dieser Stufe, aber die
-   Aussage „q4 hat die bessere Fehlerform" ist längenabhängig und damit nicht als Eigenschaft des
-   Codecs zu führen.
+1. **Der Tail-Vorteil von q4 reproduziert — und er ist asymmetrisch definiert.** Auf 4K holte
+   `q4lm32w` auf dem schlimmsten 1 % von `int8`+ROT **−0,329** nats (t −3,04). Auf 128K, auf
+   demselben Kriterium (die 1.311 Positionen mit der größten KL von R2a): `q4lm32w` 3,601 gegen
+   R2a 5,111, also **−1,510** (t −15,65); `q4lm32w+C` −1,721 (t −18,44); `q4u32` −1,730 (t −18,52).
+   Das Verhältnis q4/R2a ist 0,76 auf 4K und 0,70 auf 128K. **Aber:** die Menge ist von R2a
+   definiert, also ist R2a auf ihr per Konstruktion der schlechteste Arm; R1 (3,408), R2b (3,332)
+   und die q4-Arme liegen alle bei 3,3–3,6. Der p99, den jeder Arm an sich selbst definiert, rankt
+   dagegen R2a **am besten** (1,5133 gegen 2,0583 für `q4lm32w`). Der Tail-Mittelwert auf einer
+   fremden Extremmenge ist damit ein Robustheitsmaß, kein Beweis der besseren Fehlerform: R2a
+   gewinnt Mittel und p99, die q4-Arme gewinnen den von R2a definierten Tail. (Ein früherer Entwurf
+   dieses Abschnitts verglich `q4lm32w` mit R1 statt mit der definierenden Referenz und las daraus
+   „kein q4-Arm gewinnt den Tail" — das war falsch.)
+2. **Top-1 reproduziert nicht:** `q4lm32w+C` gegen R2b ist mit **894 | 934 (p = 0,36)** nicht
+   unterscheidbar, `q4u32` gegen R2b verliert dagegen deutlich (**864 | 1000, p = 0,0018**). Auf 4K
+   war es umgekehrt (`q4lm32w` besser, McNemar p = 0,0025). Top-1 ist kein Endpunkt dieser Stufe,
+   aber die Aussage „q4 hat die bessere Fehlerform" ist längenabhängig und damit nicht als
+   Eigenschaft des Codecs zu führen.
 
 ### Was diese Stufe entscheidet, und was nicht
 
