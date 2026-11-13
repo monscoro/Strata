@@ -312,6 +312,32 @@ dessen Fehleranteil klein bleibt.
 kalibriert 1,065307e-03 → kalibriert **und** geschert 8,118799e-04). Der Kanaloffset ist ein fester
 Vektor, der über alle Blöcke gleich ist; der Blockanteil schwankt von Block zu Block.
 
+### Korrektur (2026-11-13): wie viel davon ist wirklich der **Offset**?
+
+Die Zeile „Nullpunkt 1,16 dB" beschreibt den **Shear** (Codes **und** Schritt **und** Offset
+gemeinsam neu gefittet). Die zerlegende Messung steht in
+`bench/results/2026-11-13-kv-offset-tail/` (12.574.464 Blöcke, dieselben Zellen):
+
+* Der **reine Restfehler-Offset** bei **festen** Codes und fester Skala
+  (`a = mean(x − s·c)`, `r' = r + a`) holt **3,16 %** der Block-MSE zurück — **12,4 %** des
+  Shear-Gewinns. Die anderen **88 %** sind die Neuplatzierung des Gitters.
+* **Sechs Bit** speichern `a` fast verlustfrei (96,8–98,3 % des exakten Gewinns bei 1/32 Schritt).
+* Eine **Kanal-Tabelle** (Layer × Seite × Kopf × Blockindex, also der „statische" Anteil) holt
+  **nichts** zurück (≈ 0 %); je 2 Blöcke geteilt verliert die Hälfte, je 4 Blöcke drei Viertel.
+* Im **1-%-Tail** der Positionen ist der Anteil genauso groß wie im Bulk (3,1 % gegen 3,1 %) — der
+  Offset ist **kein** Schwerpositions-Hebel.
+
+**Präzisierung der Formulierung „Formkorrektur, keine Mittelwertkorrektur":** der Offset korrigiert
+den Mittelwert des **Rekonstruktionsfehlers**, nicht den Mittelwert der **Eingangsdaten**; das ist
+auch bei fast zentrierten Daten relevant (der Blockmittelwert ist nahezu null, der Fehlermittelwert
+nicht). Die Schiefe-Korrelation r = +0,89 sagt, **dass** die Größen zusammen schwanken — sie beweist
+**keinen** Mechanismus. Der Mechanismus, den die Zerlegung zeigt, ist: das Gitter wird neu platziert,
+und der DC-Anteil davon ist klein.
+
+**Für die Brücke Block → nats heißt das:** von den 1,16 dB (≈ 0,00193 nats) trägt der billige
+Fixed-Code-Offset allein **0,14 dB ≈ 0,0002 nats** — ein Zehntel des Shear-Effekts und weit unter
+der Auflösung des Harness (0,00200 nats).
+
 ### Die Regel, die für den Plan daraus folgt
 
 **Wo man die Korrektur anbringt, entscheidet, was sie kostet.** Dieselbe Sache — den verschobenen

@@ -33,7 +33,7 @@ markiert.
 | **KVQuant (Hooper et al., NeurIPS 2024, arXiv:2401.18079)** | asymmetrisch (Scale + Zero-Point), bewusst **fp16**-Zero-Point, weil ein Integer-ZP bei manchen Kanälen ausserhalb des Bereichs läge | die **Praxisentscheidung** gegen einen schmalen ZP — bei uns ist der ZP eng (0,92 Schritte im Median), ein 5-Bit-FP wäre ausreichend |
 | **OffQ, arXiv:2606.07116** | der Nullpunkt „kann in den Nullpunkt absorbiert werden"; **per Gruppe** (128) **nach** der Rotation, 16-Bit Scale + 16-Bit ZP → **4,25 bit** | **die gleiche Formel wie unsere Rechnung** (0,5 bit/Zelle bei Gruppe 32) |
 | **KIVI (Liu et al., ICML 2024, arXiv:2402.02750)** | asymmetrisch mit `z = min`, `s = (max−min)/(2^b−1)`; K **per Kanal** (G=32 Tokens), V **per Token** | die **einfachste** asymmetrische Regel — und der Beweis, dass sie in der Literatur Standard ist |
-| **„Regularize or Localize", arXiv:2607.17019** | Zero-Point-Gitter bewegen die NLL **kaum** (+0,74 gegen +0,765 symmetrisch bei 3 bit), kosten aber **2×16 bit je 32 Werte ≈ 1 bit/Wert** | **die Gegenstimme zu unserem Befund** — sie messen aber **per-Channel/per-Token**, nicht per-Block; unser Fall ist von ihnen nicht gemessen |
+| **„Regularize or Localize", arXiv:2607.17019** | Zero-Point-Gitter bewegen die NLL **kaum** (+0,74 gegen +0,765 symmetrisch bei 3 bit), kosten aber **2×16 bit je 32 Werte ≈ 1 bit/Wert** | **eine Gegenstimme, keine pauschale** (Korrektur 2026-11-13): der Abgleich zeigt auch **Gruppen-Ablationen mit deutlichem Nutzen asymmetrischer Quantisierung**; umgekehrt warnt **InnerQ** davor, Asymmetrie ueberall als automatisch besser anzusehen. Entschieden wird es ueber Encoder, Gruppierung und Modellqualitaet. Die Arbeit misst **per-Channel/per-Token**, nicht per Block — unser Fall ist von ihr nicht gemessen |
 
 ### 1c. Der Block-Fit und seine Kosten (die GPU-Seite der Numerik)
 
@@ -92,7 +92,7 @@ koennte DPP die 5 Shuffle-Stufen einer Reduktion ersetzen; **gemessen ist das ni
 | **vLLM ROCm** (`rdna_hybrid_w4a16`, gfx11/gfx12) | asymmetrisches uint4 mit 4-Bit-Group-ZP: die ZP-Subtraktion erfolgt **pro Zeile des Tiles** (ein fp16 pro Zeile, nicht pro Wert); der **gepackte Schnell-Dequant-Pfad wird bei has_zp deaktiviert** und die Asymmetrie zahlt erst ab M≥256 ein |
 | **vLLM PR #40633** (geschlossen) | 4-Bit-ZP **steganographisch in den Mantissa-Bits der fp32-Scale** + die Korrektur **auf der Score-Seite** via `sum(Q)·zp` — **kein Add pro Wert** |
 | **InnerQ** (Jetson Xavier NX) | ZP: „negligible effect on latency"; die Sparse-Masken-Ablation: Value-Cache-Latenz 1685 µs (99 % sparse) → 1815 µs (1 % sparse) bei 32K, also **~+7,7 %**, wenn das ZP wirklich angewandt wird |
-| **UltraQuant** (AMD CDNA4) | RDNA4 hat natives **scaled-MFMA** (die **Skala** faltet in den Akkumulator) — **ein Nullpunkt tut das nicht**; UltraQuant verzichtet deshalb auf den ZP. **Das ist die praezise Hardware-Aussage zu unserem Fast-Path** |
+| **UltraQuant** (AMD **CDNA4**) | auf CDNA4 faltet das scaled-MFMA die **Skala** in den Akkumulator — **ein Nullpunkt tut das nicht**; UltraQuant verzichtet deshalb auf den ZP. **Die Aussage ist auf CDNA4 gemessen und gilt nicht fuer RDNA4** (siehe Korrektur, Abschnitt 3) |
 | **GyRot** | auf GPUs muss Group-Scaling + Zero-Point **nach** dem GEMM auf CUDA-Cores in FP erfolgen; der AMX-INT8-Pfad (INT8 Scale/ZP) ist deutlich billiger |
 
 **Der Abgleich mit unserer Analyse:** unsere Korrektur ist **eine Add je Wert** im explizit
@@ -101,8 +101,21 @@ dequantisierenden Leser (der Decode-Kern liest die Bloecke zellenweise) — das 
 die Korrektur auf der Score-Seite als `sum(Q)·zp` gefuehrt wird (vLLM PR #40633 ✓) — **das ist genau
 die Form, die wir fuer die K-Seite analysiert hatten** (die Query-Gruppensummen, je Kopf einmal ✓✓).
 Der **Writer**-Preis ist der andere Teil (bei uns 6 Iterationen mit je 3 Reduktionen gegen 15
-Shuffle-Schritte heute); die Literatur nennt fuer den Offset **30–40 %** der KV-Zeit auf RDNA4 ✓
-(unsere Rechnung: 2,3–6,3× der Writer-Kosten → **das ist das Warnsignal fuer Gate G6** ✓).
+Shuffle-Schritte heute); unsere Rechnung sind 2,3–6,3× der Writer-Kosten → **das ist das Warnsignal
+fuer Gate G6** ✓.
+
+**Korrektur (2026-11-13): die 30–40 % sind kein Nullpunkt-Preis.** Die Zahl stammt aus einer
+Feldmessung von llama.cpp auf einer RX 9070, in der `q4_1`/`q5_1` (4/5 Bit mit fp16-Min) gegen
+`q4_0`/`q8_0` **als ganze Kernelpfade** verglichen werden — unterschiedliche Dequant-Pfade,
+Gruppengroessen und Fallbacks. Daraus laesst sich **kein isolierter, unvermeidbarer Preis des
+Nullpunkts** ableiten, und die fruehere Formulierung „die Literatur nennt fuer den Offset 30–40 % der
+KV-Zeit" war zu stark. Was belegt ist: ein per-Group-ZP verhindert heute den gepackten
+Schnell-Dequant-Pfad (vLLM ROCm), und die Subtraktion ist bei per-Group-ZP **nicht** in die Epilogue
+fuisierbar (QServe). Was **nicht** belegt ist: dass ein Affin-Werden 30–40 % kostet. Ebenso falsch
+waere die Gegenbehauptung „affin = kostenlos": die K-Seite ist ueber die Query-Gruppensumme
+organisierbar, die V-Seite ueber einen zusaetzlichen Gruppenakkumulator im vorhandenen Durchlauf —
+ob das praktisch guenstig ist, entscheiden Metadatenzugriffe, Registerdruck und die konkrete
+Kernelintegration, nicht die Algebra.
 
 ## 4. Die GPU-Primitive (RDNA4)
 
@@ -112,13 +125,21 @@ Shuffle-Schritte heute); die Literatur nennt fuer den Offset **30–40 %** der K
 - **die Verschmelzung mit der Arithmetik** (`v_add_f32_dpp`) ist fuer gfx12 **nicht verifiziert** ✓
 - `row_bcast`/`wave_ror`: **CDNA-only** ✓; `__builtin_amdgcn_wave_reduce_add_u32`: nur Integer ✓
 
-## 5. Die Luecken (was niemand gemessen hat)
+## 5. Die Luecken (was in der bisherigen Recherche nicht gefunden wurde)
 
-1. **Keine Veroeffentlichung misst den dB-Gewinn eines per-Block-Offsets ueber einem Uniform-Gitter
-   mit fp16-Skala** — die Arbeiten messen PPL/Task-Scores (InnerQ, TriAxialKV). **Unsere 1,16 dB
-   Block-MSE (und die Additivitaet mit der per-Kanal-Kalibrierung: 3,18 dB) sind unveroeffentlicht.**
-2. **Keine publizierte Korrelation** „Offset ≈ Formfehler des Blocks (r = 0,89 mit dem Rest) gegen
-   Mittelwert".
+**Zur Formulierung (2026-11-13):** „nicht gefunden" heisst, dass der Quellenabgleich diese Messung
+nicht enthaelt — nicht, dass es sie nicht gibt. Die Luecken sind Suchstand, kein Neuheitsanspruch.
+
+1. **In der bisherigen Recherche nicht gefunden:** eine dB-Angabe fuer den Gewinn eines
+   per-Block-Offsets ueber einem Uniform-Gitter mit fp16-Skala — die Arbeiten messen PPL/Task-Scores
+   (InnerQ, TriAxialKV). Unsere 1,16 dB Block-MSE (und die Kombination mit der per-Kanal-Kalibrierung:
+   3,18 dB) sind damit **im Quellenabgleich ohne Gegenstueck**.
+2. **In der bisherigen Recherche nicht gefunden:** eine publizierte Korrelation „Offset ≈ Formfehler
+   des Blocks (r = 0,89 mit dem Rest) gegen Mittelwert". **Und die Korrelation ist kein Mechanismus:**
+   r = 0,89 sagt, dass zwei Groessen zusammen schwanken, nicht, dass die eine die andere verursacht.
+   Die am 2026-11-13 gemessene Zerlegung (bench/results/2026-11-13-kv-offset-tail/) zeigt, dass der
+   reine Restfehler-Offset nur einen kleinen Teil des Shear-Gewinns traegt — der Shear ist ueberwiegend
+   eine **Neuplatzierung des Gitters** (Codes + Schritt), nicht die DC-Korrektur.
 3. **Keine oeffentliche Instruktionszaehlung** „ein Extra-Add pro Wert" gegen „ein Extra-FMA je Gruppe"
    im Decode-Attention-Kern (nur Latenz-Deltas).
 4. **Keine begutachtete RDNA4-Arbeit** zu 4-Bit-KV mit per-Group-ZP (die AMD-Daten stammen aus Code
@@ -128,7 +149,7 @@ Shuffle-Schritte heute); die Literatur nennt fuer den Offset **30–40 %** der K
 
 ## 5b. Die beiden Papiere, **in unserem Zusammenhang** (2026-11-13)
 
-### UltraQuant (AMD, arXiv:2606.20474v3) — die Hardware-Aussage, die unsere Fast-Path-Frage entscheidet
+### UltraQuant (AMD, arXiv:2606.20474v3) — die Hardware-Aussage von **CDNA4** (nicht RDNA4)
 
 **Das Format:** MXFP4 — FP4-E2M1-Codes (4 Bit) + **UE8M0**-Skalen (8 Bit) je **32 Kanäle** →
 17 Bytes je Gruppe = **4,25 bit/Element** ✓✓ (unsere Blockgröße ist dieselbe ✓✓). Die Dequantisierung
@@ -219,10 +240,16 @@ Aussage fällt weg** ✓✓: *der Offset hilft, wo die Gruppe schief ist* ✓✓
   unbehandelte** (die dB-Wirkung eines per-Block-Offsets ueber einem Uniform-Gitter).
 - **Der Byte-Preis ist bestaetigt** (llama.cpp `q4_1` = 5,0 bit bei Gruppe 32 ✓✓) und **der 6-Bit-Nullpunkt
   in Schritten ist billiger als der fp16** (0,19 gegen 0,5 bit; vLLM-ROCm nutzt 4 Bit = 0,125 ✓).
-- **Der Runtime-Preis ist gemessen** (30–40 % auf RDNA4 fuer den Offset ✓) — **und die Korrektur auf der
-  Score-Seite (`sum(Q)·zp`) ist die publizierte Form, die ohne Add pro Wert auskommt** ✓✓ (vLLM PR
-  #40633 ✓).
-- **Die Hardware-Aussage ist eindeutig**: das scaled-MFMA faltet die **Skala** in den Akkumulator,
-  **nicht** den Nullpunkt ✓ — das ist die Grenze des Fast-Path-Achse und muss im Paper stehen.
+- **Der Runtime-Preis ist NICHT als isolierter Nullpunkt-Preis gemessen** (Korrektur 2026-11-13: die
+  30–40 % der RDNA4-Feldmessung vergleichen ganze Kernelpfade, siehe Abschnitt 3) — **und die Korrektur
+  auf der Score-Seite (`sum(Q)·zp`) ist die publizierte Form, die ohne Add pro Wert auskommt** ✓✓
+  (vLLM PR #40633 ✓). Beides zusammen heisst: der Reader-Preis ist **offen**, nicht entschieden.
+- **Die Hardware-Aussage gilt fuer CDNA4, nicht fuer RDNA4**: UltraQuant (arXiv:2606.20474) ist auf
+  **CDNA4** gemessen; dort faltet das scaled-MFMA die **Skala** in den Akkumulator, **nicht** den
+  Nullpunkt. Fuer **RDNA4 (gfx12)** ist damit **nichts** ueber scaled-MFMA belegt — die Aussage darf
+  nicht als Beleg fuer unseren Pfad dienen. Offen und zu pruefen: ob gfx12 die `*_f8f6f4`-Skalenform
+  ueberhaupt hat. Ausserdem: **FP4 ist nicht uniform** (E2M1 hat einen nichtlinearen Abstand) und
+  deshalb **nicht automatisch affin**; native Formatunterstuetzung kann einen schnellen Pfad
+  ermoeglichen, das ist aber eine andere Begruendung als Affinitaet.
 - **Die Gegenstimme bleibt** (arXiv:2607.17019: der Nullpunkt bewegt die NLL kaum) — sie misst aber
   per Channel/Token, nicht per Block; **unser Arm entscheidet genau diese Frage empirisch** ✓.
