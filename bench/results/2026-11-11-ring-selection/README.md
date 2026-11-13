@@ -155,3 +155,76 @@ je Query ist die, die mit jeder Query dazukommt.
 
 **Was hier noch nicht steht:** die Zahlen D2-a … D2-f des 128K-Laufs und die Ausgänge von G9/G10. Sie
 folgen als eigener Nachtrag, wenn der Lauf durch ist — und sie werden berichtet, wie sie fallen.
+
+## 7. Nachtrag 2026-11-13, 12:20: die Zahlen — **G9 schließt den Ring**, und G10 ist formal erfüllt und sagt nichts
+
+### Der Lauf
+
+Ein 128K-Lauf, `int8`, mit Dump: 131.060 Positionen, 4.807,8 s GPU, Dump 12.915.176.640 Bytes.
+Die `int8`-TSV dieses Laufs ist **byte-identisch** zu der aus D1 (139.789.422 Bytes, alle 131.060
+Zeilen gleich) — das Instrument hat kein Logprob verändert. Datensätze: 393.180 = 32.765 gedrainte
+Fenster × 12 Layer, `skipped 0`; der Destruktor meldet 32.766 gestartete und 32.765 gedrainte Fenster
+(das letzte hat keine Logprobs), 24 Staging-Aufrufe, 0 vom Guard abgewiesen.
+
+### Die sechs Größen (gfx1200, cwe-128k, Text 1)
+
+| # | gemessen | Zahl |
+|---|---|---|
+| **D2-a** | Breite der Auswahl je Query | **2035,0** Zellen im Mittel; **98,44 %** der Queries liegen am Deckel (2.051); Identität (p+1 ≤ 2.051) nur 1,56 % |
+| **D2-b** | Überdeckung des positionalen Rings (R=64 + S=256) | **8,22 %** aller ausgewählten Ids (Sink 0,95 %, Fenster 7,27 %), je Layer 5,9–13,2 %. Der Ring ist 0,24 % der Zellen → **33,7×** angereichert. E1s 8,55 % ist damit bestätigt |
+| **D2-c** | Vereinigung \|∪ der letzten N Queries\| | N=1: 2.051 · N=2: 2.932 · **N=4: 4.396** · N=8: 6.554 · N=64: 20.837 · **N=4096: 58.758** (max 117.641 = 90 % des Kontexts); 31 Anker je Layer |
+| **D2-d** | Churn (Anteil *neuer* Zellen) | Lag 1: **44,96 %** (je Layer 34,1–56,4) · Lag 8: 68,31 % · Lag 64: 74,73 % |
+| **D2-e** | Alter der gelesenen Zellen | Median **8.191** Zellen; 7,3 % jünger als 256; **53,4 %** älter als 4.096; Gipfel bei 16k–32k |
+| **D2-f** | tail-Positionen (1 % = 1.311 Positionen) | ausgewählt 100 %, von einer späteren Query gelesen 100 %, von der letzten 12,5 %, eigene Query 99,2 %, **Anteil an allen Auswahlen 1,22 %** (2 %-Set: 2,62 %) |
+
+### Die Entscheidungen, gegen die vorregistrierten Regeln
+
+- **G9 (Kapazität): geschlossen.** Die Regel verlangte eine Vereinigung der letzten 4.096 Queries, die
+  *wesentlich* kleiner als 4.096 Zellen ist (Faktor ≥ 4 Reserve). Gemessen: **58.758** Zellen,
+  Reserve **0,07×**. Die Grenze ist nicht knapp verfehlt — sie ist bereits bei **vier** Queries
+  überschritten (4.396 > 4.096). Ein Pool von 4.096 Zellen kann die Auswahl nicht einholen; das ist
+  Arithmetik, kein Kernel.
+- **G10 (die Brücke): formal erfüllt, und wertlos.** 100 % ≥ 50 % — aber die Metrik *kann* bei dieser
+  Breite nicht scheitern: selbst bei **gleichverteilter** Zufallsauswahl derselben Breite (2.051 von
+  p+1 Zellen) liegt die ungünstigste tail-Position (p = 118.347, 12.712 Queries danach) je Layer bei
+  100 %, über 12 Layer als ODER bei 100 %. Ich habe die 50-%-Schwelle für eine *kleine* Auswahl
+  geschrieben; bei 2.048 von 131.072 Zellen misst „irgendeine spätere Query hat sie gelesen" nichts.
+  **Ich zähle G10 deshalb nicht als Beleg**, weder für noch gegen den Hebel.
+- **Was D2-f stattdessen sagt:** die Anreicherung. Die schweren Positionen bekommen **1,22×** (1 %-Set)
+  bzw. **1,31×** (2 %-Set) ihres Anteils — der Indexer bevorzugt sie kaum. Gegenprobe: der positionale
+  Ring bekommt 33,7×. Der Indexer hat eine starke Präferenz für den Ring und fast keine für die
+  tail-Positionen.
+- **G11 (der Vertrag): unverändert.** Ein auswahlfolgender Pool wäre eine Vermutung, keine Garantie —
+  und ist mit G9 ohnehin gegenstandslos.
+
+### Was das heißt
+
+**Der Ring-Hebel ist bei dieser Zielmarke tot, und zwar aus einem Grund, den man vorher nicht sehen
+konnte.** Die Annahme war: der Indexer wählt eine kleine, stabile Menge, die ein 4.096-Zellen-Pool
+halten kann. Gemessen ist das Gegenteil: er wählt bei 128K **immer sein volles Budget** (2.048 Zellen
+aus bis zu 131.072, 1,6 % des Kontexts), **45 % davon sind je Query neu**, und die Vereinigung
+überschreitet die Poolgröße innerhalb von vier Queries.
+
+Die Auswahl ist dabei **strukturierter als Zufall, aber der Vorsprung schrumpft mit dem Horizont**:
+je Query ist der Churn 44,96 % gegen 96,87 % beim Zufall (ein Faktor 2,2), über 4.096 Queries deckt
+die Vereinigung 58.758 Zellen — bei im Mittel ~65.500 verfügbaren Zellen am Anker also **90 %** —,
+während der Zufall an jedem Anker den ganzen Kontext abgedeckt hätte. Das ist ein echter, messbarer
+Unterschied, aber keiner, der einen Pool rettet: 4.096 Zellen sind bei N=4 erreicht, bei N=64 sind es
+20.837. Für einen *kleinen* Pool ist die Auswahl nicht stabil genug, für einen *großen* ist sie kein
+Gewinn gegenüber dem, was der Cache ohnehin hält.
+
+**Der 128K-Befund bleibt unberührt.** `q4lm32w` liegt bei 128K weiter +0,00741 nats hinter `int8`;
+D2 sagt nichts über den Codec, sondern nur, dass dieser *eine* Weg, ihn zu schließen, nicht existiert.
+Und die tail-Zahlen sagen zusätzlich: selbst ein perfekter Folger würde die schweren Zellen nicht
+bevorzugt schützen, denn der Indexer tut es auch nicht.
+
+**Was ich an mir selbst korrigiere:** die 50-%-Schwelle von G10 war eine Zahl ohne Baseline. Sie hätte
+bei 2.048-Zellen-Auswahlen nie scheitern können. Der Fehler ist nicht, dass ich sie gemessen habe,
+sondern dass ich sie vorher nicht gegen den Zufall geprüft habe; `d2-baselines.py` rechnet die
+Baselines jetzt nach, und sie stehen im Protokoll neben den Messwerten.
+
+### Was als Nächstes **nicht** kommt
+
+Kein auswahlfolgender Ring, kein Pool-Umbau, kein Kernel dafür. Die Ring-Achse ist mit G9 geschlossen
+— für dieses Budget, und mit 0,07× Reserve auch nicht „knapp". Offen bleibt allein die Codec-Achse
+(Level-Split, Per-Kanal-Offset, Kalibrierung), und die ist gemessen, nicht vermutet.

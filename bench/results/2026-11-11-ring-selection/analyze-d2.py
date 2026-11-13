@@ -73,7 +73,7 @@ class Layer:
         self.churn_new = {L: 0 for L in LAGS}
         self.churn_tot = {L: 0 for L in LAGS}
         self.union = {N: [] for N in union_ns}
-        self.tail_sel = 0
+        self.tail_sel = {}          # je Tail-Maske: die gewaehlten Ids, die in ihr liegen
         self.own_hits = 0
         self.self_sel = np.zeros(n_pos, dtype=bool)   # the query AT p selected the cell p (the tail-bias artefact)
 
@@ -144,8 +144,9 @@ def analyze(dump, n_pos, cap_expected, tails, r, s, ring, anchor, union_ns, prog
                 st.age += np.bincount(b, minlength=AGE_BINS)
 
                 # D2-f: tail-Zellen in dieser Auswahl, und "wird die eigene Zelle gelesen"
-                if tails is not None:
-                    st.tail_sel += int(tails[row].sum())
+                if tails:
+                    for frac, m in tails.items():
+                        st.tail_sel[frac] = st.tail_sel.get(frac, 0) + int(m[row].sum())
                 st.own_hits += int((row == p).any())
                 if (row == p).any():
                     st.self_sel[p] = True   # the incomplete-tail bias makes this almost always true; say how often
@@ -220,8 +221,8 @@ def main():
     tail_frac = a.tail[0]
     tail_pos, tail_mask = tails_masks[tail_frac]
     union_ns = tuple(n for n in UNION_NS if n <= a.ring) or (1,)
-    layers, recs, windows, bad = analyze(a.dump, n_pos, cap, tail_mask, a.window_r, a.window_s,
-                                         a.ring, a.anchor, union_ns, a.progress)
+    layers, recs, windows, bad = analyze(a.dump, n_pos, cap, {f: m for f, (_p, m) in tails_masks.items()},
+                                         a.window_r, a.window_s, a.ring, a.anchor, union_ns, a.progress)
     if not layers:
         raise SystemExit("no records")
     print(f"records: {recs}, windows: {len(windows)}, qsa layers: {len(layers)}, skipped: {bad}")
@@ -314,19 +315,21 @@ def main():
             later |= st.last_sel[tp] > tp
             anyl |= st.last_sel[tp] >= 0
             lastq |= st.last_sel[tp] == st.q - 1
-        share = sum(st.tail_sel for st in layers.values()) / sum(st.cells for st in layers.values())
+        share = sum(st.tail_sel.get(frac, 0) for st in layers.values()) / sum(st.cells for st in layers.values())
         d = {"n": int(len(tp)),
              "ever_selected": float(anyl.mean()),       # irgendeine Query ueberhaupt
              "read_later": float(later.mean()),         # eine spaetere Query (die Bruecke)
              "read_by_last": float(lastq.mean()),       # die letzte Query des Laufs
              "own_query": float(own),                   # die Query an p selbst (fast immer wahr: Tail-Bias)
-             "share_of_selections": float(share)}       # reverse Lesart: Anteil der tail-Zellen an allen Auswahlen
+             "share_of_selections": float(share),      # reverse Lesart: Anteil der tail-Zellen an allen Auswahlen
+             "enrichment": float(share / frac)}         # gegen den Zufall: 1,0 = die tail-Zellen bekommen nur ihren Anteil
         f_all[f"{frac:.2f}"] = d
         print(f"  tail {frac:.0%} ({len(tp)} Positionen): in mind. einem Layer ausgewaehlt "
               f"{100 * d['ever_selected']:5.1f} %; von einer spaeteren Query gelesen "
               f"{100 * d['read_later']:5.1f} %; von der letzten Query "
               f"{100 * d['read_by_last']:5.1f} %; eigene Query "
-              f"{100 * d['own_query']:5.1f} %; Anteil an allen Auswahlen {100 * d['share_of_selections']:.2f} %")
+              f"{100 * d['own_query']:5.1f} %; Anteil an allen Auswahlen {100 * d['share_of_selections']:.2f} % "
+              f"(Anreicherung {d['enrichment']:.2f}x)")
     rep["D2-f"] = f_all
     primary = f_all[f"{tail_frac:.2f}"]["read_later"]
     rep["G10"] = {"metric": "read_later", "value": primary,
