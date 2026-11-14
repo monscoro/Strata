@@ -47,7 +47,15 @@ ARMS = [
 
 RATE = re.compile(r"prompt (\d+) tokens = (\d+) reused \+ (\d+) read in (\d+) ms \(([\d.]+) tok/s\)")
 BUDGET = re.compile(r"Windows budgets (\d+) of this card's (\d+) MiB")
-SLOTS = re.compile(r"expert cache (\d+) slots")
+# zwei Formen: "expert cache 2664 slots, 4.37 GiB of VRAM" und "expert cache auto: ... -> 0 slots"
+SLOTS = re.compile(r"expert cache (\d+) slots|-> (\d+) slots")
+
+
+def slot_count(text):
+    m = SLOTS.search(text)
+    if not m:
+        return -1
+    return int(m.group(1) or m.group(2))
 
 # G-R8: der VRAM-Budget.  Auf dieser Karte gab der Treiber in den Referenzlaeufen 15.419 von
 # 16.304 MiB fuer den Prozess frei; ein fremder Prozess (Unsloth Studio) hat den Anteil auf
@@ -126,6 +134,23 @@ def arm(tag, cfg_name, window):
         print(f"arm {tag}: server never came up", flush=True)
         stop(server)
         return 1
+    # G-R8, VOR dem Lauf: ein fremder Prozess auf der Karte laesst den Prompt ueber die SSD laufen
+    # (der Expert-Cache hat 0 Slots).  Das steht im Engine-Log, und es wird geprueft, BEVOR die
+    # drei Nadeln laufen - sonst waeren es 40 Minuten fuer einen Arm, der nicht zaehlt.
+    log0 = LOGS / f"needle-{tag}.engine.log"
+    text0 = log0.read_text(encoding="utf-8", errors="replace") if log0.exists() else ""
+    bud0 = BUDGET.search(text0)
+    bud = int(bud0.group(1)) if bud0 else -1
+    slot_n = slot_count(text0)
+    print(f"arm {tag}: VRAM budget {bud} MiB (need >= {MIN_BUDGET_MIB}), expert cache {slot_n} slots "
+          f"(need >= {MIN_SLOTS})", flush=True)
+    if bud < MIN_BUDGET_MIB or slot_n < MIN_SLOTS:
+        print(f"arm {tag}: G-R8 not met - another process holds the card's VRAM; this arm is invalid, "
+              f"not slow.  Stopping before the needles.", flush=True)
+        stop(server)
+        wait_engine_gone()
+        time.sleep(30)
+        return 1
     print(f"arm {tag}: server up, running needle_bench (32k x depths 10/50/90)", flush=True)
     t0 = time.time()
     done = subprocess.run([PY, str(REPO / "tools" / "needle_bench.py"), "--url", URL,
@@ -144,14 +169,11 @@ def arm(tag, cfg_name, window):
     rates = [(int(m.group(1)), float(m.group(4)) / 1000.0, float(m.group(5)))
              for m in RATE.finditer(text)]
     budget = BUDGET.search(text)
-    slots = SLOTS.search(text)
     bud = int(budget.group(1)) if budget else -1
-    slot_n = int(slots.group(1)) if slots else -1
+    slot_n = slot_count(text)
     print(f"arm {tag}: window ring line: {'present' if ring else 'absent'} (expected "
           f"{'present' if window else 'absent'})", flush=True)
     print(f"arm {tag}: matrix-core prompt path: {'on' if wmma else 'OFF'} (expected on)", flush=True)
-    print(f"arm {tag}: VRAM budget {bud} MiB (need >= {MIN_BUDGET_MIB}), expert cache {slot_n} slots "
-          f"(need >= {MIN_SLOTS})", flush=True)
     print(f"arm {tag}: prompt read lines: {len(rates)}", flush=True)
     for n, secs, tps in rates:
         print(f"    prompt {n} tokens: {secs:.1f} s  ({tps:.1f} tok/s)", flush=True)
@@ -162,10 +184,6 @@ def arm(tag, cfg_name, window):
     if len(rates) != 3:
         rc = rc or 1
     if done.returncode != 0:
-        rc = rc or 1
-    if bud < MIN_BUDGET_MIB or slot_n < MIN_SLOTS:
-        print(f"arm {tag}: G-R8 not met - another process holds the card's VRAM; this arm's rates are "
-              f"not a KV measurement", flush=True)
         rc = rc or 1
     if log.exists():
         print(f"arm {tag}: engine log sha256 {sha256(log)}", flush=True)
@@ -189,7 +207,6 @@ for tag, _cfg, window in ARMS:
     rates = [float(m.group(5)) for m in RATE.finditer(text)]
     med = sorted(rates)[len(rates) // 2] if rates else float("nan")
     bud = BUDGET.search(text)
-    slots = SLOTS.search(text)
     cells = " ".join(f"{v:7.1f}" for v in rates) if rates else "-"
     found = "-"
     if p.exists():
@@ -197,5 +214,5 @@ for tag, _cfg, window in ARMS:
         found = f"{sum(1 for r in rows if r.get('found'))}/{len(rows)}"
     print(f"{tag:>10}  {cells:>28}  {med:8.1f}  {'ja' if window else 'nein':>8}  "
           f"{'an' if 'matrix cores on' in text else 'aus':>5}  "
-          f"{(bud.group(1) if bud else '-'):>9}  {(slots.group(1) if slots else '-'):>6}  recall {found}", flush=True)
+          f"{(bud.group(1) if bud else '-'):>9}  {slot_count(text):>6}  recall {found}", flush=True)
 sys.exit(rc)
