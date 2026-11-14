@@ -2453,6 +2453,15 @@ bool qsa_prompt_attn_matrix_cores_gfx12() {
 
 bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
 
+// The prefill's route is the difference between the prompt fast path and the decode kernel, and the
+// log has to show it: once per process, the path the prompt attention took for this run.
+static void pa_said(const char* what) {
+    static bool said = false;
+    if (said) return;
+    said = true;
+    std::fprintf(stderr, "strata: prompt attention: %s\n", what);
+}
+
 bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                                  int64_t cap, const QsaShapes& s, const float* qf, uint16_t* o16, int64_t ld16, int64_t n_q,
                                  void* stream) {
@@ -2510,6 +2519,8 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
         cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
+    if (pools.k_q4 != nullptr || pools.v_q4 != nullptr)
+        pa_said("the q4 arm runs the prefill in the decode kernel (no prompt fast path on this backend)");
     return false;
 #endif
     if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table)
@@ -2523,7 +2534,16 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         // to measure one.)
         // the level tables need a reader this path does not have, and the shear carries a
         // constant per block (the same reason).  Both run the prefill through the decode kernel.
-        if (q4_lloyd(pools.q4_mode) || q4_shear(pools.q4_mode) || q4_uniform_ls(pools.q4_mode)) return false;
+        // kUniformLs (`--kv q4u32`) is the third case, and the easy one: it writes the very same
+        // block_q4_0 - the same 18 bytes per 32 values, the same fp16 step, the same `(code - 8)`
+        // reader - and only the step's *rule* differs (a least-squares fit instead of the block
+        // maximum).  Mode 4 therefore reads it correctly, and the arm rides the prompt fast path.
+        if (q4_lloyd(pools.q4_mode) || q4_shear(pools.q4_mode)) return false;
+        // The mode-4 path reads no window: the exact side pool (WP-2a) is a second source, and
+        // only the decode kernel mixes it in.  A windowed arm would read its overlay cells from
+        // the quantized bulk - wrong values, no error - so it keeps the decode kernel until the
+        // prompt path learns the side pool.
+        if (pools.k_win != nullptr || pools.v_win != nullptr) return false;
         static const bool q4_off = [] {
             const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
             return v != nullptr && v[0] == '0';
@@ -2535,6 +2555,9 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             return v != nullptr && v[0] == '1';
         }();
         if (q4_off || volta || (turing && !q4_tc) || pools.v_q4 == nullptr) return false;
+        pa_said(q4_uniform_ls(pools.q4_mode)
+                    ? "the tensor-core path serves the 4-bit uniform grid (q4u32), scale per 32 values"
+                    : "the tensor-core path serves the q4_0 blocks, scale per 32 values");
         return launch<4>(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
