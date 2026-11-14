@@ -42,7 +42,7 @@ uint16_t f2h(float f) { __half h = __float2half(f); return *reinterpret_cast<uin
 
 int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2 q4_0
 #if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
-    if (fmt == 2) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
+    if (fmt == 2 || fmt == 3) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
         int dev = 0, major = 0;
         ck(cudaGetDevice(&dev), "device");
         ck(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev), "cc");
@@ -65,7 +65,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     std::vector<uint16_t> ks, vs, kh, vh;
     std::vector<uint8_t> k4, v4;   // q4_0: 8 blocks of {fp16 d, 16 code bytes} per row (kv_q4.hpp)
     constexpr int64_t B4 = 18, ROW4 = 8 * B4;
-    if (fmt == 2) {
+    if (fmt == 2 || fmt == 3) {
         std::uniform_int_distribution<int> byte(0, 255);
         // the scales as a q4_0 pool holds them: signed (ggml's d = max / -8) and spread over two decades, so a chunk's
         // cells mix signs and magnitudes (a positive-only bound on them overflowed FP16 on real K/V)
@@ -182,7 +182,13 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         }
     }
     k::QsaAttnPools pl;
-    if (fmt == 2) { pl.k_q4 = up(k4); pl.v_q4 = up(v4); }
+    if (fmt == 2 || fmt == 3) {
+        pl.k_q4 = up(k4); pl.v_q4 = up(v4);
+        // fmt 3: the same blocks, but the mode says "uniform grid with a fitted step" (--kv q4u32).  The
+        // bytes are the same block_q4_0 the q4_0 arm writes, and the reader is (code - 8) * step in both
+        // cases - so this case measures the path, not the data.
+        if (fmt == 3) pl.q4_mode = k::Q4Mode::kUniformLs;
+    }
     else if (fmt == 1) { pl.k_q = up(kq); pl.v_q = up(vq); pl.k_scale = up(ks); pl.v_scale = up(vs); }
     else { pl.k_pool = up(kh); pl.v_pool = up(vh); }
     // a q4_0 value: block d / 32 of the row, element j = d % 32 in the low nibble of byte j (j < 16), else the high
@@ -251,7 +257,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
                 double a = 0;
                 for (int64_t d = 0; d < HD; ++d) {
-                    const double kv = fmt == 2 ? q4v(k4, row, d)
+                    const double kv = (fmt == 2 || fmt == 3) ? q4v(k4, row, d)
                                       : fmt == 1 ? (double) kq[row * HD + d] * h2f(ks[row * 4 + d / 64]) : h2f(kh[row * HD + d]);
                     a += (double) q[(i * NH + h) * HD + d] * kv;
                 }
@@ -264,7 +270,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 double a = 0;
                 for (int64_t c = 0; c < w; ++c) {
                     const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
-                    const double vv = fmt == 2 ? q4v(v4, row, d)
+                    const double vv = (fmt == 2 || fmt == 3) ? q4v(v4, row, d)
                                       : fmt == 1 ? (double) vq[row * HD + d] * h2f(vs[row * 4 + d / 64]) : h2f(vh[row * HD + d]);
                     a += sco[c] * vv;
                 }
@@ -332,7 +338,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     }
     std::printf("%s %s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
                 "scale); %.3f -> %.3f ms per chunk (%.2fx); new output checksum %016llx\n",
-                ok1 && ok2 ? "PASS" : "FAIL", fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, err_old,
+                ok1 && ok2 ? "PASS" : "FAIL", fmt == 3 ? "q4u32" : fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, err_old,
                 err_new, ref_scale, diff, diff / scale, ms_old / reps, ms_new / reps, ms_old / ms_new, (unsigned long long) sum);
     cudaFree((void*) d_ids); cudaFree((void*) d_steps); cudaFree((void*) d_q); cudaFree(d_old); cudaFree(d_new);
     cudaFree(scratch);
@@ -366,6 +372,7 @@ int main(int argc, char** argv) {
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
     int fails = 0;
     fails += run(1, ctx, nq, reps);
+    fails += run(3, ctx, nq, reps);   // the 4-bit uniform grid (q4u32): the same blocks, the uniform step
 #if !defined(__HIP_PLATFORM_AMD__)
     fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
     fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
