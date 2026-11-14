@@ -58,6 +58,21 @@ def slot_count(text):
         return -1
     return int(m.group(1) or m.group(2))
 
+
+def last_run_text(path):
+    """The text of the LAST engine run in the log.
+
+    The engine **appends** to its log file: every arm of a campaign lands in the same file, one
+    "engine started" marker per run.  Reading the first match would read the budget of the run
+    before - which is how the int8 arm looked broken (8,766 MiB from the discarded first run of
+    the day) while its own run had the full 15,419 MiB.  So: everything after the last marker.
+    """
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    i = text.rfind("engine started")
+    return text[i:] if i >= 0 else text
+
 # G-R8: der VRAM-Budget.  Auf dieser Karte gab der Treiber in den Referenzlaeufen 15.419 von
 # 16.304 MiB fuer den Prozess frei; ein fremder Prozess (Unsloth Studio) hat den Anteil auf
 # 8.766 MiB gedrueckt - der Expert-Cache auf 0 Slots, der Prompt laeuft ueber die SSD statt ueber
@@ -116,6 +131,41 @@ def sha256(path):
     return h.hexdigest()
 
 
+def vram_probe():
+    """Ein kurzer Start nur fuer das VRAM-Budget.
+
+    Auf dieser Karte sieht der **erste** Engine-Start eines Laufs ein zu kleines Budget (8.766
+    statt 15.419 MiB) - unabhaengig vom Codec, auch 90 s spaeter, aber bei jedem folgenden Arm
+    ist das Budget da.  Der Effekt ist damit nicht die VRAM eines fremden Prozesses (der waere
+    dauerhaft), sondern ein Zustand, den der erste Start weckt.  Der Treiber zahlt ihn einmal:
+    ein Probe-Start liest das Budget, und der erste echte Arm laeuft danach.
+    """
+    cfg = REPO / "bench" / "configs" / "needle-fastpath-int8.json"
+    probe_cfg = DATA / "probe.json"
+    c = json.loads(cfg.read_text(encoding="utf-8"))
+    c["log"] = str(LOGS / "probe.engine.log")
+    probe_cfg.write_text(json.dumps(c, indent=2), encoding="utf-8")
+    for attempt in (1, 2, 3):
+        print(f"=== VRAM-Probe {attempt}: kurzer Start, nur das Budget lesen ===", flush=True)
+        server = subprocess.Popen([PY, str(REPO / "serve" / "server.py"), "--engine", "strata",
+                                   "--config", str(probe_cfg), "--port", PORT, "--no-api-key"],
+                                  cwd=str(REPO), creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        bud = -1
+        if wait_up():
+            log0 = LOGS / "probe.engine.log"
+            text0 = last_run_text(log0)
+            m = BUDGET.search(text0)
+            bud = int(m.group(1)) if m else -1
+        stop(server)
+        wait_engine_gone()
+        print(f"VRAM-Probe {attempt}: Budget {bud} MiB (need >= {MIN_BUDGET_MIB})", flush=True)
+        if bud >= MIN_BUDGET_MIB:
+            time.sleep(30)
+            return True
+        time.sleep(90)
+    return False
+
+
 def arm(tag, cfg_name, window):
     # G-R8 kann auch den ersten Arm treffen: nach dem Ende der vorigen Engine haelt der Treiber die
     # VRAM des Prozesses noch eine Weile, und das Budget des neuen Prozesses ist dann zu klein.  Der Arm
@@ -154,7 +204,7 @@ def arm_once(tag, cfg_name, window):
     # (der Expert-Cache hat 0 Slots).  Das steht im Engine-Log, und es wird geprueft, BEVOR die
     # drei Nadeln laufen - sonst waeren es 40 Minuten fuer einen Arm, der nicht zaehlt.
     log0 = LOGS / f"needle-{tag}.engine.log"
-    text0 = log0.read_text(encoding="utf-8", errors="replace") if log0.exists() else ""
+    text0 = last_run_text(log0)
     bud0 = BUDGET.search(text0)
     bud = int(bud0.group(1)) if bud0 else -1
     slot_n = slot_count(text0)
@@ -179,7 +229,7 @@ def arm_once(tag, cfg_name, window):
         rc = rc or 1
 
     log = LOGS / f"needle-{tag}.engine.log"
-    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    text = last_run_text(log)
     ring = "ring sized" in text
     wmma = "matrix cores on" in text
     rates = [(int(m.group(1)), float(m.group(4)) / 1000.0, float(m.group(5)))
@@ -212,9 +262,14 @@ DATA.mkdir(parents=True, exist_ok=True)
 # Aufruf mit Arm-Namen: "python run-runtime.py int8 q4u32" laeuft nur diese Arme (ein Arm, der
 # nachgeholt werden muss, ohne die anderen zu wiederholen).
 want = set(sys.argv[1:])
+if not want or "noprobe" not in want:
+    if not vram_probe():
+        print("=== the VRAM budget never reached the threshold; the arms would be invalid - aborting ===",
+              flush=True)
+        sys.exit(1)
 rc = 0
 for tag, cfg_name, window in ARMS:
-    if want and tag not in want:
+    if want and tag not in want and "noprobe" not in want:
         continue
     rc = arm(tag, cfg_name, window) or rc
 
@@ -224,7 +279,7 @@ print(f"{'arm':>10}  {'prompt tok/s (10/50/90 %)':>28}  {'Median':>8}  {'Fenster
 for tag, _cfg, window in ARMS:
     p = DATA / f"needles-{tag}.json"
     log = LOGS / f"needle-{tag}.engine.log"
-    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    text = last_run_text(log)
     rates = [float(m.group(5)) for m in RATE.finditer(text)]
     med = sorted(rates)[len(rates) // 2] if rates else float("nan")
     bud = BUDGET.search(text)

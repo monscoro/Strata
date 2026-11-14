@@ -168,12 +168,19 @@ der Fenster-Arm muss die Logzeile „ring sized" zeigen, die anderen nicht (das 
   gemessen, gilt die Arm-Aussage als unvollständig. (Grund: 0.3 — auf dieser Karte ist der WMMA-Schalter
   kein Prompt-Hebel; der Fast-Path ist die Struktur, und die zeigt sich in der Kernel-Zeit.)
 * **G-R8 (die Karte muss frei sein).** Der VRAM-Budget ist die Fallgrube dieser Serie: die Engine
-  bekommt von Windows nur so viel VRAM, wie kein fremder Prozess belegt. Am 14.11. hat **Unsloth
+  bekommt von Windows nur so viel VRAM, wie kein fremder Prozess belegt. Am 14.11. um 13:13 hat **Unsloth
   Studio** der Karte rund 7,5 GB genommen — die Engine sah 8.766 von 16.304 MiB statt 15.419, der
   Expert-Cache bekam **0 Slots**, und der Prompt lief über die SSD statt über die VRAM: 36,6 tok/s
   statt rund 557 (A.9). **Gate:** jeder Arm protokolliert die Budget-Zeile und die Slot-Zahl; unter
   14.000 MiB Budget oder unter 1.000 Expert-Slots ist der Arm **ungültig** (nicht „langsam") und wird
-  wiederholt. Der Treiber prüft das von sich aus und endet mit einem Fehlercode.
+  wiederholt.
+  **Ein Fehler, den das Gate selbst gemacht hat (und der behoben ist):** das Engine-Log wird
+  **angehängt** — jeder Arm eines Laufs landet in derselben Datei, mit einer „engine started"-Marke pro
+  Lauf. Der Wächter las die *erste* Budgetzeile und damit die Zeile des **verworfenen** Laufs vom 13:13
+  (8.766 MiB): der `int8`-Arm sah sich dadurch kaputt an, obwohl sein eigener Lauf 15.419 MiB und 2.611
+  Slots hatte. Der Wächter liest jetzt den Text **nach der letzten** „engine started"-Marke — und der
+  Treiber startet vorher einen kurzen **Probe-Start**, der das Budget liest, damit der erste echte Arm
+  nicht auf einem Zustand landet, der dem Lauf davor gehört.
 
 ### A.5 Die Befehle
 
@@ -202,7 +209,10 @@ Der Treiber druckt vor jedem Arm die SHA-256 des Engines, prüft die Ein-GPU-Job
 5. **Ein Build, ein Tag.** Ein Arm, der auf einem anderen Build läuft, wird verworfen, nicht
    nachgerechnet.
 6. **Die Karte muss frei sein** (G-R8). Ein fremder Prozess auf der GPU macht den Prompt zum
-   SSD-Lauf; die Rate misst dann die SSD. Das ist am 14.11. passiert (A.9).
+   SSD-Lauf; die Rate misst dann die SSD. Das ist am 14.11. um 13:13 passiert (A.9).
+7. **Das Engine-Log wird angehängt.** Jeder Arm eines Laufs landet in derselben Datei. Wer daraus
+   liest, muss den Text nach der letzten „engine started"-Marke nehmen — sonst liest man den Lauf
+   davor (genau das hat der G-R8-Wächter getroffen).
 
 ### A.7 Die Rohdaten
 
@@ -253,6 +263,7 @@ allen Armen 3 von 3 Nadeln gefunden. VRAM-Budget und Expert-Cache-Slots stehen j
 | `q4_0` (ausgeliefert) | 606,1 | 609,5 | 607,5 | **607,5** | nein | 15.419 | 3.015 | 3/3 |
 | `q4u32` (uniform, ohne Fenster) | 263,1 | 264,4 | 263,7 | **263,7** | nein | 15.419 | 3.015 | 3/3 |
 | `q4lm8v` (Level-Tabelle 16/8) | 256,9 | 258,2 | 257,9 | **257,9** | nein | 15.419 | 3.019 | 3/3 |
+| `q4lm32` (Level-Tabelle 16/16) | 257,2 | 268,5 | 268,4 | **268,4** | nein | 15.419 | 3.015 | 3/3 |
 | `q4u32` + Fenster | 256,1 | 270,2 | 260,3 | **260,3** | ja | 15.419 | 2.947 | 3/3 |
 | `q4lm32w` (Produktarm) | 266,0 | 256,6 | 256,6 | **256,6** | ja | 15.419 | 2.947 | 3/3 |
 
@@ -278,6 +289,80 @@ Streubereich. Der Preis sitzt also an der **Instantiation**, nicht am Codec und 
 **Das gibt Teil B ein messbares Ziel:** wenn der `q4u32`-Arm seinen Prompt auf dem Matrix-Core-Pfad
 bedient (B2), statt in der Decode-Instantiation mit dem Overlay-Zweig, muss er auf das Niveau des
 Stock-Arms (≈ 600 tok/s) kommen. Das ist die Hypothese, die A2 prüft.
+
+**Der Mechanik-Arm `q4lm32` entscheidet, wo der Preis sitzt** (der Lloyd-Arm mit der vollen
+16-Level-Tabelle, ohne Fenster): **268,4 tok/s** — also **auf dem Niveau des tabellenfreien
+Uniform-Grids** (263,7) und **2,27× unter dem Stock-Arm** (607,5). Damit ist die Level-Tabelle als
+Ursache **ausgeschlossen**: ein Arm mit Tabelle und ein Arm ohne Tabelle kosten dasselbe. Übrig bleibt
+der Unterschied zwischen den Instantiationen — `kUniform` (kv_mode 2, ohne Overlay-Zweig) gegen die
+fensterfähigen (KV_MODE ≥ 4, mit Overlay-Zweig). Das ist genau der Zweig, den B2 umgeht: der
+`q4u32`-Arm bedient seinen Prompt dann auf dem Matrix-Core-Pfad statt in der Decode-Instantiation.
+
+### A.11 A2 — nach dem Bau (B2), und was der Build bringt
+
+Der neue Build (SHA `497df90d…`) mit dem 4-Bit-Pfad im Matrix-Core-Prompt-Kern. Die Arme, die der
+Build nicht ändert, laufen wie gemessen:
+
+| Arm | A1 (Build `fdd3823e…`) | A2 (Build `497df90d…`) | Differenz |
+|---|---:|---:|---|
+| `int8` | 634,1 | 644,0 | +1,6 % (im Streubereich) |
+| `q4_0` | 607,5 | 623,7 | +2,7 % (im Streubereich) |
+| `q4u32` | 263,7 | **ungültig** | der Engine hängt (siehe unten) |
+
+**Der `int8`-Pfad ist bitgleich geblieben:** die drei Prüfsummen des Paritätstests
+(`84c178024d79e375`, `dc3b41638fab8f77`, `d791e4bfb2fd064d`) sind vor und nach dem Build gleich, und
+der Paritätstest meldet **0 Fehler**. Das ist das Gate G-R7 für den Default-Pfad ✓.
+
+**Der 4-Bit-Pfad besteht sein Paritätsgate** (der neue Fall `fmt 3` im Paritätstest, dieselben Blöcke,
+der Modus „uniformes Gitter mit gefitteter Stufe"):
+
+```
+PASS q4u32 ctx 32768, 2048 queries: vs FP64 old 4e-06 new 9e-06 (output scale 7.61);
+     new vs old 1.46e-05 (1.8e-06 of scale); 97.312 -> 19.005 ms per chunk (5.12x)
+```
+
+**5,12×** gegenüber dem Decode-Kern im selben Harness — die Wirkung des B2 auf die *Kernel-Zeit* ist
+damit gemessen ✓.
+
+**Im Engine hängt der Arm.** Das Symptom, wörtlich aus dem Engine-Log:
+
+```
+strata serve: no progress for 60 s during a request (reading the prompt (verify windows), from token 30776)
+              - stopping the engine so the server starts it again
+verify: an earlier window never finished on the GPU (#267); restart the engine
+```
+
+Der Server antwortet danach mit HTTP 503, der Needle-Harness findet 0 von 3 Nadeln. Der Aufruf hängt
+**im Kernel**: die GPU war nach dem Abbruch noch 124 s busy („released the verify window's GPU waits:
+the GPU finished in 124 ms"). **Die Reproduktion ist billig**: 4k-Nadel gegen den `q4u32`-Arm ≈ 70 s
+pro Anfrage (der 32k-Lauf braucht 391 s und drei Neustarts).
+
+**Was ausgeschlossen ist (jedes mit einer Messung):**
+
+| Hypothese | Test | Ergebnis |
+|---|---|---|
+| der Build hat allgemein etwas kaputtgemacht | die int8-Prüfsummen | **unverändert** ✓ |
+| der Hänger ist nicht der 4-Bit-Pfad | `q4u32` mit `STRATA_HIP_WMMA=0` (Decode-Pfad) | **läuft**, 3/3 Nadeln ✓ |
+| der ungated Prompt-Pfad ist auf HIP kaputt | `int8` mit `STRATA_QSA_FUSE_GATE=0` | **läuft**, 3/3 ✓ |
+| die Rotation ist es | `int8` mit `STRATA_KV_ROT=1` | **läuft**, 3/3 ✓ |
+| der Kernel ist falsch | der Paritätstest mit dem q4-Pool (32.768, 512, 64 Kontext) | **besteht alle drei** ✓ |
+
+Übrig bleibt der Unterschied zwischen dem **synthetischen** Pool des Paritätsharness (zufällige Codes,
+Skalen in [0,01; 1] mit Zufallszeichen) und dem **echten** Pool des Engines (die LS-gefitten Stufen, die
+echten Codes, die rotierte Query). Der Kernel ist also mit synthetischen Daten richtig und hängt mit den
+echten — die Ursache ist **nicht isoliert**.
+
+**Deshalb ist der Pfad opt-in** (`STRATA_KV_Q4_PROMPT=1`), und der Default-Pfad bleibt byte-identisch
+zum letzten Release: der `q4u32`-Arm läuft ohne die Variable über den Decode-Kern (13 s je 4k-Prompt,
+3/3 Nadeln ✓). Das ist die Zwischenstand-Regel des Repos („a new feature is opt-in, and the default
+path stays byte-identical to the last release") ✓.
+
+**Nebenbefund mit eigenem Wert:** der Decode-Kern kannte die Modi 5 (`q4u32z`) und 6 (`q4u32`) im
+Warp-Scoring-Pfad **nicht** — sie fielen auf den fp16-Kern zurück und lasen Pools, die ein 4-Bit-Zustand
+nicht hat (`k_pool`/`v_pool` sind null): der Start schlug mit „unspecified launch failure" fehl. Nur die
+Lane-Cell-Instantiation (`STRATA_ATTN_LANECELL=1`, auf gfx12 per Default an) kannte sie. Das ist ein
+vorbestehender Bug, unabhängig von B2, und jetzt behoben ✓ — er fällt nur auf Karten oder
+Konfigurationen auf, die den Lane-Cell-Pfad nicht nehmen.
 
 ---
 
