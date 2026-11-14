@@ -167,6 +167,13 @@ der Fenster-Arm muss die Logzeile „ring sized" zeigen, die anderen nicht (das 
   Kernel-Zeit fällt, wird **genau das** berichtet — nicht „kein Unterschied". Wird nur eine der beiden
   gemessen, gilt die Arm-Aussage als unvollständig. (Grund: 0.3 — auf dieser Karte ist der WMMA-Schalter
   kein Prompt-Hebel; der Fast-Path ist die Struktur, und die zeigt sich in der Kernel-Zeit.)
+* **G-R8 (die Karte muss frei sein).** Der VRAM-Budget ist die Fallgrube dieser Serie: die Engine
+  bekommt von Windows nur so viel VRAM, wie kein fremder Prozess belegt. Am 14.11. hat **Unsloth
+  Studio** der Karte rund 7,5 GB genommen — die Engine sah 8.766 von 16.304 MiB statt 15.419, der
+  Expert-Cache bekam **0 Slots**, und der Prompt lief über die SSD statt über die VRAM: 36,6 tok/s
+  statt rund 557 (A.9). **Gate:** jeder Arm protokolliert die Budget-Zeile und die Slot-Zahl; unter
+  14.000 MiB Budget oder unter 1.000 Expert-Slots ist der Arm **ungültig** (nicht „langsam") und wird
+  wiederholt. Der Treiber prüft das von sich aus und endet mit einem Fehlercode.
 
 ### A.5 Die Befehle
 
@@ -194,6 +201,8 @@ Der Treiber druckt vor jedem Arm die SHA-256 des Engines, prüft die Ein-GPU-Job
    Zeile wird mitprotokolliert (sie steht im Log).
 5. **Ein Build, ein Tag.** Ein Arm, der auf einem anderen Build läuft, wird verworfen, nicht
    nachgerechnet.
+6. **Die Karte muss frei sein** (G-R8). Ein fremder Prozess auf der GPU macht den Prompt zum
+   SSD-Lauf; die Rate misst dann die SSD. Das ist am 14.11. passiert (A.9).
 
 ### A.7 Die Rohdaten
 
@@ -208,6 +217,29 @@ SHA-256 der Rohdateien. Im Repo bleibt **dieses README** plus der Treiber.
 * **A2 — nach Teil B.** Dieselben sechs Arme, der neue Build, derselbe Tag, wenn möglich. Der
   Vergleich A1/A2 ist die Messung der Engine-Änderung; die Zahlen von A1 und A2 stehen **nebeneinander**,
   nie einzeln.
+
+### A.9 Der verworfene erste Lauf (14.11.) — und die Referenz, die er brauchte
+
+Der erste A1-Versuch am 14.11. ist **verworfen**, und der Grund steht im Engine-Log, nicht im
+Rauschen:
+
+| Zeile im Log | Referenzlauf (b2, 10./11.11.) | der erste Versuch (14.11.) |
+|---|---|---|
+| `Windows budgets … of this card's 16.304 MiB` | 15.419 MiB | **8.766 MiB** |
+| `expert cache … slots` | 2.664 Slots (int8), 3.239 (Fenster-Arm) | **0 Slots** |
+| Prompt-Read-Rate (32K, drei Tiefen) | int8 **557,2 / 578,1 / 361,7** tok/s; Fenster-Arm (q4lm8v) **264,2 / 260,0 / 265,0** tok/s | int8 **≈ 37 tok/s** (11.520 Tokens in 315 s) |
+
+Die 7.538 MiB Differenz sind „the desktop's and other programs' share" (so der Kommentar in
+`src/core/device.cu:209`) — ein fremder Prozess auf der Karte, zur Stunde der Messung **Unsloth
+Studio**. Folge: 0 Expert-Slots, der Output-Kopf wanderte in den geheften Hostspeicher, und der Prompt
+las die Experten über die SSD statt über die VRAM. Gemessen wurde damit die SSD, nicht der KV-Pfad.
+
+**Zwei Dinge folgen daraus.** Erstens: die Referenzzahlen von Tabelle 2 des Papiers sind der
+**b2-Lauf vom 10./11.11.** auf dieser Maschine mit diesem Harness — int8 rund 557–578 tok/s, der
+Fenster-Arm des Level-Tabellen-Codecs rund 260–265 tok/s, also ein Faktor **2,11×**. Das ist der Wert,
+gegen den A1 und A2 geprüft werden, und er ist **heute nicht** zu wiederholen, solange ein fremder
+Prozess die Karte belegt. Zweitens: G-R8 existiert erst wegen dieses Laufs, und der Treiber prüft es
+jetzt von sich aus (Budget ≥ 14.000 MiB, ≥ 1.000 Expert-Slots; sonst Arm ungültig).
 
 ---
 

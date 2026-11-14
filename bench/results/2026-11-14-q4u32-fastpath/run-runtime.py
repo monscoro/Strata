@@ -46,6 +46,16 @@ ARMS = [
 ]
 
 RATE = re.compile(r"prompt (\d+) tokens = (\d+) reused \+ (\d+) read in (\d+) ms \(([\d.]+) tok/s\)")
+BUDGET = re.compile(r"Windows budgets (\d+) of this card's (\d+) MiB")
+SLOTS = re.compile(r"expert cache (\d+) slots")
+
+# G-R8: der VRAM-Budget.  Auf dieser Karte gab der Treiber in den Referenzlaeufen 15.419 von
+# 16.304 MiB fuer den Prozess frei; ein fremder Prozess (Unsloth Studio) hat den Anteil auf
+# 8.766 MiB gedrueckt - der Expert-Cache auf 0 Slots, der Prompt laeuft ueber die SSD statt ueber
+# die VRAM, und die Rate ist damit gemessen worden, nicht die des KV-Pfads.  Ein Arm unterhalb
+# dieser Schwelle wird als ungueltig gemeldet, nicht als langsam.
+MIN_BUDGET_MIB = 14000
+MIN_SLOTS = 1000
 
 
 def wait_up(seconds=900):
@@ -133,9 +143,15 @@ def arm(tag, cfg_name, window):
     wmma = "matrix cores on" in text
     rates = [(int(m.group(1)), float(m.group(4)) / 1000.0, float(m.group(5)))
              for m in RATE.finditer(text)]
+    budget = BUDGET.search(text)
+    slots = SLOTS.search(text)
+    bud = int(budget.group(1)) if budget else -1
+    slot_n = int(slots.group(1)) if slots else -1
     print(f"arm {tag}: window ring line: {'present' if ring else 'absent'} (expected "
           f"{'present' if window else 'absent'})", flush=True)
     print(f"arm {tag}: matrix-core prompt path: {'on' if wmma else 'OFF'} (expected on)", flush=True)
+    print(f"arm {tag}: VRAM budget {bud} MiB (need >= {MIN_BUDGET_MIB}), expert cache {slot_n} slots "
+          f"(need >= {MIN_SLOTS})", flush=True)
     print(f"arm {tag}: prompt read lines: {len(rates)}", flush=True)
     for n, secs, tps in rates:
         print(f"    prompt {n} tokens: {secs:.1f} s  ({tps:.1f} tok/s)", flush=True)
@@ -146,6 +162,10 @@ def arm(tag, cfg_name, window):
     if len(rates) != 3:
         rc = rc or 1
     if done.returncode != 0:
+        rc = rc or 1
+    if bud < MIN_BUDGET_MIB or slot_n < MIN_SLOTS:
+        print(f"arm {tag}: G-R8 not met - another process holds the card's VRAM; this arm's rates are "
+              f"not a KV measurement", flush=True)
         rc = rc or 1
     if log.exists():
         print(f"arm {tag}: engine log sha256 {sha256(log)}", flush=True)
@@ -160,18 +180,22 @@ for tag, cfg_name, window in ARMS:
     rc = arm(tag, cfg_name, window) or rc
 
 print("=== SUMMARY ===", flush=True)
-print(f"{'arm':>10}  {'prompt tok/s (10/50/90 %)':>28}  {'Median':>8}  {'Fenster':>8}  {'WMMA':>5}", flush=True)
+print(f"{'arm':>10}  {'prompt tok/s (10/50/90 %)':>28}  {'Median':>8}  {'Fenster':>8}  {'WMMA':>5}  "
+      f"{'VRAM MiB':>9}  {'Slots':>6}", flush=True)
 for tag, _cfg, window in ARMS:
     p = DATA / f"needles-{tag}.json"
     log = LOGS / f"needle-{tag}.engine.log"
     text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     rates = [float(m.group(5)) for m in RATE.finditer(text)]
     med = sorted(rates)[len(rates) // 2] if rates else float("nan")
+    bud = BUDGET.search(text)
+    slots = SLOTS.search(text)
     cells = " ".join(f"{v:7.1f}" for v in rates) if rates else "-"
     found = "-"
     if p.exists():
         rows = json.loads(p.read_text(encoding="utf-8"))
         found = f"{sum(1 for r in rows if r.get('found'))}/{len(rows)}"
     print(f"{tag:>10}  {cells:>28}  {med:8.1f}  {'ja' if window else 'nein':>8}  "
-          f"{'an' if 'matrix cores on' in text else 'aus':>5}  recall {found}", flush=True)
+          f"{'an' if 'matrix cores on' in text else 'aus':>5}  "
+          f"{(bud.group(1) if bud else '-'):>9}  {(slots.group(1) if slots else '-'):>6}  recall {found}", flush=True)
 sys.exit(rc)
