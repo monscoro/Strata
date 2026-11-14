@@ -241,6 +241,44 @@ gegen den A1 und A2 geprüft werden, und er ist **heute nicht** zu wiederholen, 
 Prozess die Karte belegt. Zweitens: G-R8 existiert erst wegen dieses Laufs, und der Treiber prüft es
 jetzt von sich aus (Budget ≥ 14.000 MiB, ≥ 1.000 Expert-Slots; sonst Arm ungültig).
 
+### A.10 A1 — die Ergebnisse (14.11.2026, Build 0.1.59.1, SHA `fdd3823e…`)
+
+Ein Arm, eine Engine, 30 s dazwischen. Die Metrik ist die Prompt-Read-Rate aus dem Engine-Log
+(`prompt 30782 tokens = 0 reused + 30782 read in … ms (… tok/s)`), 32K-Nadel, Tiefen 10/50/90 %, in
+allen Armen 3 von 3 Nadeln gefunden. VRAM-Budget und Expert-Cache-Slots stehen je Arm daneben (G-R8).
+
+| Arm | 10 % | 50 % | 90 % | Median | Fenster | VRAM-Budget | Expert-Slots | Recall |
+|---|---:|---:|---:|---:|---|---:|---:|---|
+| `int8` (Anker) | — | — | — | **ungültig** | nein | 8.766 MiB | 0 | — |
+| `q4_0` (ausgeliefert) | 606,1 | 609,5 | 607,5 | **607,5** | nein | 15.419 | 3.015 | 3/3 |
+| `q4u32` (uniform, ohne Fenster) | 263,1 | 264,4 | 263,7 | **263,7** | nein | 15.419 | 3.015 | 3/3 |
+| `q4lm8v` (Level-Tabelle 16/8) | 256,9 | 258,2 | 257,9 | **257,9** | nein | 15.419 | 3.019 | 3/3 |
+| `q4u32` + Fenster | 256,1 | 270,2 | 260,3 | **260,3** | ja | 15.419 | 2.947 | 3/3 |
+| `q4lm32w` (Produktarm) | 266,0 | 256,6 | 256,6 | **256,6** | ja | 15.419 | 2.947 | 3/3 |
+
+**Der `int8`-Anker ist ungültig** (G-R8: Budget 8.766 MiB, 0 Expert-Slots) und wird wiederholt — der
+Wächter hat den Arm vor den Nadeln abgebrochen, das ist richtig so, aber der Anker fehlt (A.11).
+
+**Der Befund, der die bisherige Erklärung kippt.** Der ausgelieferte Stock-Gitter-Arm `q4_0` liest mit
+**607,5 tok/s**, jeder andere 4-Bit-Arm mit **256,6 bis 263,7 tok/s** — ein Faktor **2,32**. Der
+Uniform-Grid `q4u32` **ohne** Level-Tabelle liegt bei **263,7 tok/s**, also praktisch auf dem Niveau des
+Level-Tabellen-Arms (257,9) und **2,31× unter dem Stock-Arm**. Die Messung reproduziert Tabelle 2 des
+Papiers (dort: `q4_0` 616 gegen `q4lm8v` 265 tok/s).
+
+Damit steht die Erklärung aus §5 des Papiers infrage: dort wird die 2,25× **allein** der Level-Tabelle
+zugeschrieben („the prompt fast path declines the Lloyd modes structurally … so the decode kernel runs
+instead"). **Gemessen ist: den Preis zahlt jeder Modus, der nicht der ausgelieferte `kUniform` ist** —
+auch der tabellenfreie Uniform-Grid. Zwischen `kUniform` (kv_mode 2) und `kUniformLs` (kv_mode 6) gibt
+es im Code genau **einen** Unterschied: die fensterfähigen Instantiationen (KV_MODE ≥ 4) tragen den
+Overlay-Zweig, der ausgelieferte nicht (statische Analyse,
+`src/kernels/cuda/qsa_decode_attn.cu:213`). Das Fenster selbst kostet **nichts messbares**: `q4u32` mit
+Fenster (260,3) liegt auf dem Niveau von `q4u32` ohne Fenster (263,7) — der Unterschied liegt im
+Streubereich. Der Preis sitzt also an der **Instantiation**, nicht am Codec und nicht am Fenster.
+
+**Das gibt Teil B ein messbares Ziel:** wenn der `q4u32`-Arm seinen Prompt auf dem Matrix-Core-Pfad
+bedient (B2), statt in der Decode-Instantiation mit dem Overlay-Zweig, muss er auf das Niveau des
+Stock-Arms (≈ 600 tok/s) kommen. Das ist die Hypothese, die A2 prüft.
+
 ---
 
 ## Teil B — Die Engine-Arbeit

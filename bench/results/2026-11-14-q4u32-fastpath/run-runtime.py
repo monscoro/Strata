@@ -39,8 +39,9 @@ PORT = "7603"
 ARMS = [
     ("int8", "needle-fastpath-int8.json", False),
     ("q4_0", "needle-fastpath-q4_0.json", False),
-    ("q4lm8v", "needle-fastpath-q4lm8v.json", False),
     ("q4u32", "needle-fastpath-q4u32.json", False),
+    ("q4lm8v", "needle-fastpath-q4lm8v.json", False),
+    ("q4lm32", "needle-fastpath-q4lm32.json", False),
     ("q4u32win", "needle-fastpath-q4u32win.json", True),
     ("q4lm32w", "needle-fastpath-q4lm32w.json", True),
 ]
@@ -116,6 +117,21 @@ def sha256(path):
 
 
 def arm(tag, cfg_name, window):
+    # G-R8 kann auch den ersten Arm treffen: nach dem Ende der vorigen Engine haelt der Treiber die
+    # VRAM des Prozesses noch eine Weile, und das Budget des neuen Prozesses ist dann zu klein.  Der Arm
+    # wird darum einmal wiederholt, nach 90 s Wartezeit.
+    for attempt in (1, 2):
+        rc = arm_once(tag, cfg_name, window)
+        if rc != -1:
+            return rc
+        print(f"arm {tag}: attempt {attempt} hit G-R8; retrying in 90 s (the VRAM budget needs a moment "
+              f"to recover after the previous engine exited)", flush=True)
+        time.sleep(90)
+    print(f"arm {tag}: G-R8 still not met after two attempts - the arm stays invalid", flush=True)
+    return 1
+
+
+def arm_once(tag, cfg_name, window):
     cfg = REPO / "bench" / "configs" / cfg_name
     print(f"=== arm {tag}: config {cfg_name} ===", flush=True)
     c = json.loads(cfg.read_text(encoding="utf-8"))
@@ -150,7 +166,7 @@ def arm(tag, cfg_name, window):
         stop(server)
         wait_engine_gone()
         time.sleep(30)
-        return 1
+        return -1   # -1: G-R8, the caller retries once (the budget needs a moment to recover)
     print(f"arm {tag}: server up, running needle_bench (32k x depths 10/50/90)", flush=True)
     t0 = time.time()
     done = subprocess.run([PY, str(REPO / "tools" / "needle_bench.py"), "--url", URL,
@@ -193,8 +209,13 @@ def arm(tag, cfg_name, window):
 
 LOGS.mkdir(parents=True, exist_ok=True)
 DATA.mkdir(parents=True, exist_ok=True)
+# Aufruf mit Arm-Namen: "python run-runtime.py int8 q4u32" laeuft nur diese Arme (ein Arm, der
+# nachgeholt werden muss, ohne die anderen zu wiederholen).
+want = set(sys.argv[1:])
 rc = 0
 for tag, cfg_name, window in ARMS:
+    if want and tag not in want:
+        continue
     rc = arm(tag, cfg_name, window) or rc
 
 print("=== SUMMARY ===", flush=True)
