@@ -12,6 +12,16 @@ startet. Sie deckt zwei Dinge ab, die bisher getrennt liefen:
 **Branch:** `feature_q4u32_as_an_int8_replacement_for_all`, Basis `ac33b0c4b` (von
 `daves_kv_q4_quant_with_int8_quality`, Paper 0.24). Der Branch ist angelegt und gepusht.
 
+**Die zwei Entscheidungen vom 2026-11-14:**
+
+1. **B3 ist entschieden: das Fenster kommt auf den Fast-Path.** Der Produktarm (`q4u32` + Fenster) darf
+   den Fast-Path nicht verlieren. B3 ist damit im Umfang; die Wahl des Weges (drei Varianten in B3)
+   fällt mit B2.
+2. **`STRATA_HIP_WMMA=1` wird in Serie #1 gesetzt** (G-R6). Nach der eigenen A/B-Messung vom 08.11. ist
+   der Schalter auf **dieser** Karte allerdings ein Decode-Hebel und **kein** Prompt-Hebel (0.3) — er
+   wird gesetzt, damit jeder Arm sagt, welchen Pfad er lief, aber er ist nicht das, worauf wir warten.
+   Für die **Qualitätsketten** bleibt er aus (er ändert die Ausgabebits).
+
 **Reihenfolge:** Teil A misst den **Zustand heute** (Baseline, Teil B ist noch nicht gebaut). Teil B
 baut den Fast-Path. Teil A2 misst denselben Harness **nach** dem Bau. Der Vergleich A1 gegen A2 ist
 die Messung der Engine-Änderung. Teil C ist die Optimierung und beginnt erst, wenn A2 vorliegt.
@@ -54,6 +64,37 @@ Zahlen sind nicht dasselbe und werden nicht vermischt.
   default on Windows (opt-in until tested on Windows); STRATA_HIP_WMMA=1 turns it on (gfx1200)" — so
   steht es in unseren eigenen 128K-Logs vom 13.11.
 
+### 0.3 Der WMMA-Schalter: unsere eigene Messung (2026-11-08) und was daraus folgt
+
+Der Schalter ist eine **Laufzeitvariable**, kein Build-Flag, und er ist **opt-in** (auf Windows aus, auf
+gfx12-Linux an). Er ist unbedenklich einzusetzen — mit der Einschränkung, die die Dokumentation nennt:
+er ändert die Ausgabebits (nicht bitweise; der Greedy-Text weicht ab etwa Token 50 ab). Für die
+**Qualitätsketten** wird er deshalb **nicht** gesetzt (Regel vom 08.11.: die Kette soll mit P1
+vergleichbar bleiben), für **Laufzeitläufe** schon.
+
+Unsere eigene A/B-Messung vom 08.11. (Suite `standard-v1`, Swift IQ3_XXS, `--kv int8`, Kontext 32.768,
+ROCm 7.2, Engine 0.1.47, RX 9060 XT gfx1200; Rohdaten unter
+`C:\Users\krone\git\Strata-data\bench\2026-11-08-wmma-int8\`), Prompt-Raten in tok/s:
+
+| Prompt | WMMA aus | WMMA an |
+|---|---:|---:|
+| 4k (r1/r2/r3) | 613,08 / 479,40 / 478,94 | 478,73 / 476,73 / 478,01 |
+| 16k (r1/r2/r3) | 608,53 / 564,33 / 565,36 | 565,45 / 566,11 / 565,43 |
+
+**Die Prompt-Raten sind gleich** (4k: 479,40 gegen 478,01; 16k: 565,36 gegen 565,45). Die erste
+Wiederholung jedes Arms ist ein Ausreißer (613 bzw. 608) und trägt keinen Schaltereffekt; sie ist die
+Quelle des scheinbaren „×1,12" im Plan vom 08.11. Im Decode: +6,9 % (4k), ≈0 (16k), −3,4 % (short) —
+mit **überlappenden Spannen**.
+
+**Die Lesart: der WMMA-Schalter ist auf dieser Karte ein Decode-Hebel, kein Prompt-Hebel.** Unser Preis
+(die 2,25×) ist aber ein **Prompt**-Preis. Das ist genau die Aussage in
+`docs/research/KV_FASTPATH_LITERATURE.md`, Abschnitt 4a: *„Der Fast-Path ist die Struktur (Abschnitt 1),
+nicht die Matrix-Cores."*
+
+**Folge für diesen Plan:** der Schalter wird in Serie #1 gesetzt (G-R6, damit jeder Arm sagt, welchen
+Pfad er lief), aber er ist **nicht** das, worauf wir warten. Erwartet wird die Wirkung der **Struktur**
+(B1/B2/B3), und die wird an **zwei** Stellen gemessen (G-R7).
+
 ---
 
 ## Teil A — Serie #1: die Laufzeitmessung
@@ -66,9 +107,14 @@ trennt die Arme nicht.
 
 ### A.2 Was gemessen wird
 
-* **Metrik:** die Prompt-Read-Rate aus dem Engine-Log —
+* **Metrik 1 (das, was der Benutzer sieht):** die Prompt-Read-Rate aus dem Engine-Log —
   `strata serve: prompt N tokens = 0 reused + N read in X ms (Y tok/s)`. Das ist die Prompt-Lesedauer
   ohne Decode-Anteil (der Decode ist bei 32K neun bis zehn Token und vernachlässigbar).
+* **Metrik 2 (das, was die Arbeit betrifft):** die **Kernel-Zeit der Prompt-Attention** selbst. Auf
+  dieser 16-GB-Karte kommt ein großer Teil der Prompt-Zeit vom Nachladen der Experten (Plan vom
+  08.11.), deshalb kann die End-to-End-Rate flach bleiben, während die Attention-Kernel-Zeit fällt.
+  Die Kernel-Zeit kommt aus dem Paritätstest (`hip_prompt_attn_wmma.exe`, bzw. `qsa_prompt_attn_parity`),
+  der sie je Chunk selbst timt.
 * **Harness:** `tools/needle_bench.py --lengths 32k --depths 10,50,90` gegen einen laufenden Server.
   Der Heuhaufen ist der Text dieses Repositories in fester Reihenfolge, die Codewörter kommen aus
   `random.Random(7)` — **jeder Arm sieht dieselben Prompts**.
@@ -116,6 +162,11 @@ der Fenster-Arm muss die Logzeile „ring sized" zeigen, die anderen nicht (das 
   `STRATA_HIP_WMMA=1`, und die Logzeile („the prompt attention on matrix cores on (gfx1200)") wird mit
   protokolliert. **Ohne diese Zeile gilt der Lauf als FP32-Lauf** und wird nicht mit dem
   Matrix-Core-Pfad verglichen.
+* **G-R7 (zwei Zahlen, oder keine).** Jeder Arm bekommt **beide** Metriken: die End-to-End-Prompt-Rate
+  **und** die Kernel-Zeit der Prompt-Attention. Bleibt die End-to-End-Rate flach, während die
+  Kernel-Zeit fällt, wird **genau das** berichtet — nicht „kein Unterschied". Wird nur eine der beiden
+  gemessen, gilt die Arm-Aussage als unvollständig. (Grund: 0.3 — auf dieser Karte ist der WMMA-Schalter
+  kein Prompt-Hebel; der Fast-Path ist die Struktur, und die zeigt sich in der Kernel-Zeit.)
 
 ### A.5 Die Befehle
 
@@ -201,18 +252,32 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
 * **Reihenfolge inside B2:** erst der Leser (Codes holen und expandieren), dann die Gruppen, dann die
   Skalen; nach jedem Schritt der Paritätstest.
 
-### B3 — Das Fenster im Prompt-Pfad
+### B3 — Das Fenster auf dem Fast-Path (entschieden: es kommt drauf)
 
-* **Der Zustand:** der Prompt-Kernel kennt keinen Overlay (kein `k_win`/`v_win`); nur der
-  Decode-Kernel liest ihn (`WinRows<KV_MODE>`, `WIN = KV_MODE >= 4`, `qsa_decode_attn.cu:213`).
-* **Die Aufgabe:** pro Zelle ein Zweig (Overlay-Zelle → den exakten fp16-Zwilling aus dem Side-Pool,
-  sonst den 4-Bit-Block). Der shared memory des Prompt-Kernels ist typisiert (int8 oder fp16 je
-  Zelle), ein gemischtes Layout ist **kein** Templatesatz — das ist der Grund, warum B3 eigenständig
-  ist und nicht „ein Zweig“.
-* **Alternative (billiger, ehrlicher):** der Fenster-Arm bleibt beim Decode-Fallback, und das Paper
-  sagt es so: „das Fenster und der Fast-Path sind heute exklusiv". **Diese Wahl ist zu treffen, bevor
-  B3 beginnt** — sie ist eine Entscheidung über den Produktpfad, keine Implementierungsfrage.
-* **Gate (falls B3 gebaut wird):** ein Parity-Fall mit Overlay-Zellen gegen den Decode-Pfad.
+* **Die Entscheidung (2026-11-14):** das Fenster **muss** auf dem Fast-Path laufen. Der Produktarm
+  (`q4u32` + Fenster, S 256/R 64) ist die Konfiguration, die im Paper steht; ein Produktpfad, der den
+  Fast-Path verliert, wäre die halbe Sache. B3 ist damit **im Umfang**, nicht mehr offen.
+* **Der Zustand:** der Prompt-Kernel kennt keinen Overlay (kein `k_win`/`v_win`); nur der Decode-Kernel
+  liest ihn (`WinRows<KV_MODE>`, `WIN = KV_MODE >= 4`, `qsa_decode_attn.cu:213`).
+* **Die Schwierigkeit:** der shared memory des Prompt-Kernels ist typisiert — `KElem`/`VElem` sind
+  entweder `int8_t` oder `__half`, je **Zelle** (`qsa_prompt_attn.cu:96-109`). Ein Overlay-Arm braucht
+  aber *beides*: die Overlay-Zellen exakt (fp16), die übrigen als 4-Bit-Codes (int8). Das ist kein
+  Template-Parameter, das ist ein neues Layout.
+* **Die Wege, und welcher welcher ist:**
+  1. **Gemischter shared memory**: zwei Puffer je K und V (einer int8, einer fp16), die Zellenverteilung
+     im smem. Der WMMA liest die int8-Zellen; die fp16-Zellen brauchen einen eigenen Weg (FMA über
+     256 Dims je Overlay-Zelle). Bei 320 Overlay-Zellen (S 256 + R 64) gegen 131.060 Zellen ist das
+     ein Bruchteil der Arbeit — aber es ist Arbeit **im** WMMA-Chunk.
+  2. **Overlay-Zellen aus dem WMMA-Chunk herausnehmen**: die fp16-Zellen in einem eigenen, kleinen
+     FP32-Pass rechnen (Score und p.v) und die Ergebnisse in dieselben Puffer schreiben. Das fasst die
+     bestehende Struktur am wenigsten an, ist aber ein zweiter Pass über dieselben Zellen.
+  3. **Materialisieren**: die exakten Zellen vorab in einen eigenen Pool schreiben, den der
+     Prompt-Kern als zweite Quelle liest. Ein Pool, zwei Zellstrukturen — der Kernel bekommt eine
+     Zellentscheidung, aber keinen gemischten smem.
+* **Die Wahl des Weges fällt mit B2**, weil B2 die Zellstruktur des Prompt-Pfads für 4 Bit überhaupt erst
+  erweitert; B3 baut darauf auf.
+* **Gate:** ein Parity-Fall mit Overlay-Zellen gegen den Decode-Pfad — der Decode-Pfad ist die
+  Referenz, weil er das Fenster heute schon liest.
 
 ### B4 — Die Reihenfolge und die Kosten
 
@@ -220,7 +285,7 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
 |---|---|---|---|
 | B1 | CUDA-Dispatch, eine Zeile | Parität (bitgleich) | klein |
 | B2 | HIP-Matrix-Core liest 4 Bit | Parität + Timing | **groß** |
-| B3 | Fenster im Prompt-Pfad | Parität mit Overlay | mittel bis groß |
+| B3 | Fenster auf dem Prompt-Pfad (entschieden: es kommt drauf) | Parität mit Overlay | mittel bis groß |
 | B4' | **Logzeile** „der Prompt-Pfad bedient diesen Arm" | G-R1 | klein |
 
 **B4' ist Voraussetzung für A2**, nicht für A1: ohne die Zeile ist die Zuordnung „Zeit ↔ Pfad"
