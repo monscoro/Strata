@@ -1171,10 +1171,22 @@ void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_
                                                           scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
     else
 #endif
-    if (kv_mode == 4)
+    // The modes 5 (the shear) and 6 (q4u32) were missing here: they fell through to the fp16
+    // kernel, which reads pools a q4 state does not have (k_pool/v_pool are null) - the launch
+    // failed with "unspecified launch failure".  Only the lane-cell instantiation (STRATA_ATTN_LANECELL=1,
+    // the default on gfx12) knew them.
+    if (kv_mode == 6)
+        STRATA_ATTN_CHUNK_SEL(6, pre)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv,
+                                                                 (int) s.page_size, scale, part_acc, part_m, part_l,
+                                                                 n_chunks, (int) cap, stride);
+    else if (kv_mode == 5)
+        STRATA_ATTN_CHUNK_SEL(5, pre)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv,
+                                                                 (int) s.page_size, scale, part_acc, part_m, part_l,
+                                                                 n_chunks, (int) cap, stride);
+    else if (kv_mode == 4)
         STRATA_ATTN_CHUNK_SEL(4, pre)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv,
-                                                                (int) s.page_size, scale, part_acc, part_m, part_l,
-                                                                n_chunks, (int) cap, stride);
+                                                                 (int) s.page_size, scale, part_acc, part_m, part_l,
+                                                                 n_chunks, (int) cap, stride);
     else if (kv_mode == 3)
         STRATA_ATTN_CHUNK_SEL(3, pre)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv,
                                                                 (int) s.page_size, scale, part_acc, part_m, part_l,
@@ -1369,7 +1381,13 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
                                                           scale, part_acc, part_m, part_l, n_chunks, 0, 0);
     else
 #endif
-    if (kv_mode == 4)
+    if (kv_mode == 6)
+        STRATA_ATTN_CHUNK(6)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
+                                                        scale, part_acc, part_m, part_l, n_chunks, 0, 0);
+    else if (kv_mode == 5)
+        STRATA_ATTN_CHUNK(5)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
+                                                        scale, part_acc, part_m, part_l, n_chunks, 0, 0);
+    else if (kv_mode == 4)
         STRATA_ATTN_CHUNK(4)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, 0, 0);
     else if (kv_mode == 3)

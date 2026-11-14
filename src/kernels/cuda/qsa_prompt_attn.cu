@@ -2015,6 +2015,10 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
+    if constexpr (Q4) {
+    }
+    if constexpr (Q4) {
+    }
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int col = lane & 15, half = lane >> 4;   // fragment column / k half
     const int dim0 = warp * 64;
@@ -2448,6 +2452,18 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
         }
     }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
+    if constexpr (Q4) {
+        // QA_Q4TRACE=1: the horizon of the first query, read on the host before the launch.  The
+        // last line before a hang names the launch that hung (a device printf would be lost: its
+        // buffer is only flushed when the kernel ends).
+        static const bool trace = std::getenv("QA_Q4TRACE") != nullptr;
+        if (trace) {
+            std::vector<int32_t> h(kStepCount);
+            cudaMemcpy(h.data(), steps, h.size() * 4, cudaMemcpyDeviceToHost);
+            std::fprintf(stderr, "[q4u32] launch: cells %d chunks %d\n", (int) h[kStepWidth],
+                         (int) ((h[kStepWidth] + WCH - 1) / WCH));
+        }
+    }
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
         static const bool fast = [] { const char* e = std::getenv("STRATA_PA_FAST"); return e != nullptr && e[0] == '1'; }();
@@ -2635,6 +2651,15 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     if (q4u_wmma_ok(pools)) {
+        // STRATA_KV_Q4_PROMPT=1: the 4-bit uniform grid on the matrix-core prompt path.  Opt-in until
+        // the engine hang is explained (the kernel passes the parity harness - 5.12x the decode kernel -
+        // but the engine stops making progress in the prompt; the default path stays byte-identical).
+        static const bool on = [] { const char* e = std::getenv("STRATA_KV_Q4_PROMPT"); return e != nullptr && e[0] == '1'; }();
+        if (!on) {
+            pa_said("the q4 arm runs the prefill in the decode kernel (the matrix-core prompt path for the "
+                    "4-bit grid is opt-in: STRATA_KV_Q4_PROMPT=1)");
+            return false;
+        }
         // the 4-bit uniform grid: eight scale groups of 32 dims instead of four of 64
         if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps ||
             !pools.page_table || !hip_wmma_usable(n_q, cap))

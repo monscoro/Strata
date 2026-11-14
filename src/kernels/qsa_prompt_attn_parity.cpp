@@ -222,6 +222,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools\n");
             std::exit(2);
         }
+        const cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) {
+            std::fprintf(stderr, "qsa_prompt_attn_batch launch: %s\n", cudaGetErrorString(le));
+            std::exit(2);
+        }
     };
     float* d_im = nullptr;
     ck(cudaMalloc(&d_im, nq * NH * HD * 4), "malloc");
@@ -232,6 +237,13 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         if (!ok) { std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools (imma)\n"); std::exit(2); }
     };
     old_run();
+    {
+        const cudaError_t oe = cudaGetLastError();
+        if (oe != cudaSuccess) {
+            std::fprintf(stderr, "the old kernel's launch: %s\n", cudaGetErrorString(oe));
+            std::exit(2);
+        }
+    }
     new_run();
     if (fmt == 1) imma_run();
     ck(cudaDeviceSynchronize(), "run");
@@ -371,15 +383,21 @@ int main(int argc, char** argv) {
     const int64_t nq = argc > 2 ? std::atoll(argv[2]) : 2048;
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
     int fails = 0;
-    fails += run(1, ctx, nq, reps);
+    const bool only3 = std::getenv("QA_ONLY3") != nullptr;
+    if (!only3) fails += run(1, ctx, nq, reps);
     fails += run(3, ctx, nq, reps);   // the 4-bit uniform grid (q4u32): the same blocks, the uniform step
+    if (!only3) {
 #if !defined(__HIP_PLATFORM_AMD__)
-    fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
-    fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
-    fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
+        fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
+        fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
+        fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
 #endif
-    fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
-    fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge
+        fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
+        fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge
+    }
+    // the first query of a prompt attends to one cell: the tail of a chunk with a single live cell
+    fails += run(3, 64, 64, reps);
+    fails += run(3, 512, 512, reps);
     std::printf("FAILURES: %d\n", fails);
     return fails;
 }
