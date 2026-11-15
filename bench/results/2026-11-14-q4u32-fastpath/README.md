@@ -1260,7 +1260,38 @@ B3-Vermerk nennt 5 → 3 Blöcke für 24 KiB).
   Spekulationsannahme) — dort steht dieselbe Nibble-Expansion. Wenn `q4u32` den int8-Decode *ersetzen*
   soll, gehört der Decode-Pfad in dieselbe Analyse.
 
-**Die Reihenfolge nach Erwartung:** M1 → **H1** (kein Zahlenrisiko) → **H2** (Banken abstimmen) → **H3**
+**M1 ist gemessen (15.11.2026, Compiler-Ressourcenanalyse, gfx1200, `-O3`, kein Spill in den
+laufenden Instantiierungen).** Die LDS-Größen sind **exakt die gerechneten** (17.984 / 19.008 /
+21.648 B für int8, 24.832 / 25.856 / 30.608 B für `q4u32`, je `TR` 2/1/0) — die Bilanz oben stimmt also.
+Die Occupancy aber **nicht so, wie dort vermutet**:
+
+| Instantiierung | `TR` | LDS | VGPR | Wellen/SIMD |
+|---|---|---:|---:|---:|
+| int8 (`NGRP` 4) | 2 (Default) | 17.984 | 250 | **5** |
+| int8 | 0 | 21.648 | 215 | **6** |
+| `q4u32` (`NGRP` 8) | 2 (Default) | 24.832 | 240 | **5** |
+| `q4u32` | 0 | 30.608 | 235 | **4** |
+
+* **Im Default (`TR = 2`) laufen beide Kerne mit 5 Wellen je SIMD.** Die +39 % LDS kosten den
+  4-Bit-Kern **keine** Occupancy — die Grenze ist dort die VGPR-Zahl (240 bzw. 250, beide in derselben
+  Stufe), nicht der LDS. Der Vermerk „5 → 3 Blöcke" aus der Planung trifft den Default **nicht**.
+* **`TR = 0` ist der einzige Fall, in dem LDS die Occupancy entscheidet:** int8 käme auf 6 Wellen
+  (215 VGPR), `q4u32` fällt auf 4 (30.608 B). Diesen Pfad nimmt der Motor nicht.
+* **H6 ist damit entwertet, bevor es gebaut ist.** Der Fensterapparat kostet die Q4-Instantiierung
+  **keine** messbaren Register: alle zwölf Q4-Varianten (`SPLIT`/`GATE`/`RPF`, je `TR`) liegen bei
+  identischen VGPR. Ein `WIN`-Template-Parameter hätte hier nichts zu holen. (Die A.17-Lektion galt dem
+  **int8**-Kern, dessen 250 VGPR knapp unter der nächsten Stufe sitzen — dort bleiben 32 zusätzliche VGPR
+  tödlich, hier sind 240 mit Reserve.)
+* **Damit verschiebt sich die Erwartung.** H3 und H4 (weniger LDS) helfen im Default **nicht** über die
+  Occupancy, nur über den LDS-Verkehr. Was bleibt, ist die **Instruktionszahl**: H1 (Vektor-Laden) und H2
+  (eine statt zwei Expansionen). Die Occupancy-Stufe selbst kippt erst, wenn der Kern **unter 192 VGPR**
+  kommt (6 Wellen) oder **unter 128** (8 Wellen) — das ist die Latte für H1 und H2.
+
+**Die Reihenfolge nach der Messung:** **H1** (kein Zahlenrisiko, trifft die Instruktionszahl) → **H2**
+(Banken abstimmen) → **H3** (nur noch LDS-Verkehr, nicht Occupancy) → **H5** → **H4**/**H7** nur mit
+Qualitätsentscheidung. **H6 entfällt.**
+
+**Die Reihenfolge nach Erwartung (vor M1, überholt):** M1 → **H1** (kein Zahlenrisiko) → **H2** → **H3**
 (Qualitäts-Gate) → **H6** (nach M1 entscheiden) → **H5** → **H4**/**H7** nur mit Qualitätsentscheidung.
 
 **Was die Optimierung *nicht* lösen kann — der ehrliche Schluss.** Im Motor sind die Arme **gleichauf**
