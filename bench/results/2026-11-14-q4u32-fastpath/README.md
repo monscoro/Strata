@@ -655,16 +655,140 @@ hier über den Faktor 2, nicht die Rechenarbeit.
 
 **Was das Gate *nicht* sagt:**
 
-* **Die Kosten des zweiten Satzes sind nicht gemessen.** Im selben Lauf: `q4u32` 11,33 ms/Chunk,
-  `q4u32+win` 12,34 ms/Chunk (32K, 1.024 Queries) — **aber das sind zwei verschiedene Selektionen**
-  (der Fensterfall hat Sinks und einen anderen Horizont), also kein kontrollierter A/B. Die Zahl, die
-  zählt, kommt aus der Engine (A.18).
+* **Die Kosten des zweiten Satzes waren in diesem Lauf nicht gemessen.** Im selben Lauf: `q4u32`
+  11,33 ms/Chunk, `q4u32+win` 12,34 ms/Chunk (32K, 1.024 Queries) — **aber das sind zwei verschiedene
+  Selektionen** (der Fensterfall hat Sinks und einen anderen Horizont), also kein kontrollierter A/B.
+  Der kontrollierte A/B steht in A.18: **+6,2 … 13,4 %** der Attention-Kernelzeit.
 * **gfx11 ist ungetestet** (`PA_KL = 16`, `PA_KOFF(half) = 0`, `PA_ROW = 2i + half`): `h8_win` spiegelt
   die Adressierung des int8-Pfads, aber auf einer gfx12-Karte ist das statische Analyse.
-* **Die Engine ist noch nicht gelaufen** — der Harness beweist den Kern, nicht den Pfad.
+* **Die Engine ist gelaufen** — A.18: Route-Zeile in allen drei q4-Läufen, 16/16 Nadeln, der Fensterarm
+  auf dem Matrix-Pfad. Die Rate dort ist allerdings nicht auflösbar (Zweimoduseffekt).
 * **CUDA bleibt zurück** (`qsa_prompt_attn.cu:2793`, `if (pools.k_win != nullptr …) return false;`): die
   Tensor-Core-Route (mode 4) liest kein Fenster, ein Overlay-Arm nimmt dort weiter den Decode-Kern. Auf
   dieser Maschine nicht baubar — als offener Punkt notiert, nicht als erledigt.
+
+### A.18 — vorregistriert: das Fenster in der Engine (15.11.2026, vor dem ersten Lauf)
+
+**Frage:** was kostet das Fenster auf dem Matrix-Pfad in der Engine, und bleibt die Nadelgüte?
+
+**Arme** (je ein Engine-Start, 30 s dazwischen, dieselbe Sitzung, dieser Build):
+
+| Arm | Config | Variablen |
+|---|---|---|
+| `int8` | `needle-fastpath-int8.json` | `STRATA_HIP_WMMA=1` |
+| `q4u32` | `needle-fastpath-q4u32.json` | + `STRATA_KV_Q4_PROMPT=1` |
+| `q4u32win` | `needle-fastpath-q4u32win.json` | + `STRATA_KV_Q4_PROMPT=1` (S 256, R 64) |
+
+4K **und** 32K in einem Lauf, Nadeln bei 10/50/90 %.
+
+**Kriterien, vorher festgelegt:**
+
+* **Der Lauf zählt nur mit der Route im Log**: `the matrix-core prompt path serves the 4-bit uniform
+  grid` muss für jeden q4-Arm stehen. Steht dort die Rückfall-Zeile („runs the prefill in the decode
+  kernel"), ist der Lauf kein Beleg für B3 — er wird wiederholt, nicht umgedeutet.
+* **Erwartung 1:** `q4u32win` ≥ 90 % der Prompt-Rate von `q4u32` (Fenster kostet ≤ 10 %).
+* **Erwartung 2:** `q4u32win` ≥ `q4u32` in der Nadelgüte — die exakten Zellen sind genauer als die
+  quantisierten. Der Unterschied kann unter der Auflösung der Nadel liegen; dann ist er **nicht** belegt.
+* **Erwartung 3:** 3/3 Nadeln bei 4K und 32K, kein Hänger (der Launch-Fix aus A.15 ist Default).
+* **Streuung:** ±4 % zwischen Sitzungen. Der Fensterarm läuft **zweimal** (zwei Starts); nur ein
+  Unterschied > 5 % gilt als Befund. Bei < 90 % wird zuerst gemessen, *welcher* Anteil (Chunks mit
+  Fensterzellen), nicht umgebaut.
+
+### A.18 — Das Ergebnis: die Route stimmt, die Prompt-Rate ist auf dieser Maschine nicht auflösbar (15.11.2026)
+
+**Die Route ist belegt.** Alle drei q4-Logs tragen die Zeile
+
+```
+strata: prompt attention: the matrix-core prompt path serves the 4-bit uniform grid (q4u32), scale per 32 values
+```
+
+und in keinem steht die Rückfall-Zeile. Der Fensterarm schreibt zusätzlich
+`KV window ring sized for the prompt chunk (6144 cells)`. **B3 ist damit im Motor angekommen** — vorher lief
+dieser Arm über den Decode-Kern.
+
+**Die Nadeln: 16 von 16.** 4K 3/3 und 32K 3/3 in jedem der vier Läufe, kein Hänger. Erwartung 3 ist erfüllt.
+
+**Die Prompt-Raten** (wie in A.15: Prompt-Tokens ÷ Wanduhr der Anfrage; der Decode von 9–10 Token steckt
+mit drin, ~1 s), in tok/s:
+
+| Arm | 4K 10/50/90 % | 4K Ø | 32K 10/50/90 % | 32K Ø | Nadeln |
+|---|---|---|---|---|---|
+| `int8` | 382,4 / 386,9 / 405,9 | **391,7** | 657,8 / 656,3 / 656,3 | **656,8** | 6/6 |
+| `q4u32` | 496,6 / 528,1 / 512,0 | **512,2** | 874,5 / 882,0 / 879,5 | **878,7** | 6/6 |
+| `q4u32win` (1. Start) | 382,4 / 405,7 / 416,0 | **401,4** | 656,4 / 659,1 / 657,7 | **657,7** | 6/6 |
+| `q4u32win` (2. Start) | 378,1 / 405,7 / 416,0 | **399,9** | 663,4 / **872,0 / 869,5** | **801,6** | 6/6 |
+
+**Der Befund ist nicht das Fenster, sondern ein Zweimoduseffekt — und er ist nicht dem Arm zuzuordnen.**
+Die Fortschrittszeilen des Motors (`reading the prompt: 6.144 of 30.781 tokens, N s so far`) zeigen
+**zwei diskrete Niveaus** für den 6.144-Token-Chunk: **~9 s (langsam)** und **~6,5 s (schnell)**, Faktor
+**1,38**. Prompt-Lesezeit je 32K-Anfrage, direkt aus dem Log:
+
+| Arm | 10 % | 50 % | 90 % | Niveau |
+|---|---|---|---|---|
+| `int8` | 46 s | 46 s | 46 s | langsam |
+| `q4u32` | 34 s | 34 s | 34 s | schnell |
+| `q4u32win` 1 | 46 s | 46 s | 46 s | langsam |
+| `q4u32win` 2 | **46 s** | **35 s** | **35 s** | langsam → **schnell** |
+
+* **Das Niveau ist keine Eigenschaft des Arms.** Der zweite Fensterlauf hat **dieselbe Config** wie der
+  erste (gleiche JSON, gleiche Variablen) und liefert beide Niveaus — die erste 32K-Anfrage in der
+  langsamen Stufe, die beiden folgenden in der schnellen, **innerhalb eines Prozesses**, ohne Neustart.
+  Damit ist „Arm X ist langsam" als Erklärung ausgeschlossen.
+* **Erwartung 1 (Fenster ≥ 90 % von `q4u32`) ist nicht auswertbar.** 657,7 gegen 878,7 (75 %) und 801,6
+  gegen 878,7 (91 %) sind zwei verschiedene Niveaus, nicht zwei Arme. Das Kriterium wird **nicht**
+  umgedeutet; es ist mit dieser Maschine in dieser Form nicht messbar.
+* **Was innerhalb eines Niveaus gilt:** im langsamen Niveau liegen `int8` (656,8) und `q4u32win`
+  (657,7) **0,1 %** auseinander — nicht unterscheidbar. Im schnellen Niveau liegen `q4u32` (878,7) und
+  die beiden schnellen Fensteranfragen (872,0 / 869,5) **0,7–1 %** auseinander — ebenfalls nicht
+  unterscheidbar. In beiden Niveaus ist also kein Fenster-Aufpreis sichtbar, aber das ist eine
+  **Nicht-Ablehnung**, kein Beleg.
+* **Erwartung 2 (Nadelgüte) ist nicht belegt:** 16 von 16 Nadeln in allen Armen. Die Nadel hat für diesen
+  Unterschied keine Auflösung; die exakten Zellen sind damit **nicht** als besser belegt.
+* **Die Ursache des Niveaus ist nicht belegt.** Kandidaten, alle unbewiesen: WDDM-Seitenwechsel (jeder
+  Lauf endet unter seiner eigenen Reserve: „only 1793–1854 MiB free once the slots are written (reserve
+  2560 MiB)" steht in **allen vier** Logs), Expert-Paging über PCIe, Takt/Power. Ich habe sie **nicht**
+  gemessen und nenne deshalb keinen.
+
+**Was A.15 damit nachträglich bedeutet — und warum es keine neue Zahl ist.** A.15 maß `q4u32` 642,8 gegen
+`int8` 649,0 tok/s, also **47,4–48,2 s** bzw. **47,2–47,8 s** je 32K-Anfrage — beide im **langsamen
+Niveau** (heute 46,8 s). Die Aussage „99,1 %" war also ein Vergleich *innerhalb* eines Niveaus und bleibt
+gültig. Sie sagt aber **nicht**, dass `q4u32` im Prompt gleich schnell ist wie int8 — im schnellen Niveau
+steht `q4u32` bei 878,7, und für `int8` gibt es in diesem Niveau **keine** Messung. Der Unterschied (1,34×)
+ist damit **offen**, nicht gefunden.
+
+**Die kontrollierte Zahl kommt aus dem Harness, nicht aus dem Motor.** `qsa_prompt_attn_parity.cpp` hat
+einen A/B bekommen: derselbe Aufruf, dieselben Selektionen, dieselben quantisierten Pools, nur der
+Seitenpool abgehängt (`k_win = v_win = win_tag = nullptr`, `win_* = 0`, also `qsa_win_on` falsch). Zwei
+vollständige Läufe (`hip_prompt_attn_wmma.exe 32768 512 3`, gfx1200):
+
+| Fall | exakte Zellen | mit Fenster | ohne | Aufpreis (Lauf 1 / Lauf 2) |
+|---|---|---|---|---|
+| 1 (S 4096, Ring = S + n_q) | 6,6 % | 6,06 / 6,15 ms | 5,48 / 5,43 ms | **+11,8 % / +13,4 %** |
+| 2 (Ring = S, Tags veraltet) | 2,0 % | 2,98 / 3,19 ms | 2,79 / 2,91 ms | **+6,6 % / +9,7 %** |
+| 3 (`win_all = 1`) | 2,9 % | 2,40 / 2,38 ms | 2,13 / 2,12 ms | **+13,0 % / +12,3 %** |
+
+Das Fenster kostet also **6,2 % bis 13,4 % der Attention-Kernelzeit** (drei Läufe: der dritte Kontrolllauf
+derselben Bauart gab +12,7 % / +6,2 % / +13,4 %, `FAILURES: 0`, Exit 0), und zwar **chunk-granular, nicht
+zellproportional**: bei 2,0 % exakten Zellen kostet es 6,2–9,7 %, weil in jeder Selektion Sinks liegen und
+damit *jeder* Chunk Fensterzellen hat (der zweite V-Satz fällt je Chunk an, nicht je Zelle).
+
+**Warum der Motor das nie zeigen kann (Hochrechnung, keine Messung am Motor).** Der Harness mißt für
+`q4u32` bei 32K **11,2 ms** je Aufruf mit 1.024 Queries. Der Motor liest 6.144 Token je Chunk, also grob
+das Sechsfache ≈ **67 ms** — rund **1 %** der 6,5 s, die ein Chunk im schnellen Niveau kostet. 13 % davon
+sind **0,1 %** der Prompt-Zeit. Ein Motor-A/B auf das Fenster wäre damit selbst ohne den Zweimoduseffekt
+nicht messbar; die belastbare Zahl ist die aus dem Harness.
+
+**Decode, nur zur Vollständigkeit (mit Vorbehalt):** `int8` 38,0 / 36,6 / 33,3 tok/s, `q4u32`
+31,2 / 30,6 / 28,2, `q4u32win` 31,4 / 30,7 / 28,2 bzw. 32,3 / 31,2 / 28,3 (32K, 10/50/90 %). Der
+Unterschied ist stabil über die Niveaus hinweg — aber **kein sauberer Decode-Vergleich**: die
+Spekulationsannahme unterscheidet sich (nur der `q4u32`-Lauf protokolliert `suffix drafts: 1 windows, 2 of
+5 drafts accepted`), und die Tokenzahl je Anfrage ist 9–10. Als Hinweis notiert, nicht als Befund.
+
+**Was daraus für A.19 folgt:** ein Motor-A/B „Fenster gegen kein Fenster" ist auf dieser Maschine nicht
+auflösbar (0,1 % Effekt gegen 38 % Niveau-Streuung) und wird **nicht** gefahren. Die offene Frage ist
+stattdessen die des Zweigs: **ist `q4u32` im Prompt schneller als `int8`** — im schnellen Niveau 878,7
+gegen eine fehlende `int8`-Messung? Das braucht einen alternierenden Lauf **mit Niveau-Klassifikation je
+Anfrage** (Chunk-Zeit aus dem Log), nicht mehr Starts desselben Arms.
 
 
 ---
@@ -712,6 +836,9 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
 
 ### B3 — Das Fenster auf dem Fast-Path (entschieden: es kommt drauf)
 
+> **Stand:** dieser Abschnitt ist die **Planung** (15.11., vor dem Bau). Gebaut und gemessen ist er in
+> `A.16` (Gate rot) und `A.17` (Pass, Gate grün). Die Zeilennummern hier sind der Stand der Planung.
+
 * **Die Entscheidung (2026-11-14):** das Fenster **muss** auf dem Fast-Path laufen. Der Produktarm
   (`q4u32` + Fenster, S 256/R 64) ist die Konfiguration, die im Paper steht; ein Produktpfad, der den
   Fast-Path verliert, wäre die halbe Sache. B3 ist damit **im Umfang**, nicht mehr offen.
@@ -748,11 +875,11 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
     das ~7 % der Zellen, also die letzten Chunks; die übrigen ~93 % zahlen **nichts**.
   * **Maske:** `S.valid[c] = row >= 0 || wrow >= 0` — genau die Regel des Decode-Kerns
     (`srow[c] < 0 && swin[c] < 0`, `qsa_decode_attn.cu` 293).
-  * **Kosten (Schätzung, nicht gemessen):** ~7 % zusätzliche V-WMMA-Arbeit statt 15,6 % der Zellen in
-    SIMT; das K-Fenster kostet nichts.
-* **Was das für den Arm bedeutet:** `q4u32` **mit** Fenster ist im Prompt-Pfad heute `false`
-  (`q4u_wmma_ok` verlangt `k_win == nullptr`) und läuft über den Decode-Kern; das ist der Arm, den A.1
-  mit 260,3 tok/s gemessen hat. B3 heißt: dieser Arm soll auf den Matrix-Pfad — mit den zwei
+  * **Kosten:** die Schätzung, die hier stand (~7 % zusätzliche V-WMMA-Arbeit), ist in `A.18` gemessen;
+    das K-Fenster kostet nichts.
+* **Was das für den Arm bedeutet (Stand vor dem Bau):** `q4u32` **mit** Fenster war im Prompt-Pfad
+  `false` (`q4u_wmma_ok` verlangte `k_win == nullptr`) und lief über den Decode-Kern; das ist der Arm,
+  den A.1 mit 260,3 tok/s gemessen hat. B3 heißt: dieser Arm soll auf den Matrix-Pfad — mit den zwei
   Quellen oben, ohne Quantisierung der Fensterzellen.
 * **Gate:** ein Parity-Fall mit Overlay-Zellen gegen den Decode-Pfad — der Decode-Pfad ist die
   Referenz, weil er das Fenster heute schon liest. Der Fall muss in `hip_prompt_attn_wmma.exe` neu
@@ -781,8 +908,8 @@ andere". Es sind vier, und die Reihenfolge ist nicht frei wählbar:
 | # | Lücke | Zustand | Blockiert | Wodurch entschieden |
 |---|---|---|---|---|
 | 1 | **Der Hänger** mit `STRATA_KV_Q4_PROMPT=1` | **erledigt** (`A.14`/`A.15`): Doorbell-Deadlock im Fenster-Launch, Helfer-Thread ist Default | nichts mehr | A.14 (Sonde), A.15 (Fix + 4K/32K 3/3) |
-| 2 | **Das Fenster** auf dem Fast-Path (B3) | **gebaut und grün** (A.17): K exakt als fp16-Operand, V als zweiter WMMA-Satz | nichts mehr (Kosten misst A.18) | A.16 (rot), A.17 (grün) |
-| 3 | **Die Rate** des 4-Bit-Kerns | **gemessen** (A.15): 642,8 gegen int8 649,0 tok/s (99,1 %) | nichts (ist die Messung) | A2 |
+| 2 | **Das Fenster** auf dem Fast-Path (B3) | **gebaut, Gate grün** (A.17); im Motor belegt (A.18: Route-Zeile, 16/16 Nadeln), Kosten **+6,2…13,4 %** der Attention-Kernelzeit (Harness-A/B) | nichts mehr | A.16 (rot), A.17 (grün), A.18 (Route + Kosten) |
+| 3 | **Die Rate** des 4-Bit-Kerns | **teilweise gemessen**: A.15 642,8 gegen int8 649,0 tok/s (99,1 %) — **beide im langsamen Niveau**; im schnellen Niveau steht `q4u32` bei 878,7 ohne `int8`-Gegenstück (A.18) | die Aussage „so schnell wie int8" | A2, A.18 |
 | 4 | **Der Rest von Teil C** | offen | Feinschliff | erst nach 2 |
 
 **1. Der Hänger ist erledigt — er war nicht der Kern.** Die Prüfung am Code hatte ihn nicht gefunden,

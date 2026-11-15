@@ -259,8 +259,9 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps, int winmode = 0) {   // fmt 
     // int8 KV: v2 here, and the opt-in INT8-MMA kernel (STRATA_PROMPT_ATTN_IMMA) checked and timed below beside it
     if (fmt == 1) k::qsa_prompt_attn_set_imma(0);
     bool refused = false;
-    auto new_run = [&]() {
-        if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
+    auto new_run = [&](const k::QsaAttnPools* pp = nullptr) {   // pp: the same call with other pools (B3 timing A/B)
+        const k::QsaAttnPools& use = pp != nullptr ? *pp : pl;
+        if (!k::qsa_prompt_attn_batch(d_q, use, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
             refused = true;
             return;
         }
@@ -386,6 +387,27 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps, int winmode = 0) {   // fmt 
     cudaEventRecord(e1);
     ck(cudaEventSynchronize(e1), "time");
     cudaEventElapsedTime(&ms_new, e0, e1);
+    // B3 timing A/B: the same ids, steps and quantized pools, with the window detached (`qsa_win_on` false).  The
+    // window's work - the exact K operands, the second p.v pass and their predicates - is the only difference; the
+    // detached output is not checked (it reads no exact cell), only its time.  Two rounds, the second counts.
+    float ms_won = 0, ms_woff = 0;
+    if (winmode && !refused) {
+        k::QsaAttnPools pw = pl;
+        pw.k_win = nullptr; pw.v_win = nullptr; pw.win_tag = nullptr;
+        pw.win_s = pw.win_r = pw.win_b = pw.win_all = 0;
+        for (int round = 0; round < 2; ++round) {
+            cudaEventRecord(e0);
+            for (int r = 0; r < reps; ++r) new_run();
+            cudaEventRecord(e1);
+            ck(cudaEventSynchronize(e1), "time");
+            cudaEventElapsedTime(&ms_won, e0, e1);
+            cudaEventRecord(e0);
+            for (int r = 0; r < reps; ++r) new_run(&pw);
+            cudaEventRecord(e1);
+            ck(cudaEventSynchronize(e1), "time");
+            cudaEventElapsedTime(&ms_woff, e0, e1);
+        }
+    }
     bool ok_im = true;
     if (fmt == 1) {   // the INT8-MMA kernel: the same bounds as v2's, against FP64 and against v2
         double d_iv = 0;
@@ -422,6 +444,9 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps, int winmode = 0) {   // fmt 
                 "scale); %.3f -> %.3f ms per chunk (%.2fx); new output checksum %016llx\n",
                 ok1 && ok2 ? "PASS" : "FAIL", fmt_name(fmt), winmode ? "+win" : "", (long long) ctx, (long long) nq, err_old,
                 err_new, ref_scale, diff, diff / scale, ms_old / reps, ms_new / reps, ms_old / ms_new, (unsigned long long) sum);
+    if (winmode && !refused)   // B3: what the window itself costs, on this call's own selections
+        std::printf("window%d timing: %.3f ms per chunk with the window, %.3f without (%.3fx, +%.1f %%)\n", winmode,
+                    ms_won / reps, ms_woff / reps, ms_won / ms_woff, 100.0 * (ms_won / ms_woff - 1.0));
     cudaFree((void*) d_ids); cudaFree((void*) d_steps); cudaFree((void*) d_q); cudaFree(d_old); cudaFree(d_new);
     cudaFree(scratch);
     cudaFree((void*) pl.k_q); cudaFree((void*) pl.v_q); cudaFree((void*) pl.k_scale); cudaFree((void*) pl.v_scale);
