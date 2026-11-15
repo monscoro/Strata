@@ -1,6 +1,9 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 // HostGraphLaunch (the graph launched by the calling thread, or by a helper thread so this one can serve the doorbells): CUDA builds,
-// and the Windows HIP build (STRATA_VERIFY_ASYNC_LAUNCH=1 launches from a helper thread; STRATA_LAUNCH_PROBE=1 logs the launch timing).
+// and the Windows HIP build.  The helper thread is the default on the Windows HIP build, because there the launch
+// call can block until the GPU makes progress while the graph waits for a host doorbell (A.14); elsewhere the
+// in-line launch stays the default.  STRATA_VERIFY_ASYNC_LAUNCH=0/1 picks either arm; STRATA_LAUNCH_PROBE=1 logs
+// the launch timing.
 #if (!defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)) || (defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(_WIN32))
 #define STRATA_VERIFY_HGL 1
 #endif
@@ -3548,10 +3551,22 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
             !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
 #if defined(STRATA_VERIFY_HGL)
-        // A blocking instrumented launch cannot also serve the graph's CPU doorbells.
+        // A diagnostic (“instrumented”) cudaGraphLaunch may block until device work completes, and this graph
+        // waits for the host's doorbells (flag / flagA / flagB).  Launched from the serving thread, that is a
+        // deadlock: the host waits for the launch to return while the GPU waits for the doorbell the host would
+        // publish next.  Measured on the Windows HIP build (bench/results/2026-11-14-q4u32-fastpath, A.14): the
+        // launch call sat 62.9 s with the GPU on "rang 1" and A/B still 0.
+        // Default: the helper thread on the Windows HIP build (where that blocking submit was measured), the
+        // in-line launch everywhere else (unchanged).  STRATA_VERIFY_ASYNC_LAUNCH=0 keeps the in-line launch as
+        // an A/B arm; =1 asks for the helper thread on the other builds too.
         static const bool threaded_launch = [] {
             const char* value = std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
-            return value != nullptr && value[0] == '1';
+            if (value != nullptr && value[0] != '\0') return value[0] != '0';
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+            return true;
+#else
+            return false;
+#endif
         }();
         strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
         // STRATA_LAUNCH_PROBE=1 (diagnostic, the first 12 windows): how long the launch call takes, whether the GPU has rung a layer
