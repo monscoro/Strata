@@ -8,6 +8,9 @@
 //   2. the new and old outputs agree to a relative 1e-4 of the output scale;
 // then times both over a prompt chunk (the old one in batches of 32, as prefill.cpp calls it).
 // HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx12.
+// The window (B3): winmode 1..3 attach the exact fp16 side pool (`--kv q4u32` + STRATA_KV_WINDOW) with sink rows and a
+// recent ring, tags naming the ring's cells (qsa_win_slot). The reference kernel is the decode kernel, which reads the
+// window already; the FP64 reference applies the same rule. A refusal of the prompt path is a FAIL, never a PASS.
 // Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5]
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
@@ -39,8 +42,9 @@ template <typename T> T* up(const std::vector<T>& h) {
 }
 float h2f(uint16_t b) { __half h; *reinterpret_cast<uint16_t*>(&h) = b; return __half2float(h); }
 uint16_t f2h(float f) { __half h = __float2half(f); return *reinterpret_cast<uint16_t*>(&h); }
+const char* fmt_name(int fmt) { return fmt == 3 ? "q4u32" : fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16"; }
 
-int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2 q4_0
+int run(int fmt, int64_t ctx, int64_t nq, int reps, int winmode = 0) {   // fmt 1 int8, 0 fp16, 2 q4_0, 3 q4u32
 #if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
     if (fmt == 2 || fmt == 3) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
         int dev = 0, major = 0;
@@ -92,6 +96,23 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     std::vector<int32_t> table(pages);
     for (int64_t i = 0; i < pages; ++i) table[i] = (int32_t) i;
     std::shuffle(table.begin(), table.end(), rng);
+    // The window (B3): the exact fp16 side pool, rows [R sinks][S + B recent ring], [(row, kv_head, head_dim)] per
+    // tensor, plus the ring's cell tags (`qsa_win_slot`).  winmode 1 gives the ring room for the whole batch, so every
+    // query's recent window is in it and every recent cell is a tag hit; winmode 2 keeps just the recent window, so
+    // the tags of earlier queries' recent cells name later cells and those read quantized (both sources in one call,
+    // as the engine sees mid-chunk); winmode 3 is win_all=1 (the tag alone decides; the horizon is skipped).
+    const int64_t wR = winmode ? 8 : 0, wS = winmode ? std::min<int64_t>(128, ctx) : 0;
+    const int64_t wB = winmode == 1 ? std::min<int64_t>(nq, ctx - wS) : 0;
+    const int64_t wring = wS + wB, wrows = wR + wring;   // win_s + win_b == wring, as qsa_win_slot assumes
+    std::vector<uint16_t> kwin((size_t) (wrows * NKV * HD)), vwin((size_t) (wrows * NKV * HD));
+    std::vector<int32_t> wtag((size_t) wring, -1);
+    if (winmode) {
+        // values deliberately unrelated to the quantized pools' codes (a kernel that ignores the window cannot pass)
+        for (auto& x : kwin) x = f2h(nd(rng) * 1.5f);
+        for (auto& x : vwin) x = f2h(nd(rng));
+        // the ring holds the last `wring` cells: distinct modulo the ring, so each tag names its own cell
+        for (int64_t c = ctx - wring; c < ctx; ++c) wtag[(size_t) (c % wring)] = (int32_t) c;
+    }
     // queries at positions ctx - nq .. ctx - 1
     const int64_t cap = k::qsa_selection_width(ctx, s);
     std::vector<int32_t> ids((size_t) (nq * cap), 0), steps((size_t) (nq * k::kStepCount), 0);
@@ -103,6 +124,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         const int64_t w = k::qsa_selection_width(nkv, s);
         int32_t* sel = ids.data() + i * cap;
         steps[i * k::kStepCount + k::kStepWidth] = (int32_t) w;
+        if (winmode) steps[i * k::kStepCount + k::kStepNKv] = (int32_t) nkv;   // the window's horizon
         if (w == nkv) {
             for (int64_t c = 0; c < w; ++c) sel[c] = (int32_t) c;
             continue;
@@ -124,6 +146,13 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         for (int64_t c = nkv - recent; c < nkv; ++c) v.push_back((int32_t) c);
         std::sort(v.begin(), v.end());
         std::copy(v.begin(), v.end(), sel);
+        if (winmode && wR > 0) {   // the exact sinks in every selection: drop middle cells, keep the recent tail
+            for (int64_t j = 0; j < wR; ++j) v.push_back((int32_t) j);
+            std::sort(v.begin(), v.end());
+            v.erase(std::unique(v.begin(), v.end()), v.end());
+            if ((int64_t) v.size() > w) v.erase(v.begin() + w / 2, v.begin() + w / 2 + ((int64_t) v.size() - w));
+            std::copy(v.begin(), v.end(), sel);
+        }
     }
     // QA_SAME=1 (S23 probe): every query reads the same first-w cells - the best case of any K/V sharing between queries
     // (all loads hit the caches); QA_SAME=2: query i reads a window of w cells at i / 4 * 64 (neighbours share ~90%)
@@ -202,6 +231,18 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         return (double) (code - 8) * h2f(sc);
     };
     pl.page_table = up(table);
+    k::QsaAttnPools ph = pl;   // the host view: the FP64 reference calls qsa_win_slot, which reads the tags on the host
+    if (winmode) {   // the exact side pool: a source the prompt path has to read (the decode kernel already does)
+        pl.k_win = up(kwin);
+        pl.v_win = up(vwin);
+        pl.win_tag = up(wtag);
+        pl.win_s = (int) wS;
+        pl.win_r = (int) wR;
+        pl.win_b = (int) wB;
+        pl.win_all = winmode == 3 ? 1 : 0;
+        ph = pl;
+        ph.win_tag = wtag.data();
+    }
     const int32_t* d_ids = up(ids);
     const int32_t* d_steps = up(steps);
     const float* d_q = up(q);
@@ -217,10 +258,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     };
     // int8 KV: v2 here, and the opt-in INT8-MMA kernel (STRATA_PROMPT_ATTN_IMMA) checked and timed below beside it
     if (fmt == 1) k::qsa_prompt_attn_set_imma(0);
+    bool refused = false;
     auto new_run = [&]() {
         if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
-            std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools\n");
-            std::exit(2);
+            refused = true;
+            return;
         }
         const cudaError_t le = cudaGetLastError();
         if (le != cudaSuccess) {
@@ -245,16 +287,33 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         }
     }
     new_run();
-    if (fmt == 1) imma_run();
+    if (!refused && fmt == 1) imma_run();
     ck(cudaDeviceSynchronize(), "run");
     std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size()), im(fmt == 1 ? o.size() : 0);
-    if (fmt == 1) ck(cudaMemcpy(im.data(), d_im, im.size() * 4, cudaMemcpyDeviceToHost), "down");
+    if (fmt == 1 && !refused) ck(cudaMemcpy(im.data(), d_im, im.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(o.data(), d_old, o.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(nw.data(), d_new, nw.size() * 4, cudaMemcpyDeviceToHost), "down");
-    {   // a hash of the new kernel's output bits (bitwise A/B of two builds / switches)
+    // A refused case still reports what the *reference* says about this input: with a fresh window setup (tags, rows,
+    // strides) an agreement between the decode kernel and FP64 is the check that the harness's window is faithful.
+    if (refused) nw = o;
+    if (!refused) {   // a hash of the new kernel's output bits (bitwise A/B of two builds / switches)
         uint64_t hh = 1469598103934665603ull;
         for (float x : nw) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
         std::printf("NEWHASH %016llx\n", (unsigned long long) hh);
+    }
+    if (winmode) {   // how much of the case is actually exact (a window case that reads no exact cell proves nothing)
+        long long ex = 0, sink = 0, all = 0;
+        for (int64_t i = 0; i < nq; ++i) {
+            const int64_t w = steps[i * k::kStepCount + k::kStepWidth];
+            for (int64_t c = 0; c < w; ++c) {
+                const long long ws = k::qsa_win_slot(ph, ids[(size_t) (i * cap + c)], steps[i * k::kStepCount + k::kStepNKv]);
+                ++all;
+                if (ws >= 0) { ++ex; if (ws < wR) ++sink; }
+            }
+        }
+        std::printf("window%d: %lld of %lld cells exact (%.1f %%; %lld sinks, %.1f %% recent), %lld read quantized\n",
+                    winmode, ex, all, all ? 100.0 * (double) ex / (double) all : 0.0, sink,
+                    all ? 100.0 * (double) (ex - sink) / (double) all : 0.0, all - ex);
     }
     // 1. FP64 reference on a sample of queries
     double err_old = 0, err_new = 0, err_im = 0, ref_scale = 0;
@@ -267,9 +326,12 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             double mx = -1e300;
             for (int64_t c = 0; c < w; ++c) {
                 const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
+                // the window: an exact fp16 cell, read instead of the quantized one (qsa_win_slot's rule)
+                const long long ws = winmode ? k::qsa_win_slot(ph, cell, steps[i * k::kStepCount + k::kStepNKv]) : -1LL;
                 double a = 0;
                 for (int64_t d = 0; d < HD; ++d) {
-                    const double kv = (fmt == 2 || fmt == 3) ? q4v(k4, row, d)
+                    const double kv = ws >= 0 ? h2f(kwin[(size_t) ((ws * NKV + kvh) * HD + d)])
+                                      : (fmt == 2 || fmt == 3) ? q4v(k4, row, d)
                                       : fmt == 1 ? (double) kq[row * HD + d] * h2f(ks[row * 4 + d / 64]) : h2f(kh[row * HD + d]);
                     a += (double) q[(i * NH + h) * HD + d] * kv;
                 }
@@ -282,7 +344,9 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 double a = 0;
                 for (int64_t c = 0; c < w; ++c) {
                     const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
-                    const double vv = (fmt == 2 || fmt == 3) ? q4v(v4, row, d)
+                    const long long ws = winmode ? k::qsa_win_slot(ph, cell, steps[i * k::kStepCount + k::kStepNKv]) : -1LL;
+                    const double vv = ws >= 0 ? h2f(vwin[(size_t) ((ws * NKV + kvh) * HD + d)])
+                                      : (fmt == 2 || fmt == 3) ? q4v(v4, row, d)
                                       : fmt == 1 ? (double) vq[row * HD + d] * h2f(vs[row * 4 + d / 64]) : h2f(vh[row * HD + d]);
                     a += sco[c] * vv;
                 }
@@ -294,6 +358,12 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 if (fmt == 1) err_im = std::max(err_im, std::fabs(im[at] - r));
             }
         }
+    }
+    if (refused) {   // RED, never a silent PASS through the decode kernel (the B6 trap)
+        std::printf("FAIL %s%s ctx %lld, %lld queries: the prompt path refused the pools (no matrix-core route); "
+                    "the decode kernel, the reference, reads this window at %.3g vs FP64 (output scale %.3g)\n",
+                    fmt_name(fmt), winmode ? "+win" : "", (long long) ctx, (long long) nq, err_old, ref_scale);
+        return 1;
     }
     // 2. new vs old everywhere
     double diff = 0, scale = 0;
@@ -348,9 +418,9 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         std::memcpy(&b, &f, 4);
         sum = (sum ^ b) * 1099511628211ull;
     }
-    std::printf("%s %s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
+    std::printf("%s %s%s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
                 "scale); %.3f -> %.3f ms per chunk (%.2fx); new output checksum %016llx\n",
-                ok1 && ok2 ? "PASS" : "FAIL", fmt == 3 ? "q4u32" : fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, err_old,
+                ok1 && ok2 ? "PASS" : "FAIL", fmt_name(fmt), winmode ? "+win" : "", (long long) ctx, (long long) nq, err_old,
                 err_new, ref_scale, diff, diff / scale, ms_old / reps, ms_new / reps, ms_old / ms_new, (unsigned long long) sum);
     cudaFree((void*) d_ids); cudaFree((void*) d_steps); cudaFree((void*) d_q); cudaFree(d_old); cudaFree(d_new);
     cudaFree(scratch);
@@ -402,6 +472,13 @@ int main(int argc, char** argv) {
     // the first query of a prompt attends to one cell: the tail of a chunk with a single live cell
     fails += run(3, 64, 64, reps);
     fails += run(3, 512, 512, reps);
+    // B3, the window (the exact fp16 side pool) on the 4-bit grid: sinks + a recent ring, against the decode
+    // kernel (which reads the window already) and FP64.  winmode 1: the whole batch's window fits in the ring
+    // (every recent cell is a tag hit).  winmode 2: ring = the recent window alone, so earlier queries' recent
+    // cells fail the tag and read quantized (both sources in one call).  winmode 3: win_all=1 (tag only).
+    fails += run(3, ctx, nq, reps, 1);
+    fails += run(3, 2100, std::min<int64_t>(nq, 256), reps, 2);
+    fails += run(3, 1500, std::min<int64_t>(nq, 256), reps, 3);
     std::printf("FAILURES: %d\n", fails);
     return fails;
 }

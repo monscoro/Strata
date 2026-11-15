@@ -555,6 +555,60 @@ der Beleg, dass der Default-Pfad darunter nicht leidet (int8 3/3, 649,0 tok/s).
 Sitzung wären billig, um sie zu beziffern), und die Wiederholung der Arme `q4_0` und `q4u32win`, die in
 dieser Serie noch fehlen.
 
+### A.16 — Das Gate für B3 steht, und es ist rot (15.11.2026)
+
+**Vorregistriert:** `hip_prompt_attn_wmma.exe` bekommt einen Fensterfall (S 8/R 128, Ring), Referenz ist
+der **Decode-Kern** (er liest das Fenster schon) **und** FP64 mit derselben `qsa_win_slot`-Regel. Der Fall
+muss **rot** sein, solange der Prompt-Pfad den Seitenpool nicht liest, und darf **nicht** grün werden,
+indem er heimlich über den Decode-Kern läuft. Erst danach wird der Pass gebaut.
+
+**Der Harness (`qsa_prompt_attn_parity.cpp`)** hat drei Fenstermodi, alle auf `fmt 3` (`q4u32`):
+
+| Modus | Ring | Was er prüft |
+|---|---|---|
+| 1 | S + n_q (der ganze Batch passt hinein) | jeder Recent-Cell ist ein Tag-Treffer; Sinks immer |
+| 2 | nur S (Tags veraltet) | Tag-Fehltreffer lesen **quantisiert** — beide Quellen in einem Aufruf, wie im Motor mitten im Chunk |
+| 3 | nur S, `win_all = 1` | nur der Tag entscheidet (die Horizont-Prüfung fällt weg) |
+
+Die Sinks (Zellen 0..7) werden in jede Selektion gesetzt, damit der sink-Pfad (kein Tag nötig) auch im
+sparse Fall läuft. Die Zellzahlen druckt der Harness selbst, damit ein Fensterfall nicht grün werden kann,
+ohne eine einzige exakte Zelle zu lesen.
+
+**Der Lauf** (`hip_prompt_attn_wmma.exe 32768 1024 3`, gfx1200, HIP-Build):
+
+```
+window1: 139264 of 2100224 cells exact (6.6 %; 8192 sinks, 6.2 % recent), 1960960 read quantized
+FAIL q4u32+win ctx 32768, 1024 queries: the prompt path refused the pools (no matrix-core route);
+     the decode kernel, the reference, reads this window at 4.72e-06 vs FP64 (output scale 7.42)
+window2: 10304 of 503735 cells exact (2.0 %; 2048 sinks, 1.6 % recent), 493431 read quantized
+FAIL q4u32+win ctx 2100, 256 queries: ... 3.6e-06 vs FP64 (output scale 7.62)
+window3: 10304 of 351360 cells exact (2.9 %; 2048 sinks, 2.3 % recent), 341056 read quantized
+FAIL q4u32+win ctx 1500, 256 queries: ... 7.15e-06 vs FP64 (output scale 7.87)
+FAILURES: 3
+```
+
+**Was daran zählt:**
+
+* **Rot, aus dem richtigen Grund:** `qsa_prompt_attn_batch` lehnt ab (`return false`, 2694–2696), und der
+  Harness druckt dafür `FAIL` statt durch den Decode-Kern zu laufen und `PASS` zu sagen (die Falle aus
+  B6). Der Abbruch zählt als Fehler (`FAILURES: 3`, Exit 3) — die frühere Fassung hätte hier `exit(2)`
+  gemacht und die anderen Fälle verschluckt.
+* **Die Referenz ist belegt, nicht angenommen:** der Decode-Kern trifft die FP64-Fensterreferenz auf
+  **3,6e-06 … 7,2e-06** bei einer Ausgabenskala von ~7,5 — **~1e-6 relativ**, dieselbe Größenordnung wie
+  ohne Fenster. Damit stimmen Zeilenlayout (`[(row, kv_head, head_dim)]`), Ringzeilen, Tags und die
+  `qsa_win_slot`-Regel im Harness. Ohne diese Zahl wäre jede spätere Abweichung zwischen Kern und
+  Referenz zweideutig.
+* **Die Abdeckung ist beziffert:** **6,6 %** exakte Zellen im vollen Fenster (128 recent / 2.051 + 8
+  Sinks), **2,0 %** bzw. **2,9 %** in den Tag-Fehltreffer-Fällen. Das ist die Zellrate, die der
+  zweite WMMA-Satz zusätzlich rechnen muss — die *Zeit* ist damit noch nicht gemessen.
+
+**Zwei Fehler in meinem eigenen Harness, beide vor dem ersten Befund:** `pl.win_tag` zeigt auf
+**Device**-Speicher; die Host-Referenz hat ihn dereferenziert und ist mit einer Zugriffsverletzung
+abgestürzt (exit `0xC0000005`). Und `pl.win_b` war auf `n_q` gesetzt, während der Ring auf `ctx`
+geklemmt wurde — `qsa_win_slot` rechnet den Ring aber aus `win_s + win_b`, also las es hinter dem
+Tag-Array. Beides behoben (`ph.win_tag = wtag.data()`, `win_s + win_b == wring` durch Konstruktion).
+
+
 ---
 
 ## Teil B — Die Engine-Arbeit
@@ -622,27 +676,47 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
      Zellentscheidung, aber keinen gemischten smem.
 * **Die Wahl des Weges fällt mit B2**, weil B2 die Zellstruktur des Prompt-Pfads für 4 Bit überhaupt erst
   erweitert; B3 baut darauf auf.
-* **Was B2 hinterlassen hat, und warum Weg 1 ausfällt (statische Analyse, 15.11.2026):** der
-  4-Bit-Pfad expandiert die Nibbles zu **exakten int8-Codes** und gibt sie in `wmma_f16`
-  (`i8_to_h`): der Matrix-Kern rechnet **int8 × int8**. Eine fp16-Zeile aus dem Seitenpool lässt sich
-  nicht als int8-Code mit *einer* Skala je 32 Werte darstellen — genau darum existiert das Fenster. Damit
-  ist „gemischter smem, der WMMA liest beides" **kein Layout-Problem, sondern ausgeschlossen**: der
-  Matrix-Kern kann Fensterzellen nicht lesen. Es bleibt
-  * **Weg 2 (Korrektur-Pass)**: die WMMA rechnet alle Zellen aus den Codes (auch die Overlay-Zellen,
-    falsch aber billig), danach korrigiert ein FP32-Pass je Overlay-Zelle Score und `p·v`
-    (`q·(k_fp16 − k_quant)`); die LSE bleibt eine. Das ist der Weg mit dem kleinsten Eingriff und ohne
-    neues Layout — Kosten: 320 von 2.051 Zellen je Query, also ~15,6 % der Zellen in SIMT statt im
-    Matrix-Kern (Schätzung, **nicht gemessen**);
-  * **Weg 3 (Materialisieren)**: die exakten Zellen in einen zweiten Pool schreiben, den der Prompt-Kern
-    als **eigene** Quelle liest — dann müssen die Zellen aber weiterhin durch die int8-Brücke, also
-    wieder Quantisierung, also **kein** exaktes Fenster. Fällt damit weg.
+* **Die Wahl des Weges fällt mit B2**, weil B2 die Zellstruktur des Prompt-Pfads für 4 Bit überhaupt erst
+  erweitert; B3 baut darauf auf.
+* **Der Kern rechnet fp16, nicht int8 — und das entscheidet den Weg (statische Analyse, 15.11.2026,
+  korrigiert):** `wmma_f16` ist
+  `__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c)` mit `wh8 = _Float16[8]`
+  (`qsa_prompt_attn.cu` 1917–1918, 1941–1950): **fp16 × fp16 → fp32**. Die int8-Codes sind nur
+  Zulieferung — `i8_to_h()` (1952) gießt sie exakt nach fp16, und die Blockskala wird **danach in FP32**
+  auf die Gruppensumme angewandt (`s * cd.ksc[nt][g]`, 2197). Eine fp16-Zeile aus dem Seitenpool ist für
+  diesen Kern also der **natürliche** Operand, kein Fremdkörper.
+  *(Zwischenstand, den ich hier zuerst falsch notiert hatte: „der Kern rechnet int8 × int8, eine
+  fp16-Zeile ist nicht als Code mit einer Skala je 32 Werte darstellbar, also ist gemischter smem
+  ausgeschlossen". Der erste Satz ist falsch, der Schluss damit auch. Ein Korrektur-Pass mit
+  `q·(k_fp16 − k_quant)` ist **nicht nötig**.)*
+* **Der Weg, der daraus folgt: dieselbe WMMA, exakt gefüttert.** K und V sind verschieden:
+  * **K: kostenlos.** Der K-Operand wird je Lane in Registern gebaut (`cd.kx[nt][kk]`, 2136–2159) und
+    erst im WMMA-Schritt konvertiert (2190). Für eine Fensterzelle lädt man statt der 8 Codes **8
+    Halves** aus dem Seitenpool (16 B, ausgerichtet wie `load8_win`) und setzt `ksc = 1.0`. Es gibt
+    keinen Konflikt: die Skala wirkt je Zelle in FP32, nicht auf die Kachel.
+  * **V: ein zweiter WMMA-Satz, kein Korrektur-Pass.** V wird als **Bytes** gestagt
+    (`S.v[4][32][72]`, gelesen als Codes in 2269–2270); 64 Dims als Halves wären 128 B, das Polster
+    gibt es nicht (und die V-Zeile auf 128 B zu verbreitern kostet 7 KiB LDS je Block — bei ~24 KiB
+    heute der Sprung von 5 auf 3 residente Blöcke). Also: Fensterzellen in der quantisierten Passung
+    auf **0** setzen (beim Stagen, nicht im heißen Loop) und einen **zweiten** Satz von 4 Kacheln × 2
+    k-Schritten über genau diese Zellen rechnen, mit `B = V_exakt` aus dem Seitenpool und `A = p`
+    (ohne `vdown`, in einen eigenen `tmpw`-Akkumulator, der ohne `vdown` in `acc` geht). Der Zweig ist
+    warp-uniform und läuft nur in Chunks, die überhaupt Fensterzellen enthalten — bei S 128/R 8 sind
+    das ~7 % der Zellen, also die letzten Chunks; die übrigen ~93 % zahlen **nichts**.
+  * **Maske:** `S.valid[c] = row >= 0 || wrow >= 0` — genau die Regel des Decode-Kerns
+    (`srow[c] < 0 && swin[c] < 0`, `qsa_decode_attn.cu` 293).
+  * **Kosten (Schätzung, nicht gemessen):** ~7 % zusätzliche V-WMMA-Arbeit statt 15,6 % der Zellen in
+    SIMT; das K-Fenster kostet nichts.
 * **Was das für den Arm bedeutet:** `q4u32` **mit** Fenster ist im Prompt-Pfad heute `false`
   (`q4u_wmma_ok` verlangt `k_win == nullptr`) und läuft über den Decode-Kern; das ist der Arm, den A.1
-  mit 260,3 tok/s gemessen hat. B3 heißt: dieser Arm soll auf den Matrix-Pfad, und der Preis dafür ist
-  ein Korrektur-Pass über die Overlay-Zellen.
+  mit 260,3 tok/s gemessen hat. B3 heißt: dieser Arm soll auf den Matrix-Pfad — mit den zwei
+  Quellen oben, ohne Quantisierung der Fensterzellen.
 * **Gate:** ein Parity-Fall mit Overlay-Zellen gegen den Decode-Pfad — der Decode-Pfad ist die
   Referenz, weil er das Fenster heute schon liest. Der Fall muss in `hip_prompt_attn_wmma.exe` neu
-  gebaut werden (das Fenster ist dort bisher **nirgends** getestet, B6/Befund 6).
+  gebaut werden (das Fenster ist dort bisher **nirgends** getestet, B6/Befund 6). **Der Fall muss
+  „rot" auch wirklich rot sein:** mit einem Fenster lehnt `qsa_prompt_attn_batch` heute ab
+  (`return false`, 2694–2696), und der Harness wertet das als Abbruch — nicht als grünes `PASS` über
+  den Decode-Kern (die Falle aus B6).
 
 ### B4 — Die Reihenfolge und die Kosten
 
@@ -650,7 +724,7 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
 |---|---|---|---|
 | B1 | CUDA-Dispatch, eine Zeile | Parität (bitgleich) | klein |
 | B2 | HIP-Matrix-Core liest 4 Bit | Parität + Timing | **groß** |
-| B3 | Fenster auf dem Prompt-Pfad (entschieden: es kommt drauf) | Parität mit Overlay | mittel bis groß |
+| B3 | Fenster auf dem Prompt-Pfad (entschieden: es kommt drauf): K exakt als fp16-Operand, V als zweiter WMMA-Satz | Parität mit Overlay | **mittel** (kein Korrektur-Pass, s. o.) |
 | B4' | **Logzeile** „der Prompt-Pfad bedient diesen Arm" | G-R1 | klein |
 
 **B4' ist Voraussetzung für A2**, nicht für A1: ohne die Zeile ist die Zuordnung „Zeit ↔ Pfad"
@@ -663,26 +737,24 @@ andere". Es sind vier, und die Reihenfolge ist nicht frei wählbar:
 
 | # | Lücke | Zustand | Blockiert | Wodurch entschieden |
 |---|---|---|---|---|
-| 1 | **Der Hänger** mit `STRATA_KV_Q4_PROMPT=1` | **offen** | Default, A2, alles danach | eine Messung (unten), keine weitere Leserunde |
+| 1 | **Der Hänger** mit `STRATA_KV_Q4_PROMPT=1` | **erledigt** (`A.14`/`A.15`): Doorbell-Deadlock im Fenster-Launch, Helfer-Thread ist Default | nichts mehr | A.14 (Sonde), A.15 (Fix + 4K/32K 3/3) |
 | 2 | **Das Fenster** auf dem Fast-Path (B3) | entschieden, ungebaut | den Produktarm | Parität gegen den Decode-Kern |
-| 3 | **Die Rate** des 4-Bit-Kerns | B2: 5,12× im Kern; **A2 offen** | nichts (ist die Messung) | A2 |
+| 3 | **Die Rate** des 4-Bit-Kerns | **gemessen** (A.15): 642,8 gegen int8 649,0 tok/s (99,1 %) | nichts (ist die Messung) | A2 |
 | 4 | **Der Rest von Teil C** | offen | Feinschliff | erst nach 2 |
 
-**1. Der Hänger ist die ganze Lücke.** Er ist gemessen eingegrenzt: int8 bitgleich; `q4u32` mit
-`STRATA_HIP_WMMA=0` 3/3; int8 mit `STRATA_QSA_FUSE_GATE=0` 3/3; int8 mit `STRATA_KV_ROT=1` 3/3; der
-Paritäts-Harness mit q4-Pool 32.768/512/64 grün. Er ist **nicht** durch Lesen gefunden worden — auch
-nicht in dieser Runde (die Prüfung ergab: die Chunk-Schleife ist blockuniform, `n` hängt nur an
-`qi`; die Adressierung des 4-Bit-Pools ist Zeile für Zeile die des Decode-Kerns,
-`base + row*144 + b*18`; die Gruppen- und Skalenzuordnung stimmt für `GPW = 2`). **A.12 hat die
-Längen-Hypothese erledigt**: es hängt auch bei 4k (3.321/3.328), der Bulk-Prompt läuft (zwölf Aufrufe),
-danach kein Aufruf mehr, und der isolierte Kern mit derselben Form (3.328 Zellen, 6 Queries) ist
-grün. Der Hänger sitzt damit im **Übergang** zum 6-Token-Verify-Fenster. Drei Schritte, in dieser
-Reihenfolge:
+**1. Der Hänger ist erledigt — er war nicht der Kern.** Die Prüfung am Code hatte ihn nicht gefunden,
+und das war richtig so: die Chunk-Schleife ist blockuniform, `n` hängt nur an `qi`, die Adressierung des
+4-Bit-Pools ist Zeile für Zeile die des Decode-Kerns (`base + row*144 + b*18`), die Gruppen- und
+Skalenzuordnung stimmt für `GPW = 2`. `A.14` hat ihn dann mit der Sonde lokalisiert: der **Launch** des
+6-Token-Verify-Fensters blockiert, während die GPU auf eine **Host-Doorbell** wartet. Der schnellere
+Prompt-Pfad verliert diesen Wettlauf, ein langsamerer gewinnt ihn — deshalb sah es nach „q4 hängt" aus,
+obwohl es jeden KV-Modus treffen konnte. `A.15` macht den Helfer-Thread zum Default (Windows-HIP-Build),
+seither 4K und 32K 3/3 ohne Schalter. Die Reihenfolge, die hier stand (Selektions-Dump, `--prefill 512`,
+echter Pool), ist damit **hinfällig** — sie hätte einen Deadlock im Launch gesucht, wo er nicht war.
 
-* `STRATA_QSA_SELECT_DUMP=1`: die echten Selektionen des hängenden Laufs, im Harness nachgespielt;
-* `--prefill 512`: hängt es an *jedem* Chunk-Ende oder nur am letzten?
-* der echte Pool: dumpen und in den Harness geben — der Harness baut seinen Pool selbst, und genau
-  darin liegt die eine Differenz, die noch nicht ausgeschlossen ist.
+**Nicht durch Lesen gefunden, sondern durch Messen:** die Längen-Hypothese (`A.12`), der Ort (`A.14`),
+der Fix (`A.15`). Das ist die Lehre für B3: der Fensterfall im Harness muss **rot** sein können, sonst
+belegt er nichts.
 
 **Gemessen und nicht mehr offen:** dass es an der Länge liegt (`A.12`), dass ein grüner q4-Fall im
 Harness ohne `STRATA_KV_Q4_PROMPT=1` den Matrix-Kern überhaupt testet (tut er nicht — er testet den
