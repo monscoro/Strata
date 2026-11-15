@@ -806,15 +806,64 @@ Spekulationsannahme unterscheidet sich (nur der `q4u32`-Lauf protokolliert `suff
 **Was daraus für A.19 folgt:** ein Motor-A/B „Fenster gegen kein Fenster" ist auf dieser Maschine nicht
 auflösbar (0,1 % Effekt gegen 38 % Niveau-Streuung) und wird **nicht** gefahren — dafür ist der
 Harness-A/B da. Offen ist die Frage des Zweigs: **warum ist `q4u32` im Prompt schneller als `int8`**, wenn
-sein Attention-Kern 37 % langsamer ist? Drei Wege, alle mit Niveau-Klassifikation je Anfrage (Chunk-Zeit
-aus dem Log), keiner davon gebaut:
+sein Attention-Kern 37 % langsamer ist?
 
-1. **`int8` alternierend gegen `q4u32`** (nur 32K, 3 Tiefen, ≥ 6 Starts): beantwortet nur, *ob* der
-   Unterschied reproduzierbar ist, nicht warum.
-2. **Expert-Cache gleichziehen** (`--vram-reserve-mib` so, dass beide Arme dieselbe Slotzahl bekommen):
-   wenn der Vorsprung dann verschwindet, ist die Pool-Größe die Ursache.
-3. **Kein Motor-A/B**: den Harness als Kostenbeleg nehmen und die Prompt-Rate von `q4u32` **nicht** gegen
-   int8 behaupten.
+### A.19 — vorregistriert: ist der Prompt-Vorsprung die Cache-Größe? (15.11.2026, vor dem ersten Lauf)
+
+**Hintergrund.** A.18 lässt zwei Erklärungen für 878,7 gegen 656,8 tok/s übrig, und die Messung kann nur
+eine davon ausschließen:
+
+1. **Der Expert-Cache.** `int8` braucht den doppelten KV-Pool, also bleiben weniger Slots für die
+   Experten: in A.18 **2967** gegen **3510** Slots (`expert cache N slots` im Log). Weniger Slots heißt
+   mehr Experten über PCIe je Prompt-Chunk. Das ist der Kandidat aus A.18.
+2. **Etwas am 4-Bit-Pfad selbst** (Writer, Layout, Paging). Der Attention-Kern ist es **nicht** — er ist
+   im Harness 37 % **langsamer** (A.18).
+
+**Die Frage:** verschwindet der Prompt-Vorsprung von `q4u32` gegen `int8`, wenn beide **dieselbe Anzahl
+Expert-Slots** haben?
+
+**Der Hebel, und was er wirklich tut (zwei Rauchtests à 1k, vor der Serie).** `--expert-cache N` ist
+**kein** Slot-Zähler: es ist ein Budget in Einheiten des größten Blobs, und die tatsächliche Slotzahl
+steht im Log. **`--expert-cache 2967` ergibt in beiden Armen exakt `expert cache 3950 slots`** (int8 und
+q4u32, verifiziert) — damit ist die Slotzahl gleich, und genau das ist der gesuchte Zustand. Der
+Nebeneffekt steht ebenfalls schon im Log: mit gleichem Cache meldet **`int8`** `only 587 MiB of VRAM free
+at the start of this request (below 1024 MiB)` und die Warnung vor Driver-Paging — der doppelte KV-Pool
+lässt sich nicht wegzaubern. **Cache-Größe und freier VRAM sind über die Pool-Größe gekoppelt; beide
+zugleich gleichzumachen ist auf dieser Karte unmöglich.** Der Lauf kann also nur zeigen, ob die
+Cache-Größe *hinreicht*, den Unterschied zu erklären, nicht ob sie ihn *allein* erklärt.
+
+**Arme** (drei Configs, je zwei Starts, 32K, Nadeln 10/50/90 %, 30 s zwischen den Starts, dieser Build):
+
+| Arm | KV | Cache | freier VRAM (erwartet) | Rolle |
+|---|---|---|---|---|
+| `int8` | int8 | `--expert-cache 2967` → **3950 Slots** | **~0,6 GiB** (Paging-Warnung) | gleich viel Cache, weniger Platz |
+| `q4u32` gleich | q4u32 | `--expert-cache 2967` → **3950 Slots** | ~1,8 GiB | gleich viel Cache, mehr Platz |
+| `q4u32` natürlich | q4u32 | auto (A.18: **3510 Slots**) | ~1,8 GiB | wie A.18 (Kontrolle: Satz stabil?) |
+
+Der eigentliche Test ist **`q4u32` gleich gegen `int8`** (gleicher Cache, beide 3950 Slots). Der dritte Arm
+prüft, ob der Vorsprung aus A.18 in dieser Sitzung überhaupt wieder auftritt.
+
+**Reihenfolge:** `int8`, `q4u32` gleich, `q4u32` natürlich, `q4u32` natürlich, `q4u32` gleich, `int8`
+(symmetrisch, damit eine Zeitdrift beide Enden gleich trifft).
+
+**Kriterien, vorher festgelegt:**
+
+* **Je Anfrage wird das Niveau aus dem Log klassifiziert** (`reading the prompt: … N s so far`, letzte
+  Zeile): **schnell < 40 s**, **langsam ≥ 40 s** (A.18: 34–35 s bzw. 46–47 s). Nur Vergleiche
+  **innerhalb** eines Niveaus zählen; Anfragen verschiedenen Niveaus werden nicht verglichen.
+* **Der Lauf zählt nur mit der Route-Zeile** (wie A.18) und mit der **erwarteten Slotzahl** im Log
+  (`expert cache 3950 slots` bzw. `3510 slots`, ±1 %). Weicht die Slotzahl ab, ist der Lauf kein Beleg für
+  die gesetzte Zahl; er wird wiederholt, nicht umgedeutet.
+* **Der Chunk muss `6144` bleiben** (`prompt chunk auto: 6144 tokens`): ein kleinerer Chunk wäre ein
+  zweiter Unterschied und würde den Vergleich tragen statt der Cache.
+* **Ergebnis A (Cache-Größe reicht):** in einem Niveau liegt `q4u32` gleich bei `int8` (±5 %).
+* **Ergebnis B (Cache-Größe reicht nicht):** in einem Niveau liegt `q4u32` gleich ≥ 15 % über `int8`.
+* **Ergebnis C (nicht auflösbar):** in keinem der beiden Niveaus kommen zwei der Arme zusammen vor.
+  Dann wird das so berichtet; **kein** weiterer Start derselben Bauart.
+* **Kein Decode-Vergleich** in diesem Lauf (die Spekulationsannahme ist nicht gleich; A.18).
+* **Was dieser Lauf nicht kann:** die Rolle des freien VRAM von der der Cache-Größe trennen (s. o.). Wird
+  Ergebnis B gemessen, ist „der 4-Bit-Pfad selbst ist schneller" **nicht** belegt — es bleibt bei „nicht
+  die Cache-Größe" plus offenem Rest.
 
 
 ---
