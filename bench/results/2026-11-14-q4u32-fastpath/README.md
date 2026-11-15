@@ -518,6 +518,43 @@ Die 619,4 tok/s gelten **mit** `STRATA_VERIFY_ASYNC_LAUNCH=1`; ohne sie hängt d
 3.328 Token. Das gehört in jede Tabelle, die diese Zahl zitiert. Auch die 4K-Nadel lief so (3 von 3,
 8 s je Anfrage).
 
+### A.15 — Der Fix: der Launch gehört aus dem bedienenden Thread (15.11.2026)
+
+Die Ursache aus A.14 stand schon im Header, nur nicht als Voreinstellung. `host_graph_launch.hpp` 11–14:
+*„Instrumented cudaGraphLaunch may block until device work completes. A graph which waits for CPU
+doorbells must therefore launch outside its service thread."* Genau das war der Default nicht: der
+Helfer-Thread lief nur mit `STRATA_VERIFY_ASYNC_LAUNCH=1`.
+
+**Die Änderung** (`verify.cpp`, eine Voreinstellung, kein neuer Pfad): der Helfer-Thread ist auf dem
+**Windows-HIP-Build** der Default — dort ist der blockierende Submit gemessen —, auf allen anderen Builds
+bleibt der Inline-Launch der Default (unverändert, CUDA also byte-gleich). `=0` nimmt den Inline-Launch
+als A/B-Arm, `=1` den Helfer-Thread auch anderswo. Die Bedingung ist nicht „q4": **jedes** Fenster-Graph
+wartet auf die Host-Doorbells, also galt der Wettlauf für jeden KV-Modus.
+
+**Die Messung.** 32K-Nadel, `needle-fastpath-*.json`, dieser Build, **keine** Variable gesetzt (nur
+`STRATA_KV_Q4_PROMPT=1` für den noch opt-in q4-Pfad), drei Tiefen je Arm, Prompt-Rate in tok/s:
+
+| Arm | 10 % | 50 % | 90 % | Mittel | Nadeln |
+|---|---|---|---|---|---|
+| `q4u32` (Matrix-Pfad) | 640,4 | 638,2 | 649,9 | **642,8** | 3/3 |
+| `int8` | 644,4 | 651,8 | 650,9 | **649,0** | 3/3 |
+
+**`q4u32` liegt bei 99,1 % von int8.** Der Abstand ist kleiner als die Streuung: dieselbe int8-Konfiguration
+las in A.14 (mit dem Schalter, gleicher Build-Vorgänger) 626,6 / 626,7 / 620,8 — **4 % langsamer** als
+heute, ohne dass sich an int8 etwas geändert hätte. Zwei Sitzungen, die identisch sein sollten, streuen
+also ±4 %; die 1 % zwischen den Armen sind darin nicht auflösbar. (Der 785,1-Ausreißer aus A.14 bleibt
+damit auch unerklärt — er ist als Streuung zu lesen, nicht als Vorsprung.)
+
+**4K** mit demselben Fix: 3 von 3 Nadeln, 8 s je Anfrage, ohne Schalter.
+
+**Was der Fix *nicht* ist:** er macht `q4u32` nicht zum Default — der Pfad bleibt hinter
+`STRATA_KV_Q4_PROMPT=1`. Er nimmt nur den Hänger weg, und zwar für alle KV-Modi. Die Zahlen oben sind
+der Beleg, dass der Default-Pfad darunter nicht leidet (int8 3/3, 649,0 tok/s).
+
+**Offen bleibt:** die Streuung von ±4 % zwischen Sitzungen (zwei Wiederholungen desselben Arms in einer
+Sitzung wären billig, um sie zu beziffern), und die Wiederholung der Arme `q4_0` und `q4u32win`, die in
+dieser Serie noch fehlen.
+
 ---
 
 ## Teil B — Die Engine-Arbeit
@@ -630,10 +667,11 @@ Reihenfolge:
 
 **Gemessen und nicht mehr offen:** dass es an der Länge liegt (`A.12`), dass ein grüner q4-Fall im
 Harness ohne `STRATA_KV_Q4_PROMPT=1` den Matrix-Kern überhaupt testet (tut er nicht — er testet den
-Decode-Kern und druckt `PASS`), und **was der Hänger ist** (`A.14`): ein Doorbell-Deadlock im
-**Launch** des Verify-Fensters, den der schnellere Pfad im Wettlauf verliert. Mit
-`STRATA_VERIFY_ASYNC_LAUNCH=1` läuft `q4u32` durch: 4K 3/3, **32K 3/3, Prompt 619,4 tok/s gegen int8's
-626,7 auf demselben Build** — die Rate ist also **keine** Lücke mehr (Punkt 3 unten).
+Decode-Kern und druckt `PASS`), **was der Hänger ist** (`A.14`: ein Doorbell-Deadlock im **Launch** des
+Verify-Fensters, den der schnellere Pfad im Wettlauf verliert) und dass er **weg** ist (`A.15`: der
+Helfer-Thread ist auf dem Windows-HIP-Build Default, 4K und 32K laufen 3/3 ohne Schalter). Die Rate ist
+damit **keine** Lücke mehr: `q4u32` 642,8 gegen `int8` 649,0 tok/s (99,1 %, innerhalb der Streuung von
+±4 %).
 
 **2. Das Fenster** ist keine Optimierung, sondern Funktionsumfang (B3, entschieden). Solange es fehlt,
 ist `q4u32` + Fenster — die Konfiguration, die im Paper steht — **kein** Fast-Path-Arm.
@@ -662,8 +700,9 @@ aus dem llama.cpp PR #31802 überhaupt 17–79 % holt).
    Zweig" zu unterscheiden (B6, Befund 4). **Erledigt, und das Ergebnis verschiebt den Verdacht**
    (A.13): der Tail nimmt gar keinen q4-Kern, das Fenster läuft im Decode-Kern.
 3. Den **Launch** des Fensters reparieren (der Helfer-Thread als Default, wo Doorbells bedient werden
-   müssen) — **dann** ist `q4u32` default-fähig. A2 ist mit dem Schalter schon gelaufen (`int8` 626,7 /
-   `q4u32` 619,4 tok/s auf demselben Build); `q4_0` fehlt noch in dieser Serie.
+   müssen) — **erledigt** (A.15): Default auf dem Windows-HIP-Build, gemessen 3/3 bei 4K und 32K, ohne
+   Schalter. A2 ist damit gelaufen: `int8` 649,0 / `q4u32` 642,8 tok/s (99,1 %). `q4_0` und
+   `q4u32win` fehlen noch in dieser Serie.
 4. B3 (Fenster) auf dem dann laufenden Kern — erst damit ist der Produktarm ein Fast-Path-Arm.
 5. Teil C — und **nur** wenn A2 zeigt, dass die Rate noch die Lücke ist, int8-WMMA als eigenes
    Vorhaben. Nach A.14 ist sie es **nicht**; Teil C ist damit Feinschliff, keine Voraussetzung.
