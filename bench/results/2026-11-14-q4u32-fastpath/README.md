@@ -622,8 +622,27 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
      Zellentscheidung, aber keinen gemischten smem.
 * **Die Wahl des Weges fällt mit B2**, weil B2 die Zellstruktur des Prompt-Pfads für 4 Bit überhaupt erst
   erweitert; B3 baut darauf auf.
+* **Was B2 hinterlassen hat, und warum Weg 1 ausfällt (statische Analyse, 15.11.2026):** der
+  4-Bit-Pfad expandiert die Nibbles zu **exakten int8-Codes** und gibt sie in `wmma_f16`
+  (`i8_to_h`): der Matrix-Kern rechnet **int8 × int8**. Eine fp16-Zeile aus dem Seitenpool lässt sich
+  nicht als int8-Code mit *einer* Skala je 32 Werte darstellen — genau darum existiert das Fenster. Damit
+  ist „gemischter smem, der WMMA liest beides" **kein Layout-Problem, sondern ausgeschlossen**: der
+  Matrix-Kern kann Fensterzellen nicht lesen. Es bleibt
+  * **Weg 2 (Korrektur-Pass)**: die WMMA rechnet alle Zellen aus den Codes (auch die Overlay-Zellen,
+    falsch aber billig), danach korrigiert ein FP32-Pass je Overlay-Zelle Score und `p·v`
+    (`q·(k_fp16 − k_quant)`); die LSE bleibt eine. Das ist der Weg mit dem kleinsten Eingriff und ohne
+    neues Layout — Kosten: 320 von 2.051 Zellen je Query, also ~15,6 % der Zellen in SIMT statt im
+    Matrix-Kern (Schätzung, **nicht gemessen**);
+  * **Weg 3 (Materialisieren)**: die exakten Zellen in einen zweiten Pool schreiben, den der Prompt-Kern
+    als **eigene** Quelle liest — dann müssen die Zellen aber weiterhin durch die int8-Brücke, also
+    wieder Quantisierung, also **kein** exaktes Fenster. Fällt damit weg.
+* **Was das für den Arm bedeutet:** `q4u32` **mit** Fenster ist im Prompt-Pfad heute `false`
+  (`q4u_wmma_ok` verlangt `k_win == nullptr`) und läuft über den Decode-Kern; das ist der Arm, den A.1
+  mit 260,3 tok/s gemessen hat. B3 heißt: dieser Arm soll auf den Matrix-Pfad, und der Preis dafür ist
+  ein Korrektur-Pass über die Overlay-Zellen.
 * **Gate:** ein Parity-Fall mit Overlay-Zellen gegen den Decode-Pfad — der Decode-Pfad ist die
-  Referenz, weil er das Fenster heute schon liest.
+  Referenz, weil er das Fenster heute schon liest. Der Fall muss in `hip_prompt_attn_wmma.exe` neu
+  gebaut werden (das Fenster ist dort bisher **nirgends** getestet, B6/Befund 6).
 
 ### B4 — Die Reihenfolge und die Kosten
 
