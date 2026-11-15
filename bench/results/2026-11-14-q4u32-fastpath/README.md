@@ -364,6 +364,40 @@ Lane-Cell-Instantiation (`STRATA_ATTN_LANECELL=1`, auf gfx12 per Default an) kan
 vorbestehender Bug, unabhängig von B2, und jetzt behoben ✓ — er fällt nur auf Karten oder
 Konfigurationen auf, die den Lane-Cell-Pfad nicht nehmen.
 
+### A.12 — Der Hänger braucht **keine** Länge (15.11.2026)
+
+Drei Läufe, alle mit `STRATA_KV_Q4_PROMPT=1` und `needle-fastpath-q4u32.json`:
+
+1. **4k-Nadel: hängt auch.** Bei **3.321 von 3.328** Token, 77 s, alle drei Tiefen HTTP 503. Die Länge
+   ist damit **nicht** die Bedingung, und die Reproduktion kostet 77 s statt 391 s.
+2. **4k mit `QA_Q4TRACE=1`: der Bulk läuft, danach nichts mehr.** Die zwölf letzten
+   `[q4u32] launch`-Zeilen der Session sagen alle „cells 1 chunks 1" — das ist die **erste** Query
+   eines Prompt-Chunks (Position 0, eine Zelle), also der Bulk-Prompt (zwölf Aufrufe = die
+   QSA-Schichten). Danach kommt **keine** Zeile. Der Trace druckt **vor** dem Launch: der Host hat den
+   nächsten `launch_wmma` nie erreicht. Dazwischen liegt nur das 6-Token-Verify-Fenster
+   (`strata verify: captured the 6-token window … upload no error, sync no error`, 117,8 ms) und die
+   Stall-Meldung „reading the prompt (verify windows), from token 3321".
+3. **Der isolierte Kern mit derselben Form läuft.** 3.328 Zellen, 6 Queries, mit Gate:
+   `PASS … 0,502 → 0,488 ms per chunk (1,03×)`. Dazu die beiden kleinen Fälle unter dem Gate
+   (64/64: 0,116 → 0,055, 2,10×; 512/512: 4,737 → 1,171, 4,04×), **FAILURES: 0**.
+
+**Werkzeugfehler, der hätte täuschen können:** ohne `STRATA_KV_Q4_PROMPT=1` startet der Harness für
+fmt 3 den **Decode**-Kern („the q4 arm runs the prefill in the decode kernel … opt-in") und druckt
+trotzdem `PASS`. Seit dem Gate ist ein grüner q4-Fall also **kein** Beleg für den Matrix-Kern. Die drei
+Zahlen oben sind **mit** Gate gefahren; die B2-Zahlen (32.768/512/64) stammen von **vor** dem Gate und
+bleiben gültig — ein erneuter Lauf ohne Gate wäre aber ein falsches Grün. (Für fmt 1 setzt der Harness
+`STRATA_HIP_WMMA` selbst; für fmt 3 fehlt das Gegenstück.)
+
+**Was damit ausgeschlossen ist:** die Länge, die Grid-Größe, der Kernel auf synthetischen Daten und der
+Bulk-Prompt selbst. Was bleibt, ist der **Übergang** vom Bulk-Prompt zum Verify-Fenster — die Stelle,
+an der echter Pool, echte Selektions-IDs und Fenster-Pools zum ersten Mal zusammentreffen.
+
+**Die nächsten drei Schritte** (billig nach teuer):
+`STRATA_QSA_SELECT_DUMP=1` (kompiliert, nicht an) schreibt die echten Selektionen des hängenden Laufs —
+damit lässt sich die Form im Harness nachspielen; ein Lauf mit `--prefill 512` zeigt, ob es an *jedem*
+Chunk-Ende hängt oder nur am letzten; der Host-Stack liegt in `strata-stall-*.dmp` (auf dieser Maschine
+ist kein `cdb`, also nicht lesbar).
+
 ---
 
 ## Teil B — Die Engine-Arbeit
@@ -463,16 +497,20 @@ andere". Es sind vier, und die Reihenfolge ist nicht frei wählbar:
 Paritäts-Harness mit q4-Pool 32.768/512/64 grün. Er ist **nicht** durch Lesen gefunden worden — auch
 nicht in dieser Runde (die Prüfung ergab: die Chunk-Schleife ist blockuniform, `n` hängt nur an
 `qi`; die Adressierung des 4-Bit-Pools ist Zeile für Zeile die des Decode-Kerns,
-`base + row*144 + b*18`; die Gruppen- und Skalenzuordnung stimmt für `GPW = 2`). Das ist der Punkt,
-an dem Raten teurer ist als Messen. Zwei Kandidaten bleiben, und **ein** Lauf trennt sie:
+`base + row*144 + b*18`; die Gruppen- und Skalenzuordnung stimmt für `GPW = 2`). **A.12 hat die
+Längen-Hypothese erledigt**: es hängt auch bei 4k (3.321/3.328), der Bulk-Prompt läuft (zwölf Aufrufe),
+danach kein Aufruf mehr, und der isolierte Kern mit derselben Form (3.328 Zellen, 6 Queries) ist
+grün. Der Hänger sitzt damit im **Übergang** zum 6-Token-Verify-Fenster. Drei Schritte, in dieser
+Reihenfolge:
 
-* hängt es **auch bei 4K** mit `STRATA_KV_Q4_PROMPT=1`, liegt es an der **Geometrie** (Zeiger, Stride,
-  Pool, den der echte Motor anders füllt als der Harness — Streaming, Fenster, Seiten);
-* läuft 4K und erst 32K hängt, liegt es an **Länge oder Streaming** (nicht-residente Seiten,
-  wachsende Horizonte, `cap`).
+* `STRATA_QSA_SELECT_DUMP=1`: die echten Selektionen des hängenden Laufs, im Harness nachgespielt;
+* `--prefill 512`: hängt es an *jedem* Chunk-Ende oder nur am letzten?
+* der echte Pool: dumpen und in den Harness geben — der Harness baut seinen Pool selbst, und genau
+  darin liegt die eine Differenz, die noch nicht ausgeschlossen ist.
 
-Danach, falls nötig: den **echten** Pool dumpen und in den Harness geben — der Harness baut seinen
-Pool selbst, und genau darin liegt die eine Differenz, die wir noch nicht ausgeschlossen haben.
+**Gemessen und nicht mehr offen:** dass es an der Länge liegt (`A.12`), und dass ein grüner q4-Fall im
+Harness ohne `STRATA_KV_Q4_PROMPT=1` den Matrix-Kern überhaupt testet (tut er nicht — er testet den
+Decode-Kern und druckt `PASS`).
 
 **2. Das Fenster** ist keine Optimierung, sondern Funktionsumfang (B3, entschieden). Solange es fehlt,
 ist `q4u32` + Fenster — die Konfiguration, die im Paper steht — **kein** Fast-Path-Arm.
