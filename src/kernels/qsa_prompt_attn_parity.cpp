@@ -374,8 +374,12 @@ int main(int argc, char** argv) {
         }
 #if defined(_WIN32)
         _putenv_s("STRATA_HIP_WMMA", "1");
+        // the same for the 4-bit grid: without it the q4 arm (fmt 3) runs the prefill in the DECODE kernel
+        // and still prints PASS - a green line that proves nothing about the matrix-core kernel.
+        _putenv_s("STRATA_KV_Q4_PROMPT", "1");
 #else
         setenv("STRATA_HIP_WMMA", "1", 1);
+        setenv("STRATA_KV_Q4_PROMPT", "1", 1);
 #endif
     }
 #endif

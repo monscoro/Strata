@@ -2015,10 +2015,6 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
-    if constexpr (Q4) {
-    }
-    if constexpr (Q4) {
-    }
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int col = lane & 15, half = lane >> 4;   // fragment column / k half
     const int dim0 = warp * 64;
@@ -2357,7 +2353,10 @@ int hip_wmma_mode_env() {   // -1 unset (the arch default), 0 off, 1 forced, 2 a
     }();
     return mode;
 }
-std::atomic<bool> g_wmma_failed{false};
+// Two flags, not one: `launch_wmma` serves the int8 KV and the 4-bit uniform grid.  A launch error of the
+// one route must not take the other with it - a failed experiment would silently change the default path.
+std::atomic<bool> g_wmma_failed{false};      // the int8 route
+std::atomic<bool> g_q4_wmma_failed{false};   // the 4-bit uniform grid (opt-in)
 // the device's class: 1 gfx11 matrix-core part, 2 gfx12 (RDNA4), 3 anything else
 int hip_wmma_arch(int dev) {
     static int arch[64] = {};
@@ -2453,15 +2452,20 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     if constexpr (Q4) {
-        // QA_Q4TRACE=1: the horizon of the first query, read on the host before the launch.  The
-        // last line before a hang names the launch that hung (a device printf would be lost: its
-        // buffer is only flushed when the kernel ends).
+        // QA_Q4TRACE=1: the SHAPE of this launch, read on the host before it goes out - n_q, cap, the first
+        // and the last query's horizon, and the route (gated or not).  The last line before a hang names the
+        // launch that hung (a device printf would be lost: its buffer is only flushed when the kernel ends).
+        // It used to print only steps[0] ("cells 1"): that is the first query's selection, the same for a bulk
+        // prompt and for a 6-query verify window, so it could not tell the two apart.
         static const bool trace = std::getenv("QA_Q4TRACE") != nullptr;
         if (trace) {
-            std::vector<int32_t> h(kStepCount);
+            std::vector<int32_t> h((size_t) 2 * kStepCount);
             cudaMemcpy(h.data(), steps, h.size() * 4, cudaMemcpyDeviceToHost);
-            std::fprintf(stderr, "[q4u32] launch: cells %d chunks %d\n", (int) h[kStepWidth],
-                         (int) ((h[kStepWidth] + WCH - 1) / WCH));
+            cudaMemcpy(h.data() + kStepCount, steps + (n_q - 1) * kStepCount, kStepCount * 4, cudaMemcpyDeviceToHost);
+            const int c0 = h[kStepWidth], c1 = h[kStepCount + kStepWidth];
+            std::fprintf(stderr, "[q4u32] launch: n_q %lld cap %lld %s, cells %d..%d chunks %d..%d\n",
+                         (long long) n_q, (long long) cap, gate_qf != nullptr ? "gated" : "ungated", c0, c1,
+                         (c0 + WCH - 1) / WCH, (c1 + WCH - 1) / WCH);
         }
     }
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
@@ -2487,7 +2491,8 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_prompt_attn_batch (wmma): %s; the FP32 prompt attention runs from here on\n", cudaGetErrorString(e));
-        g_wmma_failed.store(true);
+        if constexpr (Q4) g_q4_wmma_failed.store(true);
+        else g_wmma_failed.store(true);
         return false;
     }
     return true;
@@ -2581,15 +2586,29 @@ bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
 // source this path does not read yet (B3) - a windowed arm keeps the decode kernel until it does.
 static bool q4u_wmma_ok(const QsaAttnPools& p) {
     return p.k_q4 != nullptr && p.v_q4 != nullptr && q4_uniform_ls(p.q4_mode) && p.k_win == nullptr &&
-           p.v_win == nullptr;
+           p.v_win == nullptr && !g_q4_wmma_failed.load(std::memory_order_relaxed);
+}
+
+// STRATA_KV_Q4_PROMPT=1: the 4-bit uniform grid on the matrix-core prompt path.  Opt-in until the engine
+// hang is explained (the kernel passes the parity harness but the engine stops making progress in the
+// prompt; the default path stays byte-identical).  One switch for both prompt entry points: the ungated
+// kernel and the one with the attention gate fused into its epilogue.
+static bool q4_prompt_on() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_KV_Q4_PROMPT"); return e != nullptr && e[0] == '1'; }();
+    return on;
 }
 
 // The prefill's route is the difference between the prompt fast path and the decode kernel, and the
-// log has to show it: once per process, the path the prompt attention took for this run.
+// log has to show it: once per route per process - NOT once per process.  A run that mixes a bulk prompt
+// with verify windows can take two different routes, and one line for the whole process cannot say which
+// route a given layer took (the question the hang asks).
 static void pa_said(const char* what) {
-    static bool said = false;
-    if (said) return;
-    said = true;
+    static const char* seen[8] = {};
+    static int n = 0;
+    for (int i = 0; i < n; ++i)
+        if (std::strcmp(seen[i], what) == 0) return;
+    if (n >= 8) return;
+    seen[n++] = what;
     std::fprintf(stderr, "strata: prompt attention: %s\n", what);
 }
 
@@ -2602,6 +2621,14 @@ bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, cons
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
         cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, nullptr, n_q, (cudaStream_t) stream, qf, o16, ld16);
+    // The 4-bit uniform grid with the gate fused: the same `Q4` kernel as the ungated route, its epilogue
+    // writes the FP16 gate image.  Without this branch a gated run silently lost the fusion and the log said
+    // the matrix-core path served the grid.
+    if (q4u_wmma_ok(pools) && q4_prompt_on() && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
+        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap)) {
+        pa_said("the matrix-core prompt path serves the 4-bit uniform grid (q4u32) with the gate in the epilogue");
+        return launch_wmma<8, true>(q, pools, ids, steps, cap, s, nullptr, n_q, (cudaStream_t) stream, qf, o16, ld16);
+    }
 #else
     (void) q; (void) pools; (void) ids; (void) steps; (void) cap; (void) s; (void) qf; (void) o16; (void) ld16; (void) n_q; (void) stream;
 #endif
@@ -2651,11 +2678,8 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     if (q4u_wmma_ok(pools)) {
-        // STRATA_KV_Q4_PROMPT=1: the 4-bit uniform grid on the matrix-core prompt path.  Opt-in until
-        // the engine hang is explained (the kernel passes the parity harness - 5.12x the decode kernel -
-        // but the engine stops making progress in the prompt; the default path stays byte-identical).
-        static const bool on = [] { const char* e = std::getenv("STRATA_KV_Q4_PROMPT"); return e != nullptr && e[0] == '1'; }();
-        if (!on) {
+        // The 4-bit uniform grid on the matrix-core prompt path; q4_prompt_on() carries why it is opt-in.
+        if (!q4_prompt_on()) {
             pa_said("the q4 arm runs the prefill in the decode kernel (the matrix-core prompt path for the "
                     "4-bit grid is opt-in: STRATA_KV_Q4_PROMPT=1)");
             return false;
