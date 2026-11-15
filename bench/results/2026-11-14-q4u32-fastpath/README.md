@@ -865,6 +865,69 @@ prüft, ob der Vorsprung aus A.18 in dieser Sitzung überhaupt wieder auftritt.
   Ergebnis B gemessen, ist „der 4-Bit-Pfad selbst ist schneller" **nicht** belegt — es bleibt bei „nicht
   die Cache-Größe" plus offenem Rest.
 
+### A.19 — Das Ergebnis: die Cache-Größe erklärt nichts, und im Motor sind die Arme gleich (15.11.2026)
+
+**Die Vorbedingungen sind alle erfüllt** (die Prüfungen der Vorregistrierung, aus den Logs):
+
+| Lauf | Slots | Route | Chunk | freier VRAM |
+|---|---|---|---|---|
+| `int8-a` | **3950** | Matrix-Pfad (int8) | 6144 | 590 MiB (**Paging-Warnung**) |
+| `int8-b` | **3950** | Matrix-Pfad (int8) | 6144 | 664 MiB (**Paging-Warnung**) |
+| `q4u32-eq-a` | **3950** | 4-Bit-Gitter | 6144 | 1415 MiB |
+| `q4u32-eq-b` | **3950** | 4-Bit-Gitter | 6144 | 1412 MiB |
+| `q4u32-nat-a` | **3510** | 4-Bit-Gitter | 6144 | 2131 MiB |
+| `q4u32-nat-b` | **3506** | 4-Bit-Gitter | 6144 | 2139 MiB |
+
+Keine Rückfall-Zeile, überall 6.144-Token-Chunks, die Slotzahl wie gesetzt (3506 statt 3510 = 0,1 %).
+
+**Die Prompt-Raten** (32K, tok/s; **langsam** = 45–47 s Prompt, **schnell** = 35–37 s):
+
+| Arm | 1. Start | 2. Start | Niveau |
+|---|---|---|---|
+| `int8` @3950 | 659,1 · 667,7 · 672,1 | 656,3 · 663,4 · 652,2 | langsam (6/6) |
+| `q4u32` gleich @3950 | 660,6 · 669,2 · 667,7 | 660,6 · **823,0 · 832,0** | 4 langsam, 2 schnell |
+| `q4u32` natürlich @3510/3506 | **859,8 · 874,5 · 869,6** | 653,5 · 659,1 · 659,2 | 3 schnell, 3 langsam |
+
+**Ergebnis A (das Kriterium der Vorregistrierung) ist erfüllt — im langsamen Niveau.** Dort liegen alle
+**13** Anfragen aller drei Arme zwischen **652,2 und 672,1 tok/s** (Mittel 661,6, Spannweite 3,0 %):
+`int8` 661,8 (n=6), `q4u32` gleich 664,5 (n=4), `q4u32` natürlich 657,3 (n=3). **Die Arme sind nicht
+unterscheidbar** — bei gleichem Cache (0,2 % auseinander) wie bei natürlichem Cache (0,7 %).
+
+**Die Cache-Größe erklärt den Niveauunterschied also nicht:**
+
+* Im langsamen Niveau macht die Cache-Größe **nichts** (3950 gegen 3506 Slots: 666 gegen 657 tok/s, 1,4 %).
+* Im schnellen Niveau ist es **umgekehrt wie erwartet**: der Arm mit dem **größeren** Cache (3950 Slots) ist
+  **4,7 % langsamer** (827,5 gegen 868,0 tok/s) — n=2 gegen n=3, ein Prozess je Arm, also eine Beobachtung
+  mit dünnem Beleg, aber sie spricht **gegen** die Cache-Erklärung.
+* **Der freie VRAM erklärt es auch nicht:** `int8` läuft mit 590 MiB und der Paging-Warnung **genauso schnell
+  wie** `q4u32` mit 1415 MiB ohne Warnung (661,8 gegen 664,5).
+
+**Der Fass, der übrig bleibt: das Niveau selbst.** Es trat in **10 von 21** q4-Anfragen auf (A.18 + A.19) und
+in **0 von 9** int8-Anfragen — und **zweimal innerhalb eines Prozesses** (A.18 `win-2`: Anfrage 1 langsam,
+2 und 3 schnell; A.19 `eq-b`: Anfrage 1 langsam, 2 und 3 schnell). Das Niveau ist also **kein** Arm, aber es
+ist auch **nicht zufällig**: die q4-Arme erreichten es zehnmal, int8 nie. **Ich habe die Ursache nicht
+gemessen** — der Host-Commit war in allen Läufen unkritisch (75,0–76,8 GiB von 150,4 GiB frei), der
+freie VRAM, die Cache-Größe und der Chunk sind ausgeschlossen. Als Kandidaten bleiben: der
+PCIe-/Experten-Nachschub vom Host, die WDDM-Seitenwechsel, der Takt. Keiner ist belegt.
+
+**Was daraus für die Branch folgt — die wichtigste Zeile dieses Laufs:**
+
+1. **Im Motor gibt es keinen Prompt-Vorsprung von `q4u32` gegen `int8`.** Der Vorsprung aus A.18
+   (878,7 gegen 656,8 tok/s) war ein Vergleich **über zwei Niveaus** und damit nicht zulässig. Innerhalb
+   eines Niveaus: **gleichauf**.
+2. **Der Kernel ist trotzdem 37 % langsamer** als der int8-Kern (A.18, Harness, gleiche Selektionen) — er
+   fällt im Motor nur nicht auf, weil die Attention dort ~1 % des Prompt-Chunks ausmacht (A.18,
+   Hochrechnung). Die Optimierung (Teil C) ist damit **kein Prompt-Gewinn**, sondern eine Rettung des
+   Anteils, der bei langen Kontexten wächst.
+3. **Die Kernaussage des Zweigs verschiebt sich damit:** `q4u32` ist der int8-Ersatz **bei gleicher
+   Prompt-Zeit und kleinerem KV-Speicher** — 144 Byte je Zelle und Kopf (`block_q4_0`: 8 Blöcke × 18 Byte)
+   gegen 264 Byte (256 int8-Werte + 4 fp16-Skalen), also **45 % weniger** — nicht durch Geschwindigkeit.
+   Das ist eine echte, belegte Eigenschaft und eine andere als die, die A.18 nahlegte.
+
+**Offen bleibt:** ein `int8`-Lauf im schnellen Niveau (0 von 9 Anfragen) — ohne ihn bleibt offen, ob `int8`
+dort langsamer wäre als `q4u32` (868,0 tok/s). Das ist die einzige Zahl, die die alte Behauptung noch
+stützen oder widerlegen könnte; sie ist **nicht** gemessen.
+
 
 ---
 
@@ -1120,6 +1183,94 @@ Verdacht verschoben (A.13).
 ---
 
 ## Teil C — Die Optimierung (beginnt erst nach A2)
+
+### C.0 — Voranalyse: wo der 4-Bit-Fast-Path verliert (15.11.2026; statische Analyse, nichts gebaut)
+
+**Die gemessene Ausgangslage** (A.18, Harness, gleiche Selektionen und gleiche Pools, 32K/1.024 Queries,
+je ein Lauf): **int8 8,26 ms/Chunk, `q4u32` 11,33 ms/Chunk** — der 4-Bit-Kern ist **37 % langsamer**. Im
+Motor fällt das nicht auf, weil die Attention dort rund **1 %** eines Prompt-Chunks ausmacht (A.18,
+Hochrechnung). Diese Voranalyse fragt deshalb: **wo verliert der 4-Bit-Pfad Zeit, und welcher Griff
+nimmt sie zurück?** Alles Weitere ist aus dem Code gelesen und als statische Analyse markiert.
+
+**Was der 4-Bit-Pfad zusätzlich tut** (Zeilen aus `src/kernels/cuda/qsa_prompt_attn.cu`):
+
+| # | Was | Wo | Warum es teuer ist |
+|---|---|---|---|
+| a | **Byte-Laden statt Vektor-Laden** | `q4u_lane_codes` 1999–2007 (`codes[b0+j]`), `q4u_block_codes` 1990–1997 | je Zelle und Lane: K = 2 Kacheln × 4 k-Schritte × 8 **skalare 1-Byte-Ladungen** = 64, V = 2 Blöcke × 16 = 32 → **~96 skalare Ladungen**. Der int8-Pfad: **8 `uint2`- und 4 `uint4`-Ladungen** (2152–2153, 2195–2202), also 12 Vektor-Ladungen. Das ist der größte Einzelposten, und er ist **Instruktionszahl, nicht Bandbreite** |
+| b | **Zweimalige Expansion** | Nibble → int8 im Fetch (mit `pack_i8x4`), int8 → fp16 im WMMA-Operand (`i8_to_h` 1952–1957) | der int8-Pfad hat nur die zweite Hälfte; der 4-Bit-Pfad macht beides |
+| c | **Doppelte Skalengruppen** | `NGRP = 8` statt 4 (Kommentar 2013–2017: der `block_q4_0`-Schritt sitzt je 32 Werten) | `S.part` (q·k-Teilsummen je Gruppe) **8 × 12 × 33 Floats = 12.672 B** statt 6.336 B; `S.vs` 1.024 statt 512 B; die Gruppensumme in der Softmax **8 statt 4** LDS-Lesen je Zelle (2270) |
+| d | **Die V-Zeile wird auf 64 B gestreckt** | `S.v[4][32][72]` = 9.216 B | obwohl die Quelle nur 36 B hat (2 Blöcke × 18 B): die expandierten int8-Codes belegen dieselbe Fläche wie im int8-Pfad — **44 % der gelesenen Bytes werden wieder zu 100 % LDS** |
+| e | **Der Fensterapparat fährt auch ohne Fenster mit** | `tmpw[4]` = 32 VGPRs (2316–2318), der Laufzeit-Zweig `cd.wr[nt] >= 0 ? h8_win(...) : i8_to_h(...)` im Operand-Bau (2244–2246), `__any` (2233) | der Arm `--kv q4u32` **ohne** Fenster nutzt davon nichts — er zahlt aber mit |
+
+**Die LDS-Bilanz** (aus den Arraygrößen berechnet; `TR = 2`, `R = 12`, `WCH = 32`, `VS = 72`):
+
+| Block | int8 | `q4u32` heute | mit (c)+(d) |
+|---|---:|---:|---:|
+| `part` | 6.336 | 12.672 | 6.336 |
+| `p` | 1.584 | 1.584 | 1.584 |
+| `vs` | 512 | 1.024 | 1.024 |
+| `v` | 9.216 | 9.216 | 5.120 |
+| `valid` | 128 | 128 | 128 |
+| **Summe** | **17.776 B** | **24.624 B** | **14.192 B** |
+
+Der 4-Bit-Block braucht **39 % mehr LDS** als der int8-Block, und LDS ist laut dem Code selbst die
+Occupancy-Grenze (Kommentar 1921–1923: *„LDS, not VGPRs, limits the occupancy here: 5 waves a SIMD"*; der
+B3-Vermerk nennt 5 → 3 Blöcke für 24 KiB).
+
+**Die Hebel, mit Erwartung, Preis und Messweg:**
+
+| Hebel | Was | Erwartung | Preis | Messweg |
+|---|---|---|---|---|
+| **H1** | **Vektor-Laden**: die 4/8 Byte eines Nibble-Paares mit *einer* `uint32`-Ladung holen, die Nibbles im Register auseinandernehmen | ~96 skalare Ladungen → ~12 Vektor-Ladungen je Zelle und Lane; der größte Einzelposten | **keine Zahlenänderung** (dieselben Codes), kein Layoutwechsel | Harness |
+| **H2** | **Gepacktes Staging**: die Nibbles gepackt in den shared memory (36 statt 64 B je Zelle) und **einmal** vor dem WMMA entpacken | −4.096 B LDS **und** die halbe Expansion (b) | der Zeilen-Stride (72/80 B, „banks spread") muss neu abgestimmt werden — Bankkonflikte sind messbar, nicht lesbar | Harness |
+| **H3** | **Gruppen vor dem Schreiben summieren**: die zwei Gruppen einer Welle im Register summieren, dann `S.part` schreiben | `part` **8 → 4** Slots = −6.336 B LDS | die fp32-Additionsreihenfolge ändert sich → die Prüfsumme ändert sich, die Genauigkeit nicht messbar | Harness + Qualitäts-Gate |
+| **H4** | **Skala in den Operand falten**: `K = (code−8)·step` **vor** dem WMMA in fp16 | `part` fällt 12.672 → 1.584 B (−11 KiB), die 8-fache Gruppensumme entfällt | **die K-Werte werden fp16-gerundet** (heute sind die Codes exakt, die Skala wirkt in fp32): der Fehler gegen FP64 stiege von ~1e-6 auf ~1e-4 relativ. Das ist eine **Qualitätsentscheidung**, und sie betrifft gleich gebaut auch int8 | **nein** (nicht in diesem Zweig) |
+| **H5** | **Fenster zellproportional**: die Fensterzellen eines Chunks in eine dichte 16er-Kachel sammeln und nur diese rechnen | der zweite p.v-Satz kostet heute **6,2–13,4 %** der Kernelzeit bei 2–6,6 % exakten Zellen, weil er **je Chunk** läuft (Sinks in jeder Selektion); zellproportional wären es ~2–7 % | ein Gather in die Kachel (Aufwand im Register), keine Zahlenänderung | Harness (`window%d timing:`) |
+| **H6** | **`WIN` als Template-Parameter**: die Q4-Instantiierung in `WIN = true/false` spalten, damit der Arm ohne Fenster weder `tmpw` noch den Laufzeit-Zweig trägt | unbekannt — aber die A.17-Lektion (ein **unbenutztes** 32-VGPR-Array kostete den int8-Kern den Faktor **2,16**) sagt, dass dieser Kern auf Registerdruck sehr empfindlich reagiert | keine Zahlenänderung; zwei Instantiierungen mehr (Compile-Zeit) | Harness + **M1** |
+| **H7** | **`SPLIT` aus** (`STRATA_PA_FAST=1`): halbiert die WMMA-Zahl | der 4-Bit-Pfad rechnet ohnehin rund; bestehendes, qualitätsgegatetes Experiment | Genauigkeit (ein FP16-Bild statt hi/lo) | Harness + Qualitäts-Gate |
+
+**Tote Enden (mit Begründung, nicht als Vorschlag):**
+
+* **Ein Korrektur-Pass** `q·(k_exakt − k_quant)`: nicht nötig — der Fenster-Pfad liest die exakten Zellen
+  direkt (A.17), es gibt nichts zu korrigieren.
+* **V in fp16 stagen** statt der Codes: 128 B je Zeile statt 64 B, +7 KiB LDS je Block — genau der Grund,
+  warum das Fenster einen **zweiten** WMMA-Satz braucht (B3) und nicht „einfach ein anderes Layout".
+* **Den Decode-Kern für das Fenster behalten**: das kostet den ganzen Fast-Path (A.1: 256,6 gegen
+  634,1 tok/s).
+* **Die Query quantisieren**, um einen int8-WMMA zu nutzen: der Query kommt als fp16/bf16; eine int8-Query
+  wäre ein eigener Codec mit eigener Qualitätsfrage — nicht in diesem Zweig. Auf gfx12 rechnet der int8-Pfad
+  ohnehin über fp16 (`i8_to_h`); **ein int8-WMMA brächte dem 4-Bit-Pfad also nichts**, er entpackt nur
+  weniger.
+
+**Der Messplan — alles im Harness, gleiche Selektionen, gleiche Pools:**
+
+* **M1 (zuerst, ohne GPU):** die Ressourcen der Instantiierungen. Der Compiler meldet VGPR/LDS je Kernel
+  (`-Rpass-analysis=kernel-resource-usage` beim Übersetzen der `.cu`). Die Frage: wie viele VGPRs hat die
+  Q4-Instantiierung, und wie viele Blöcke ergeben sich aus dem LDS? **Ohne diese Zahl ist jede Aussage über
+  H6 eine Vermutung** — und die Zahlen oben sind aus den Arraygrößen *gerechnet*, nicht gemessen.
+* **M2:** der Referenz-A/B: int8 8,26 gegen `q4u32` 11,33 ms/Chunk (32K/1.024 Queries). Die Streuung zwischen
+  Läufen liegt bei ~2–3 % (10,825 / 11,162 / 11,330 / 11,33 gemessen) — **eine Änderung zählt erst ab 5 %**,
+  und jeder Lauf braucht **drei** Wiederholungen.
+* **M3:** je Hebel ein Build + ein Harness-Lauf (`hip_prompt_attn_wmma.exe 32768 1024 3`): `FAILURES: 0`, die
+  Prüfsummen (bitgleich, wo das behauptet wird) und die Zeit. **Der int8-Arm läuft in jedem Lauf mit** — er
+  ist der Vergleich, und seine Bits dürfen sich nicht ändern.
+* **M4:** H5 zusätzlich über den `window%d timing:`-Zweig (der A/B aus A.18).
+* **M5:** was der Harness **nicht** abdeckt: der **4-Bit-Writer** und der **Decode-Kern**. Im Motor ist der
+  4-Bit-Decode langsamer als int8 (A.18: 28–31 gegen 33–38 tok/s, mit Vorbehalt der
+  Spekulationsannahme) — dort steht dieselbe Nibble-Expansion. Wenn `q4u32` den int8-Decode *ersetzen*
+  soll, gehört der Decode-Pfad in dieselbe Analyse.
+
+**Die Reihenfolge nach Erwartung:** M1 → **H1** (kein Zahlenrisiko) → **H2** (Banken abstimmen) → **H3**
+(Qualitäts-Gate) → **H6** (nach M1 entscheiden) → **H5** → **H4**/**H7** nur mit Qualitätsentscheidung.
+
+**Was die Optimierung *nicht* lösen kann — der ehrliche Schluss.** Im Motor sind die Arme **gleichauf**
+(A.19), und die Attention ist ~1 % des Prompt-Chunks; selbst eine perfekte Attention-Kernel-Optimierung
+bewegt die Prompt-Zeit um Bruchteile eines Prozent. **Der Wert der Optimierung ist der Attention-Anteil bei
+langen Kontexten**: der Anteil wächst linear mit der Auswahllänge (quadratisch in der Attention gegen
+linear im MLP), also von ~1 % bei 32K auf ~4 % bei 128K — und der 37-%-Rückstand des 4-Bit-Kerns wäre
+dann ~4 % des Prompts. Das ist die Rechnung, die vor dem Bau eines Hebels da sein muss.
+
+### C.1 — Die ältere Kandidatenliste (14.11., vor B2; durch C.0 überholt)
 
 Erst messen, dann optimieren. Die Kandidaten, alle aus dem Code gelesen (statische Analyse), mit der
 jeweiligen Erwartung:
