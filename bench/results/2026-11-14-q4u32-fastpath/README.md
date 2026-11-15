@@ -398,6 +398,45 @@ damit lässt sich die Form im Harness nachspielen; ein Lauf mit `--prefill 512` 
 Chunk-Ende hängt oder nur am letzten; der Host-Stack liegt in `strata-stall-*.dmp` (auf dieser Maschine
 ist kein `cdb`, also nicht lesbar).
 
+### A.13 — Der Trace sagt jetzt die Form, und der Verdacht verschiebt sich (15.11.2026)
+
+B6 hat gezeigt, dass der Trace `steps[0]` las (die Selektion der *ersten* Query) und damit „cells 1
+chunks 1" für jeden Aufruf druckte — Bulk und Fenster gleich. Der Trace nennt jetzt `n_q`, `cap`, die
+Route und die Zellen der ersten **und** letzten Query. Derselbe 4K-Lauf (Gate an, `QA_Q4TRACE=1`,
+`STRATA_KV_Q4_PROMPT=1`):
+
+```
+[q4u32] launch: n_q 3321 cap 2051 ungated, cells 1..2051 chunks 1..65     (×12, eine je QSA-Schicht)
+strata verify: captured the 6-token window (upload no error, sync no error) in 118.4 ms
+strata serve: no progress for 60 s during a request (reading the prompt (verify windows), from token 3321)
+```
+
+Zwei Dinge stehen damit fest:
+
+1. **Der Bulk-Prompt ist der Matrix-Pfad, vollständig** — 3.321 Queries, `cap` 2.051, 12 Aufrufe (eine je
+   QSA-Schicht), keine Fehlermeldung. Die 12 Zeilen aus A.12 waren also wirklich der Bulk.
+2. **Das Fenster ruft den 4-Bit-Kern überhaupt nicht.** Nach dem Capture kommt **keine** Trace-Zeile —
+   und das ist jetzt eindeutig, weil jede q4-Instantiierung (auch die gated, B6) eine druckt. Der Grund
+   steht im Code (statische Analyse): das Verify-Fenster geht über `qsa_decode_attn_batch` / `_rows` /
+   `_slots` / `_split` (`verify.cpp` 2227–2330), nie über den Prompt-Pfad. **Die Aussage aus A.12, der
+   Host stehe „vor dem nächsten `launch_wmma`", ist damit widerlegt** — es gibt keinen solchen Aufruf.
+   Der Hänger liegt im **Decode-Kern des Fensters**, nachdem der Bulk über den Matrix-Pfad lief.
+
+Damit ist die entscheidende Kontrolle die, die wir schon haben: `q4u32` mit `STRATA_HIP_WMMA=0` (Bulk
+**und** Fenster über den Decode-Kern) läuft 3/3. Der Unterschied ist also nicht der Decode-Kern und
+nicht das Fenster allein, sondern **der Matrix-Pfad davor**. Zwei Möglichkeiten bleiben, beide billig:
+
+* der 4-Bit-Kern **schreibt** irgendwohin, wo das Fenster später liest (Out-of-Bounds an `cap`/`ids`);
+* oder der letzte Bulk-Launch **endet nie**, und das „sync no error" des Captures gilt einer anderen
+  Wartestelle.
+
+Der Test, der das trennt, ist `HIP_LAUNCH_BLOCKING=1`: dann ist jeder Launch synchron, und die letzte
+Zeile vor dem Stillstand ist der Launch, der nicht zurückkommt.
+
+**Nebenbefund:** `cap` ist im Motor **2.051**, im Harness war es die volle Kontextlänge (3.328). Der
+Harness prüft also nie den Fall „die Selektion stößt an ihr Cap" (`cells = cap`, letzter Chunk mit 3 von
+32 lebenden Zellen). Das ist die nächste Abdeckungslücke, nach dem gated-Zweig (B6).
+
 ---
 
 ## Teil B — Die Engine-Arbeit
@@ -535,7 +574,8 @@ aus dem llama.cpp PR #31802 überhaupt 17–79 % holt).
    nicht die Bedingung, der Übergang zum Verify-Fenster ist es.
 2. Den Trace so erweitern, dass er die **Form des Aufrufs** nennt (`n_q`, Route) statt der Selektion
    der ersten Query — sonst ist „kein Trace nach dem Bulk" nicht von „der Tail nimmt einen anderen
-   Zweig" zu unterscheiden (B6, Befund 4).
+   Zweig" zu unterscheiden (B6, Befund 4). **Erledigt, und das Ergebnis verschiebt den Verdacht**
+   (A.13): der Tail nimmt gar keinen q4-Kern, das Fenster läuft im Decode-Kern.
 3. Hänger beheben → Pfad ist Default-fähig → **A2** (`int8`, `q4_0`, `q4u32`) neu fahren.
 4. B3 (Fenster) auf dem dann laufenden Kern.
 5. Teil C — und **nur** wenn A2 zeigt, dass die Rate noch die Lücke ist, int8-WMMA als eigenes
@@ -605,6 +645,15 @@ Decode-Kerns (`base + row*144 + b*18`), und `q4u_block_codes`/`q4u_lane_codes` l
 Byte eines Blocks hinaus; die Gruppen- und Skalenzuordnung stimmt für `GPW = 2`. **Kein** Befund in
 der Arithmetik — der Hänger ist damit weiter offen, aber die Liste der Verdächtigen ist kürzer und die
 Werkzeuge, die ihn finden sollen, sind jetzt selbst geprüft.
+
+**Was von diesem Review schon gebaut ist** (Befunde 1, 2, 5 und die Werkzeuge 3 und 4): `g_wmma_failed`
+und `g_q4_wmma_failed` sind getrennt, `qsa_prompt_attn_batch_gated` hat seinen q4-Zweig (mit demselben
+Schalter, über `q4_prompt_on()`), die zwei leeren Blöcke sind weg, `pa_said` spricht einmal je *Route*,
+und der Trace nennt `n_q`/`cap`/Route/Zellen der ersten und letzten Query. Der Harness setzt für fmt 3
+jetzt `STRATA_KV_Q4_PROMPT=1` selbst. Gebaut (`strata`, `hip_prompt_attn_wmma`), Harness danach:
+`FAILURES: 0`, **Prüfsummen unverändert** (`c1dc89ec2629c0b8`, `82ef1dc3fa5dd4e7`, `6c01e0a92922cca5`)
+— die int8- und die q4-Ausgabe sind bitgleich zu vorher. B6, Befund 4, hat im selben Zug den
+Verdacht verschoben (A.13).
 
 ---
 
