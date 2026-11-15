@@ -608,6 +608,64 @@ abgestürzt (exit `0xC0000005`). Und `pl.win_b` war auf `n_q` gesetzt, während 
 geklemmt wurde — `qsa_win_slot` rechnet den Ring aber aus `win_s + win_b`, also las es hinter dem
 Tag-Array. Beides behoben (`ph.win_tag = wtag.data()`, `win_s + win_b == wring` durch Konstruktion).
 
+### A.17 — Der Fenster-Pass steht, das Gate ist grün (15.11.2026)
+
+**Der Pass, wie er gebaut ist** (`src/kernels/cuda/qsa_prompt_attn.cu`, nur die 4-Bit-Instantiierung
+`Q4 = true`):
+
+| Baustein | Wo | Was |
+|---|---|---|
+| `win_row(p, cell, n, nkv, kvh)` | 1966–1976 | `qsa_win_slot` (die Regel des Decode-Kerns) × `nkv + kvh`; `-1` ohne Fenster |
+| `h8_win(base)` | 1959–1965 | `PA_KL` Halves aus dem Seitenpool als B-Fragment (16 B auf gfx12, 32 B auf gfx11) |
+| `win_of(ci)` | 2099–2108 | die Fensterzeile der Zelle **dieser Lane** im Chunk `ci`, unabhängig vom Page-Table |
+| `Chunk::wrow` / `wr[2]` | 2103–2110 | die Zeile der Zelle bzw. der Zelle der beiden 16er-Kacheln (per `__shfl`) |
+| V-Staging `row >= 0 && wrow < 0` | 2132, 2151 | eine Fensterzelle legt **nichts** quantisiert ab (V-Codes 0, `vs` 0) |
+| `ksc = 1.0f` bei `wr[nt] >= 0` | 2161–2165 | die exakten Halves sind K selbst, es gibt keinen Blockschritt |
+| K-Operand | 2238–2246 | `h8_win(...)` statt `i8_to_h(...)`, sobald die Zelle im Fenster liegt |
+| `S.valid = row >= 0 \|\| wrow >= 0` | 2226 | die Maske des Decode-Kerns (`srow < 0 && swin < 0`) |
+| zweiter V-Satz `tmpw[4]` | 2308–2356 | `A = p` (ohne `vdown`), `B = V_exakt`, warp-uniform übersprungen ohne Fensterzelle |
+| Freigabe | 2659–2662, 2694, 2751 | `q4u_wmma_ok` verlangt keinen leeren Pool mehr; die **int8**-Routen fordern ihn weiter |
+
+**Das Gate** (`hip_prompt_attn_wmma.exe 32768 1024 3`, gfx1200), vorher rot (A.16), jetzt:
+
+```
+window1: 139264 of 2100224 cells exact (6.6 %; 8192 sinks, 6.2 % recent), 1960960 read quantized
+PASS q4u32+win ctx 32768, 1024: vs FP64 old 4.72e-06 new 5.66e-06 (scale 7.42); new vs old 1.29e-05 (1.6e-06 of scale)
+window2: 10304 of 503735 cells exact (2.0 %; 2048 sinks, 1.6 % recent), 493431 read quantized
+PASS q4u32+win ctx 2100, 256:    vs FP64 old 3.6e-06 new 8.25e-06 (scale 7.62); new vs old 1.37e-05 (1.7e-06 of scale)
+window3: 10304 of 351360 cells exact (2.9 %; 2048 sinks, 2.3 % recent), 341056 read quantized
+PASS q4u32+win ctx 1500, 256:    vs FP64 old 7.15e-06 new 7.46e-06 (scale 7.87); new vs old 1.72e-05 (2.2e-06 of scale)
+FAILURES: 0
+```
+
+* **Die Fensterzellen werden wirklich gelesen.** Der Harness legt in den Seitenpool Werte, die mit den
+  Codes nichts zu tun haben. Ein Kern, der das Fenster ignoriert, müsste gegen FP64 um Größenordnungen
+  danebenliegen; er liegt bei **5,7e-06 … 8,3e-06** auf einer Skala von ~7,5 — so gut wie der
+  Decode-Kern selbst (4,7e-06 … 7,2e-06). Das ist der Beweis, den ein Abbruch-Gate nicht liefern konnte.
+* **Kein Rückfall:** die Nicht-Fenster-Fälle sind unverändert grün und **bitgleich** zu vorher
+  (`470428b775efed56` int8, `0f694f06948998d5` q4u32, `82ef1dc3fa5dd4e7`/`6c01e0a92922cca5` kurz).
+
+**Ein gemessener Fehler auf dem Weg, und er war nicht klein.** Der zweite V-Satz stand zuerst
+**unbewacht** in der int8-Instantiierung: ein `tmpw[4]` = 32 VGPR, das nur `if (anywin)` schreibt, mit
+`anywin` als Laufzeitwert. Damit fiel der int8-Prompt-Kern von **8,07 auf 17,4 ms je Chunk** (32K,
+1.024 Queries) — Faktor 2,16, und die Ausgabe blieb bitgleich. Mit `if constexpr (Q4)` um die ganze
+Fenster-Mechanik (und `Q4 ? tmpw : 0` in der Akkumulation) ist er wieder bei **8,26 ms**. Das ist die
+Lehre: ein 32-Register-Akkumulator, der nie benutzt wird, ist nicht gratis — die Occupancy entscheidet
+hier über den Faktor 2, nicht die Rechenarbeit.
+
+**Was das Gate *nicht* sagt:**
+
+* **Die Kosten des zweiten Satzes sind nicht gemessen.** Im selben Lauf: `q4u32` 11,33 ms/Chunk,
+  `q4u32+win` 12,34 ms/Chunk (32K, 1.024 Queries) — **aber das sind zwei verschiedene Selektionen**
+  (der Fensterfall hat Sinks und einen anderen Horizont), also kein kontrollierter A/B. Die Zahl, die
+  zählt, kommt aus der Engine (A.18).
+* **gfx11 ist ungetestet** (`PA_KL = 16`, `PA_KOFF(half) = 0`, `PA_ROW = 2i + half`): `h8_win` spiegelt
+  die Adressierung des int8-Pfads, aber auf einer gfx12-Karte ist das statische Analyse.
+* **Die Engine ist noch nicht gelaufen** — der Harness beweist den Kern, nicht den Pfad.
+* **CUDA bleibt zurück** (`qsa_prompt_attn.cu:2793`, `if (pools.k_win != nullptr …) return false;`): die
+  Tensor-Core-Route (mode 4) liest kein Fenster, ein Overlay-Arm nimmt dort weiter den Decode-Kern. Auf
+  dieser Maschine nicht baubar — als offener Punkt notiert, nicht als erledigt.
+
 
 ---
 
@@ -657,27 +715,12 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
 * **Die Entscheidung (2026-11-14):** das Fenster **muss** auf dem Fast-Path laufen. Der Produktarm
   (`q4u32` + Fenster, S 256/R 64) ist die Konfiguration, die im Paper steht; ein Produktpfad, der den
   Fast-Path verliert, wäre die halbe Sache. B3 ist damit **im Umfang**, nicht mehr offen.
-* **Der Zustand:** der Prompt-Kernel kennt keinen Overlay (kein `k_win`/`v_win`); nur der Decode-Kernel
-  liest ihn (`WinRows<KV_MODE>`, `WIN = KV_MODE >= 4`, `qsa_decode_attn.cu:213`).
-* **Die Schwierigkeit:** der shared memory des Prompt-Kernels ist typisiert — `KElem`/`VElem` sind
-  entweder `int8_t` oder `__half`, je **Zelle** (`qsa_prompt_attn.cu:96-109`). Ein Overlay-Arm braucht
-  aber *beides*: die Overlay-Zellen exakt (fp16), die übrigen als 4-Bit-Codes (int8). Das ist kein
-  Template-Parameter, das ist ein neues Layout.
-* **Die Wege, und welcher welcher ist:**
-  1. **Gemischter shared memory**: zwei Puffer je K und V (einer int8, einer fp16), die Zellenverteilung
-     im smem. Der WMMA liest die int8-Zellen; die fp16-Zellen brauchen einen eigenen Weg (FMA über
-     256 Dims je Overlay-Zelle). Bei 320 Overlay-Zellen (S 256 + R 64) gegen 131.060 Zellen ist das
-     ein Bruchteil der Arbeit — aber es ist Arbeit **im** WMMA-Chunk.
-  2. **Overlay-Zellen aus dem WMMA-Chunk herausnehmen**: die fp16-Zellen in einem eigenen, kleinen
-     FP32-Pass rechnen (Score und p.v) und die Ergebnisse in dieselben Puffer schreiben. Das fasst die
-     bestehende Struktur am wenigsten an, ist aber ein zweiter Pass über dieselben Zellen.
-  3. **Materialisieren**: die exakten Zellen vorab in einen eigenen Pool schreiben, den der
-     Prompt-Kern als zweite Quelle liest. Ein Pool, zwei Zellstrukturen — der Kernel bekommt eine
-     Zellentscheidung, aber keinen gemischten smem.
-* **Die Wahl des Weges fällt mit B2**, weil B2 die Zellstruktur des Prompt-Pfads für 4 Bit überhaupt erst
-  erweitert; B3 baut darauf auf.
-* **Die Wahl des Weges fällt mit B2**, weil B2 die Zellstruktur des Prompt-Pfads für 4 Bit überhaupt erst
-  erweitert; B3 baut darauf auf.
+* **Der Zustand vor B3:** der Prompt-Kernel kannte keinen Overlay (kein `k_win`/`v_win`); nur der
+  Decode-Kernel liest ihn (`WinRows<KV_MODE>`, `WIN = KV_MODE >= 4`, `qsa_decode_attn.cu:213`).
+* **Die Schwierigkeit, richtig gestellt:** der shared memory des Prompt-Kernels ist typisiert — `KElem`/
+  `VElem` sind entweder `int8_t` oder `__half` (`qsa_prompt_attn.cu:96-109`). Der WMMA-Kern von v2 rechnet
+  aber **fp16 × fp16** (`wmma_f16`), die int8-Codes sind nur Zulieferung. Damit ist die Frage nicht „int8
+  oder fp16", sondern **„woher kommt der Operand je Zelle"** — und das ist für K und V verschieden.
 * **Der Kern rechnet fp16, nicht int8 — und das entscheidet den Weg (statische Analyse, 15.11.2026,
   korrigiert):** `wmma_f16` ist
   `__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c)` mit `wh8 = _Float16[8]`
@@ -738,7 +781,7 @@ andere". Es sind vier, und die Reihenfolge ist nicht frei wählbar:
 | # | Lücke | Zustand | Blockiert | Wodurch entschieden |
 |---|---|---|---|---|
 | 1 | **Der Hänger** mit `STRATA_KV_Q4_PROMPT=1` | **erledigt** (`A.14`/`A.15`): Doorbell-Deadlock im Fenster-Launch, Helfer-Thread ist Default | nichts mehr | A.14 (Sonde), A.15 (Fix + 4K/32K 3/3) |
-| 2 | **Das Fenster** auf dem Fast-Path (B3) | entschieden, ungebaut | den Produktarm | Parität gegen den Decode-Kern |
+| 2 | **Das Fenster** auf dem Fast-Path (B3) | **gebaut und grün** (A.17): K exakt als fp16-Operand, V als zweiter WMMA-Satz | nichts mehr (Kosten misst A.18) | A.16 (rot), A.17 (grün) |
 | 3 | **Die Rate** des 4-Bit-Kerns | **gemessen** (A.15): 642,8 gegen int8 649,0 tok/s (99,1 %) | nichts (ist die Messung) | A2 |
 | 4 | **Der Rest von Teil C** | offen | Feinschliff | erst nach 2 |
 

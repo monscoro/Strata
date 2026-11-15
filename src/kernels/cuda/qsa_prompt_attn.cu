@@ -1956,6 +1956,25 @@ __device__ __forceinline__ wh8 i8_to_h(const uint32_t* x) {   // PA_KL codes, ex
     return h;
 }
 
+// B3 (the window on the 4-bit grid): the exact fp16 side pool's PA_KL values of a row, as the WMMA's B fragment.
+// The row is `ws * n_kv_heads + kvh` (the decode kernel's load8_win indexing); `d0` is 8-half aligned by every
+// caller, so these are aligned 2-byte reads of 16 (gfx12) or 32 (gfx11) bytes.
+__device__ __forceinline__ wh8 h8_win(const uint16_t* base) {
+    wh8 h;
+#pragma unroll
+    for (int i = 0; i < PA_KL; ++i) h[i] = (_Float16) __ushort_as_half(base[i]);
+    return h;
+}
+
+// The side-pool row of one cell, or -1 when the cell reads the quantized pool (qsa_win_slot's rule: sinks stay
+// cell-addressed, recent cells are a tagged ring, `n` = step[kStepNKv]).  -1 whenever the window is off, so the
+// unprefixed 4-bit arm folds every window branch away.
+__device__ __forceinline__ long long win_row(const QsaAttnPools& p, long long cell, long long n, int n_kv_heads, int kvh) {
+    if (!qsa_win_on(p)) return -1;
+    const long long ws = qsa_win_slot(p, cell, n);
+    return ws >= 0 ? ws * (long long) n_kv_heads + kvh : -1LL;
+}
+
 // SPLIT = true (default): q and p carried as FP16 hi + lo pairs (two WMMAs each: FP32-level). S23 (opt-in
 // STRATA_PA_FAST=1): SPLIT = false, one FP16 image each - half the matrix work, rounding-level (FP16 attention as the
 // usual flash-attention kernels), quality-gated
@@ -2015,6 +2034,11 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
+    // B3: the window (the exact fp16 side pool, `--kv q4*` + STRATA_KV_WINDOW).  A cell the window holds is read from
+    // it instead of the 4-bit pool: K as its exact halves in the B fragment (block scale 1), V in a second WMMA pass
+    // over just those cells (a staged byte row cannot hold 64 halves).  Only the 4-bit instantiation carries a pool.
+    const bool WIN = Q4 && qsa_win_on(p);
+    const long long nwin = WIN ? (long long) __ldg(steps + (size_t) qi * kStepCount + kStepNKv) : 0LL;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int col = lane & 15, half = lane >> 4;   // fragment column / k half
     const int dim0 = warp * 64;
@@ -2072,17 +2096,31 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
         }
         return r;
     };
+    // B3: chunk ci's cell for this lane as a window row of the exact side pool, or -1.  Independent of the page table:
+    // the side pool is always resident, so a windowed cell reads exact even when its quantized block is not (the
+    // decode kernel's rule).  Always -1 without a pool, so the scanning `if constexpr` below folds the branch away.
+    auto win_of = [&](int ci) -> long long {
+        if constexpr (!Q4) return -1;
+        if (!WIN) return -1;
+        const int c0 = ci * WCH;
+        if (c0 + lane >= n) return -1;
+        return win_row(p, (long long) __ldg(ids + c0 + lane), nwin, n_kv_heads, kvh);
+    };
     // a chunk's global reads: this wave's V slice (64 bytes of each row) and V scale, and the K fragments (8 or 16
-    // consecutive codes per lane) and K scales of its two 16-cell tiles
+    // consecutive codes per lane) and K scales of its two 16-cell tiles.  B3: `wrow` is this lane's cell window row
+    // (-1 when the cell reads quantized) and `wr[nt]` the window row of tile `nt`'s cell - the K operand comes from
+    // the side pool then, with scale 1.
     struct Chunk {
-        long long row;
+        long long row, wrow;
+        int wr[2];
         uint4 v[4];
         float vsc[GPW];
         float ksc[2][GPW];
         uint32_t kx[2][4][PA_KL / 4];
     };
-    auto fetch = [&](long long row, Chunk& d) {
+    auto fetch = [&](long long row, long long wrow, Chunk& d) {
         d.row = row;
+        d.wrow = wrow;
         d.v[0] = d.v[1] = d.v[2] = d.v[3] = make_uint4(0, 0, 0, 0);
 #pragma unroll
         for (int g = 0; g < GPW; ++g) d.vsc[g] = 0.0f;
@@ -2090,9 +2128,10 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
             // the 4-bit blocks: 18 bytes per 32 values (an fp16 step, then the 16 nibble bytes).  The
             // wave's 64 dims are GPW blocks; the codes are expanded here to the same exact int8 codes the
             // int8 path carries, so everything downstream (the WMMA, the scale, the epilogue) is unchanged.
+            // A window cell stages nothing here: its V comes from the exact side pool in the second pass.
             constexpr int BLK = (int) sizeof(block_q4_0);
             constexpr int BPH = (HD / QK4_0) * BLK;      // the bytes per head and cell
-            if (row >= 0) {
+            if (row >= 0 && wrow < 0) {
                 const uint8_t* blk = p.v_q4 + row * BPH + (size_t) warp * GPW * BLK;
                 int8_t c[32];
                 uint32_t w[8];
@@ -2109,7 +2148,7 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
                         d.v[g * 2 + i] = make_uint4(w[4 * i], w[4 * i + 1], w[4 * i + 2], w[4 * i + 3]);
                 }
             }
-        } else if (row >= 0) {
+        } else if (row >= 0 && wrow < 0) {
             const uint4* src = reinterpret_cast<const uint4*>(p.v_q + row * HD + dim0);
             d.v[0] = __ldg(src); d.v[1] = __ldg(src + 1); d.v[2] = __ldg(src + 2); d.v[3] = __ldg(src + 3);
             d.vsc[0] = __half2float(__ushort_as_half(__ldg(p.v_scale + row * (HD / KV_Q8_GROUP) + warp)));
@@ -2117,9 +2156,14 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
             const long long rr = __shfl(row, nt * 16 + col);
+            if constexpr (Q4) d.wr[nt] = (int) __shfl(wrow, nt * 16 + col);
+            else d.wr[nt] = -1;   // no window on the int8 instantiation: nothing to select
 #pragma unroll
             for (int g = 0; g < GPW; ++g) d.ksc[nt][g] = 0.0f;
-            if (rr >= 0) {
+            if (d.wr[nt] >= 0) {   // the exact side pool: no block scale (the values are already K itself)
+#pragma unroll
+                for (int g = 0; g < GPW; ++g) d.ksc[nt][g] = 1.0f;
+            } else if (rr >= 0) {
                 if constexpr (Q4) {
                     constexpr int BLK = (int) sizeof(block_q4_0);
                     constexpr int BPH = (HD / QK4_0) * BLK;
@@ -2135,7 +2179,7 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
             for (int kk = 0; kk < 4; ++kk) {
 #pragma unroll
                 for (int i = 0; i < PA_KL / 4; ++i) d.kx[nt][kk][i] = 0;
-                if (rr >= 0) {
+                if (rr >= 0 && d.wr[nt] < 0) {
                     if constexpr (Q4) {
                         constexpr int BLK = (int) sizeof(block_q4_0);
                         constexpr int BPH = (HD / QK4_0) * BLK;
@@ -2177,8 +2221,16 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
             S.vs[warp * GPW][lane] = cd.vsc[0];
 #pragma unroll
             for (int g = 1; g < GPW; ++g) S.vs[warp * GPW + g][lane] = cd.vsc[g];
-            if (warp == 0) S.valid[lane] = cd.row >= 0;
+            if (warp == 0) S.valid[lane] = cd.row >= 0 || cd.wrow >= 0;   // (the decode kernel's srow/swin rule)
         }
+        // B3: is any of this chunk's cells exact?  (lane = cell index in every warp, so the answer is block-uniform
+        // and the second p.v pass below is skipped entirely - most chunks of a real selection have no window cell.)
+        // Only the 4-bit instantiation has a window: elsewhere this is a compile-time false and the whole second
+        // pass disappears.  That guard is not cosmetic - with the second pass merely *unused* (a `tmpw` of 32
+        // registers that only `if (anywin)` wrote) the int8 prompt kernel ran 8.07 -> 17.4 ms a chunk, and with the
+        // guard it is back at 8.26.
+        bool anywin = false;
+        if constexpr (Q4) anywin = __any(cd.wrow >= 0);
         // q.k over this wave's 64 dims for two 16-cell tiles, times the cell's K scale for this group
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
@@ -2187,7 +2239,14 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
                 wf8 s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll
                 for (int kk = g * KSTEPS; kk < (g + 1) * KSTEPS; ++kk) {
-                    const wh8 b = i8_to_h(cd.kx[nt][kk]);
+                    // a window cell's K comes from the exact fp16 side pool (B fragment, scale 1)
+                    wh8 b;
+                    if constexpr (Q4) {
+                        b = cd.wr[nt] >= 0 ? h8_win(p.k_win + (size_t) cd.wr[nt] * HD + dim0 + kk * 16 + PA_KOFF(half))
+                                           : i8_to_h(cd.kx[nt][kk]);
+                    } else {
+                        b = i8_to_h(cd.kx[nt][kk]);
+                    }
                     s = wmma_f16(qh[kk], b, s);
                     if constexpr (SPLIT) s = wmma_f16(ql[kk], b, s);
                 }
@@ -2250,6 +2309,13 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
             wf8 tmp[4];
 #pragma unroll
             for (int j = 0; j < 4; ++j) tmp[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+            // B3: the window cells' p.v, a second pass over just those cells.  Their V is the exact fp16 side pool
+            // (the staged byte row cannot hold 64 halves), and there is no block scale: A = p, so the accumulator
+            // takes the result without `vdown`.  Skipped when the chunk has no window cell at all; compiled out
+            // entirely for the int8 instantiation (`anywin` and the `Q4 ?` below are then compile-time constants).
+            wf8 tmpw[4];
+#pragma unroll
+            for (int j = 0; j < 4; ++j) tmpw[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll
             for (int ks = 0; ks < 2; ++ks) {
                 const int cb = ks * 16 + PA_KOFF(half);   // this lane's PA_KL cells
@@ -2270,6 +2336,22 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
                     for (int i = 0; i < PA_KL; ++i) b[i] = (_Float16) (int) (int8_t) S.v[warp][cb + i][d];
                     tmp[j] = wmma_f16(ah, b, tmp[j]);
                     if constexpr (SPLIT) tmp[j] = wmma_f16(al, b, tmp[j]);
+                    if (anywin) {
+                        wh8 bh;
+#pragma unroll
+                        for (int i = 0; i < PA_KL; ++i) {
+                            const long long wr = __shfl(cd.wrow, cb + i);   // this lane's cell list, as in fetch
+                            const float pv = wr >= 0 && (!TR || col < G) ? S.p[col][cb + i] : 0.0f;
+                            const _Float16 hi = (_Float16) pv;
+                            ah[i] = hi;
+                            al[i] = (_Float16) (pv - (float) hi);
+                            bh[i] = wr >= 0
+                                        ? (_Float16) __ushort_as_half(p.v_win[(size_t) wr * HD + dim0 + d])
+                                        : (_Float16) 0.0f;
+                        }
+                        tmpw[j] = wmma_f16(ah, bh, tmpw[j]);
+                        if constexpr (SPLIT) tmpw[j] = wmma_f16(al, bh, tmpw[j]);
+                    }
                 }
             }
             float a[8];
@@ -2278,7 +2360,10 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
 #pragma unroll
             for (int j = 0; j < 4; ++j)
 #pragma unroll
-                for (int i = 0; i < 8; ++i) acc[j][i] = fmaf(acc[j][i], a[i], tmp[j][i] * vdown[j / (GRP / 16)]);
+                for (int i = 0; i < 8; ++i) {
+                    const float tq = tmp[j][i] * vdown[j / (GRP / 16)];
+                    acc[j][i] = fmaf(acc[j][i], a[i], Q4 ? tq + tmpw[j][i] : tq);
+                }
         }
         // no barrier here: `v`/`vs` are this wave's own, and `p`/`alpha`/`valid` are rewritten only after the next
         // chunk's first barrier (which every wave reaches after its p.v)
@@ -2286,17 +2371,17 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
     // all of a chunk's reads are issued before its compute (they were interleaved with the q.k WMMAs and the V
     // staging): 32K context, 2,048 queries, gfx1151, STRATA_PA_FAST=1: 12.49 -> 11.27 ms; the same bits
     if constexpr (RPF) {
-        long long nrow = n_chunks > 0 ? row_of(0) : -1;
+        long long nrow = n_chunks > 0 ? row_of(0) : -1, nwinr = n_chunks > 0 ? win_of(0) : -1;
         for (int ci = 0; ci < n_chunks; ++ci) {
             Chunk d;
-            fetch(nrow, d);
-            if (ci + 1 < n_chunks) nrow = row_of(ci + 1);
+            fetch(nrow, nwinr, d);
+            if (ci + 1 < n_chunks) { nrow = row_of(ci + 1); nwinr = win_of(ci + 1); }
             chunk(d);
         }
     } else {
         for (int ci = 0; ci < n_chunks; ++ci) {
             Chunk d;
-            fetch(row_of(ci), d);
+            fetch(row_of(ci), win_of(ci), d);
             chunk(d);
         }
     }
@@ -2582,11 +2667,12 @@ bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
 // The 4-bit uniform grid (`--kv q4u32`) on the matrix cores: the same block_q4_0 the q4_0 arm writes
 // (an fp16 step and 16 nibble bytes per 32 values), read as (code - 8) * step - affine, so the codes
 // enter the WMMA exactly like the int8 codes.  The level tables need a table lookup this path does not
-// have, and the shear carries a constant per block; the window (the exact fp16 side pool) is a second
-// source this path does not read yet (B3) - a windowed arm keeps the decode kernel until it does.
+// have, and the shear carries a constant per block.  The window (the exact fp16 side pool) is a second
+// source the kernel reads itself (B3): K as the B fragment's halves with scale 1, V in a second pass
+// over just the window cells.
 static bool q4u_wmma_ok(const QsaAttnPools& p) {
-    return p.k_q4 != nullptr && p.v_q4 != nullptr && q4_uniform_ls(p.q4_mode) && p.k_win == nullptr &&
-           p.v_win == nullptr && !g_q4_wmma_failed.load(std::memory_order_relaxed);
+    return p.k_q4 != nullptr && p.v_q4 != nullptr && q4_uniform_ls(p.q4_mode) &&
+           !g_q4_wmma_failed.load(std::memory_order_relaxed);
 }
 
 // STRATA_KV_Q4_PROMPT=1: the 4-bit uniform grid on the matrix-core prompt path.  Opt-in until the engine
@@ -2618,7 +2704,8 @@ bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, cons
 #if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
     if (n_q <= 0 || qf == nullptr || o16 == nullptr || ld16 < s.n_head * HD) return false;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
-        pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
+        pools.k_q4 == nullptr && pools.v_q4 == nullptr && pools.k_win == nullptr && pools.v_win == nullptr &&
+        s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
         cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, nullptr, n_q, (cudaStream_t) stream, qf, o16, ld16);
     // The 4-bit uniform grid with the gate fused: the same `Q4` kernel as the ungated route, its epilogue
@@ -2674,7 +2761,8 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     // matrix-core kernel, opt-in (STRATA_HIP_WMMA=1); everything else keeps the old kernel
     (void) turing; (void) volta;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
-        pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
+        pools.k_q4 == nullptr && pools.v_q4 == nullptr && pools.k_win == nullptr && pools.v_win == nullptr &&
+        s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
         cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     if (q4u_wmma_ok(pools)) {
