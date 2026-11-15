@@ -1287,7 +1287,24 @@ Die Occupancy aber **nicht so, wie dort vermutet**:
   (eine statt zwei Expansionen). Die Occupancy-Stufe selbst kippt erst, wenn der Kern **unter 192 VGPR**
   kommt (6 Wellen) oder **unter 128** (8 Wellen) — das ist die Latte für H1 und H2.
 
-**Die Reihenfolge nach der Messung:** **H1** (kein Zahlenrisiko, trifft die Instruktionszahl) → **H2**
+**H1 ist widerlegt, bevor es gebaut ist (15.11.2026, Disassembly des Default-Kerns
+`NGRP 8, Q4, SPLIT, TR 2`, gfx1200).** Die Vermutung war: der 4-Bit-Pfad lade die Nibbles als ~96
+skalare Bytes je Zelle und Lane, wo int8 12 Vektor-Ladungen macht. Das Disassembly zeigt etwas
+anderes:
+
+| Ladung | Anzahl | Was sie ist |
+|---|---:|---|
+| `global_load_b128 … offset:2` | 2 | die **16 Code-Bytes eines Blocks in einer 16-Byte-Ladung** (der Block beginnt mit der 2-Byte-Skala, die Codes dahinter) |
+| `global_load_u16` / `offset:18` | 6 | die **Skalen** (2 Byte je Block, `× 0x90` = 144 Byte je Zelle, `+18` = der nächste Block) |
+| `global_load_u16` mit `× 512` davor | 64 | der **Fenster-Pfad** (`HD × 2` = 512 Byte je Zeile) — exakte Halves, kein Bulk |
+
+**Keine einzige `global_load_u8`.** Der Compiler fasst die Byte-Schleife in `q4u_block_codes` bereits zu
+einer 16-Byte-Ladung zusammen, und die Skalen sind 2 Byte — kleiner geht nicht. Die 70
+`global_load_u16` des Kerns sind Fenster (64) und Skalen (6), nicht der Bulk. **H1 ändert keine
+Instruktion** und wird nicht gebaut. (Die Voranalyse hat die *Quelltext*-Schleife gezählt, nicht das,
+was der Compiler daraus macht — der Unterschied ist die Lehre.)
+
+**Die Reihenfolge nach der Messung:** ~~H1~~ → **H2**
 (Banken abstimmen) → **H3** (nur noch LDS-Verkehr, nicht Occupancy) → **H5** → **H4**/**H7** nur mit
 Qualitätsentscheidung. **H6 entfällt.**
 
