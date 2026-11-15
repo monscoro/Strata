@@ -1323,9 +1323,35 @@ Was bleibt, ist die Zerlegung selbst: **~260 Instruktionen**, die der int8-Kern 
 `v_and`, 3 `v_lshrrev`). Das ist echte Arbeit je Zelle — aber sie ist **eine** Zerlegung von 4-Bit-Codes,
 und die lässt sich nicht vermeiden, solange der WMMA fp16-Operanden will. **H2 wird nicht gebaut.**
 
-**Die Reihenfolge nach der Messung:** ~~H1~~ → ~~H2~~ → **H3**
-(Banken abstimmen) → **H3** (nur noch LDS-Verkehr, nicht Occupancy) → **H5** → **H4**/**H7** nur mit
-Qualitätsentscheidung. **H6 entfällt.**
+> **Korrektur (15.11., CPU-Nachsorge am selben Disassembly).** Die *Zahl* der Zerlegungsinstruktionen ist
+> bestätigt (112 `v_and`, 91 `v_lshrrev`), nicht aber ihre Zuordnung: die Operanden dieser `e32`-Instruktionen
+> stehen im Literal-Pool, und meine Dekodierung hat die Positionen verwechselt. Der Satz „… an der
+> WMMA-Stelle ist der Registerdruck am höchsten" ist damit **unbestätigte statische Analyse**. Der Bestand
+> von H2 ruht auf den zwei messbaren Punkten: die LDS-Ersparnis trägt nicht (M1), und der Kern spillt nicht.
+
+**Die Zerlegung in den WMMA ist der eigentliche Hebel, und er ist schon gezogen (15.11.2026,
+Disassembly des Byte-Schleifen-Kerns `SPLIT, TR2, NGRP8, Q4`).** Direkt nach der 16-Byte-Ladung der Codes
+steht im Kompilat die Wort-EBI-Sequenz: `v_and_b32` mit Maske `0x0F0F0F0F`, `v_lshrrev_b32` um 4,
+`v_add_nc_u32` mit `0x78787878` (= gepacktes `−8`), und `pack_i8x4` ist zu `v_or_b32` verschmolzen. Das ist
+genau das, was der old-Pfad (`prompt_attn_kernel<4>`) aus expliziten `__vsub4`-Intrinsics bekommt. Der
+**Compiler hat die Quelltext-Byte-Schleife also bereits auf die Wort-EBI-Form gebracht** — H1s Schluss
+(„kein Handwechsel im C-Code spart eine Instruktion") ist damit bestätigt, und die Meldung „die Voranalyse hat
+die Quelltext-Schleife gezählt, nicht das Kompilat" war richtig.
+
+**Ein Mikro-Hebel bleibt, unter der Messschwelle:** das Umsetzungsstadium. 256 Einzelinstruktionen
+(126 `v_cvt_f16_f32_e32`, 66 `v_cvt_f16_f32_e64`, 64 `v_cvt_f16_i16`) = 2.048 B = 4,2 % des Kerns. Eine
+manuelle Packung halbierte den Kodierungsanteil auf ~2,1 % — **unter der 5-%-Rauschschwelle**, und
+`gfx12` kennt für zwei fp16-Halbworte nur die `c_pk`-Formen. Es wird nicht allein gebaut; nur zusammen mit
+einem Hebel, der ohnehin baut.
+
+**Messtechnik-Status (15.11.): die GPU ist belegt, der RAM fast ausgelastet — alle GPU-Läufe sind auf
+Reserve.** Bei Freigabe-Meldung startet zuerst **H5** (Build, dann `window%d timing:`-A/B wie in A.18:
+3 Wiederholungen, ≥5 % zählt, int8-Zweig in jedem Lauf). Jetzt ist nur CPU-Arbeit an bestehenden Daten
+und `cmake`/`ninja`-Builds erlaubt. **H3** bleibt der einzige Hebel für LDS (Banken abstimmen, Zahlen-Gate).
+
+**Die Reihenfolge nach der Messung (15.11., neu):** ~~H1~~ → ~~H2~~ → ~~H6~~ **H5** (sobald die GPU frei
+ist: Build, dann `window%d timing:`-A/B), → **H3** (Banken abstimmen, Zahlen-Gate) → **H4**/**H7** nur mit
+Qualitätsentscheidung → **cvt-Mikrohebel** nur zusammen mit einem Bau. M2: 3 Wiederholungen, ≥5 % zählt.
 
 **Die Reihenfolge nach Erwartung (vor M1, überholt):** M1 → **H1** (kein Zahlenrisiko) → **H2** → **H3**
 (Qualitäts-Gate) → **H6** (nach M1 entscheiden) → **H5** → **H4**/**H7** nur mit Qualitätsentscheidung.
