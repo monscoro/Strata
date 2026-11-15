@@ -1304,7 +1304,26 @@ einer 16-Byte-Ladung zusammen, und die Skalen sind 2 Byte — kleiner geht nicht
 Instruktion** und wird nicht gebaut. (Die Voranalyse hat die *Quelltext*-Schleife gezählt, nicht das,
 was der Compiler daraus macht — der Unterschied ist die Lehre.)
 
-**Die Reihenfolge nach der Messung:** ~~H1~~ → **H2**
+**H2 ist widerlegt, bevor es gebaut ist (15.11.2026, dasselbe Disassembly).** Die Vermutung war: die
+Nibbles werden **zweimal** expandiert (einmal im Fetch, einmal vor dem WMMA), und gepacktes Staging
+spart die erste Expansion plus 4.096 B LDS. Beides trifft nicht zu:
+
+* **Die Expansion passiert genau einmal.** `q4u_block_codes` wird im Kompilat zu einer dichten Sequenz
+  `v_and_b32 15` (112×), `v_lshrrev_b16 4` (24×) und `v_add_nc_u16 …, -8` (124×, in 31 Blöcken) — und
+  dahinter steht **kein** zweites Entpacken. Die `ds_load_i8` (64×) sind dieselben wie im int8-Kern
+  (64×): das ist das Lesen der bereits expandierten Bytes aus dem Shared Memory, das beide Kerne tun.
+  Gepacktes Staging würde diese eine Zerlegung nur **verschieben** (vom Fetch an die WMMA-Stelle), nicht
+  streichen — und an der WMMA-Stelle ist der Registerdruck am höchsten, nicht am niedrigsten.
+* **Die LDS-Ersparnis trägt nicht.** M1: im Default begrenzt die VGPR-Zahl die Occupancy, nicht der LDS
+  (beide Kerne 5 Wellen). 4.096 B weniger LDS ändern daran nichts.
+* **Der Kern spillt praktisch nicht:** 2 `scratch`-Zugriffe in der SPLIT-Instantiierung, **keine** in der
+  FAST-Instantiierung. Die Zerlegung kostet also Register, aber keine Speicher-Rundreise.
+
+Was bleibt, ist die Zerlegung selbst: **~260 Instruktionen**, die der int8-Kern nicht hat (dort 2
+`v_and`, 3 `v_lshrrev`). Das ist echte Arbeit je Zelle — aber sie ist **eine** Zerlegung von 4-Bit-Codes,
+und die lässt sich nicht vermeiden, solange der WMMA fp16-Operanden will. **H2 wird nicht gebaut.**
+
+**Die Reihenfolge nach der Messung:** ~~H1~~ → ~~H2~~ → **H3**
 (Banken abstimmen) → **H3** (nur noch LDS-Verkehr, nicht Occupancy) → **H5** → **H4**/**H7** nur mit
 Qualitätsentscheidung. **H6 entfällt.**
 
