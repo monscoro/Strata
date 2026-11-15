@@ -778,6 +778,25 @@ das Sechsfache ≈ **67 ms** — rund **1 %** der 6,5 s, die ein Chunk im schnel
 sind **0,1 %** der Prompt-Zeit. Ein Motor-A/B auf das Fenster wäre damit selbst ohne den Zweimoduseffekt
 nicht messbar; die belastbare Zahl ist die aus dem Harness.
 
+**Was der Motor-Unterschied *nicht* sein kann: der Attention-Kern.** Der Harness misst im selben Aufbau
+(32K, 1.024 Queries, dieselben Selektionen, dieselben Pools) den 4-Bit-Kern gegen den int8-Kern:
+
+| Kern | Laufzeit je Chunk | gegen FP32 |
+|---|---:|---:|
+| int8 (v2) | **8,26 ms** | 55,40 → 8,26 ms (6,7×) |
+| int8, opt-in IMMA | 7,80 ms | 7,94 → 7,80 ms (1,02×) |
+| `q4u32` (4-Bit, B3-Apparat an Bord) | **11,33 ms** | 56,74 → 11,33 ms (5,3×) |
+
+Der 4-Bit-Kern ist also **37 % langsamer als der int8-Kern** (11,33 gegen 8,26 ms) — er muss Nibbles
+entpacken und je Gruppe eine affine Skala anwenden, wo int8 seine Codes als Bytes in Registern hat. Der
+Motor-Vorsprung von `q4u32` (878,7 gegen 656,8 tok/s) kann damit **nicht** aus der Attention kommen; er
+muss aus etwas kommen, das die Arme sonst unterscheidet. Der einzige Kandidat, den die Logs beziffern:
+die **Größe des KV-Pools** (int8 braucht doppelt so viel) und damit der Expert-Cache — **2967 Slots** im
+`int8`-Lauf gegen **3510** im `q4u32`-Lauf (`expert cache auto: … MiB free … -> N slots`). Das ist ein
+**Kandidat, keine Messung**: die beiden Fensterläufe mit gleicher Config haben 3411 und 3421 Slots und
+trotzdem verschiedene Niveaus, der Cache allein erklärt also auch nicht alles. Bis zu einer eigenen
+Messung wird der Motor-Unterschied **nicht** als „q4u32 ist schneller" berichtet.
+
 **Decode, nur zur Vollständigkeit (mit Vorbehalt):** `int8` 38,0 / 36,6 / 33,3 tok/s, `q4u32`
 31,2 / 30,6 / 28,2, `q4u32win` 31,4 / 30,7 / 28,2 bzw. 32,3 / 31,2 / 28,3 (32K, 10/50/90 %). Der
 Unterschied ist stabil über die Niveaus hinweg — aber **kein sauberer Decode-Vergleich**: die
@@ -785,10 +804,17 @@ Spekulationsannahme unterscheidet sich (nur der `q4u32`-Lauf protokolliert `suff
 5 drafts accepted`), und die Tokenzahl je Anfrage ist 9–10. Als Hinweis notiert, nicht als Befund.
 
 **Was daraus für A.19 folgt:** ein Motor-A/B „Fenster gegen kein Fenster" ist auf dieser Maschine nicht
-auflösbar (0,1 % Effekt gegen 38 % Niveau-Streuung) und wird **nicht** gefahren. Die offene Frage ist
-stattdessen die des Zweigs: **ist `q4u32` im Prompt schneller als `int8`** — im schnellen Niveau 878,7
-gegen eine fehlende `int8`-Messung? Das braucht einen alternierenden Lauf **mit Niveau-Klassifikation je
-Anfrage** (Chunk-Zeit aus dem Log), nicht mehr Starts desselben Arms.
+auflösbar (0,1 % Effekt gegen 38 % Niveau-Streuung) und wird **nicht** gefahren — dafür ist der
+Harness-A/B da. Offen ist die Frage des Zweigs: **warum ist `q4u32` im Prompt schneller als `int8`**, wenn
+sein Attention-Kern 37 % langsamer ist? Drei Wege, alle mit Niveau-Klassifikation je Anfrage (Chunk-Zeit
+aus dem Log), keiner davon gebaut:
+
+1. **`int8` alternierend gegen `q4u32`** (nur 32K, 3 Tiefen, ≥ 6 Starts): beantwortet nur, *ob* der
+   Unterschied reproduzierbar ist, nicht warum.
+2. **Expert-Cache gleichziehen** (`--vram-reserve-mib` so, dass beide Arme dieselbe Slotzahl bekommen):
+   wenn der Vorsprung dann verschwindet, ist die Pool-Größe die Ursache.
+3. **Kein Motor-A/B**: den Harness als Kostenbeleg nehmen und die Prompt-Rate von `q4u32` **nicht** gegen
+   int8 behaupten.
 
 
 ---
@@ -909,7 +935,7 @@ andere". Es sind vier, und die Reihenfolge ist nicht frei wählbar:
 |---|---|---|---|---|
 | 1 | **Der Hänger** mit `STRATA_KV_Q4_PROMPT=1` | **erledigt** (`A.14`/`A.15`): Doorbell-Deadlock im Fenster-Launch, Helfer-Thread ist Default | nichts mehr | A.14 (Sonde), A.15 (Fix + 4K/32K 3/3) |
 | 2 | **Das Fenster** auf dem Fast-Path (B3) | **gebaut, Gate grün** (A.17); im Motor belegt (A.18: Route-Zeile, 16/16 Nadeln), Kosten **+6,2…13,4 %** der Attention-Kernelzeit (Harness-A/B) | nichts mehr | A.16 (rot), A.17 (grün), A.18 (Route + Kosten) |
-| 3 | **Die Rate** des 4-Bit-Kerns | **teilweise gemessen**: A.15 642,8 gegen int8 649,0 tok/s (99,1 %) — **beide im langsamen Niveau**; im schnellen Niveau steht `q4u32` bei 878,7 ohne `int8`-Gegenstück (A.18) | die Aussage „so schnell wie int8" | A2, A.18 |
+| 3 | **Die Rate** des 4-Bit-Kerns | **offen**: A.15 642,8 gegen int8 649,0 tok/s (99,1 %) — **beide im langsamen Niveau**; im schnellen Niveau 878,7 ohne `int8`-Gegenstück; im Harness ist der 4-Bit-**Kern** 37 % langsamer als int8 (11,33 gegen 8,26 ms) | die Aussage „so schnell wie int8" | A2, A.18 |
 | 4 | **Der Rest von Teil C** | offen | Feinschliff | erst nach 2 |
 
 **1. Der Hänger ist erledigt — er war nicht der Kern.** Die Prüfung am Code hatte ihn nicht gefunden,
