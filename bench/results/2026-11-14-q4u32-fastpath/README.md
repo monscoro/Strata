@@ -446,6 +446,60 @@ Das ist die eigentliche Arbeit, und sie ist auf unserer Maschine die entscheiden
 **B4' ist Voraussetzung für A2**, nicht für A1: ohne die Zeile ist die Zuordnung „Zeit ↔ Pfad"
 nicht belegbar.
 
+### B5 — Was uns von „voll einsatzbereit und optimiert" trennt (Stand 15.11.2026)
+
+Die Frage aus B lautet nicht „welche Optimierung fehlt", sondern „welche Lücke blockiert welche
+andere". Es sind vier, und die Reihenfolge ist nicht frei wählbar:
+
+| # | Lücke | Zustand | Blockiert | Wodurch entschieden |
+|---|---|---|---|---|
+| 1 | **Der Hänger** mit `STRATA_KV_Q4_PROMPT=1` | **offen** | Default, A2, alles danach | eine Messung (unten), keine weitere Leserunde |
+| 2 | **Das Fenster** auf dem Fast-Path (B3) | entschieden, ungebaut | den Produktarm | Parität gegen den Decode-Kern |
+| 3 | **Die Rate** des 4-Bit-Kerns | B2: 5,12× im Kern; **A2 offen** | nichts (ist die Messung) | A2 |
+| 4 | **Der Rest von Teil C** | offen | Feinschliff | erst nach 2 |
+
+**1. Der Hänger ist die ganze Lücke.** Er ist gemessen eingegrenzt: int8 bitgleich; `q4u32` mit
+`STRATA_HIP_WMMA=0` 3/3; int8 mit `STRATA_QSA_FUSE_GATE=0` 3/3; int8 mit `STRATA_KV_ROT=1` 3/3; der
+Paritäts-Harness mit q4-Pool 32.768/512/64 grün. Er ist **nicht** durch Lesen gefunden worden — auch
+nicht in dieser Runde (die Prüfung ergab: die Chunk-Schleife ist blockuniform, `n` hängt nur an
+`qi`; die Adressierung des 4-Bit-Pools ist Zeile für Zeile die des Decode-Kerns,
+`base + row*144 + b*18`; die Gruppen- und Skalenzuordnung stimmt für `GPW = 2`). Das ist der Punkt,
+an dem Raten teurer ist als Messen. Zwei Kandidaten bleiben, und **ein** Lauf trennt sie:
+
+* hängt es **auch bei 4K** mit `STRATA_KV_Q4_PROMPT=1`, liegt es an der **Geometrie** (Zeiger, Stride,
+  Pool, den der echte Motor anders füllt als der Harness — Streaming, Fenster, Seiten);
+* läuft 4K und erst 32K hängt, liegt es an **Länge oder Streaming** (nicht-residente Seiten,
+  wachsende Horizonte, `cap`).
+
+Danach, falls nötig: den **echten** Pool dumpen und in den Harness geben — der Harness baut seinen
+Pool selbst, und genau darin liegt die eine Differenz, die wir noch nicht ausgeschlossen haben.
+
+**2. Das Fenster** ist keine Optimierung, sondern Funktionsumfang (B3, entschieden). Solange es fehlt,
+ist `q4u32` + Fenster — die Konfiguration, die im Paper steht — **kein** Fast-Path-Arm.
+
+**3. Die Rate ist der *letzte* Hebel, nicht der erste.** B2 hat den Kern 5,12× schneller gemacht
+(97,3 → 19,0 ms/Chunk, gemessen); ob der Arm damit in die Nähe von int8 kommt, sagt erst A2. Der
+naheliegende nächste Schritt — **int8-WMMA** (`wmma_i32_16x16x16_iu8`, laut AMD-Tabelle 2× fp16) —
+ist geprüft und **zurückgestellt** (`docs/research/KV_Q4_MATRIX_PATH_RDNA4.md`): die 2× kommen nicht
+ganz an (Fremdmessung 1,20× bzw. 1,61×, weil das Descaling je 32-Werte-Block die Hälfte zurücknimmt),
+er erzwingt **Q in int8** (ein Qualitätspreis, den wir heute nicht zahlen: beim Nachbarn +0,02 %
+Perplexität) und ein für `iu8` **undokumentiertes** K-Mapping. Das ist ein eigenes Vorhaben mit eigener
+Messung, kein Anhängsel an B2.
+
+**4. Was nicht mehr zur Debatte steht** (weil A1 es gemessen hat): die Level-Tabelle ist **kein**
+Preistreiber (`q4lm32` 268,4 ≈ `q4u32` 263,7 tok/s) — eine LUT-Stufe wäre die falsche Antwort; und
+eine fp16-Kopie des Caches zu vermeiden ist erledigt (wir dequantisieren im Register/smem, der Grund,
+aus dem llama.cpp PR #31802 überhaupt 17–79 % holt).
+
+**Die Reihenfolge, die daraus folgt:**
+
+1. 4K-Nadel mit `STRATA_KV_Q4_PROMPT=1` (~70 s): Geometrie oder Länge?
+2. Falls Geometrie: den realen Pool dumpen, in den Harness, Differenz benennen.
+3. Hänger beheben → Pfad ist Default-fähig → **A2** (`int8`, `q4_0`, `q4u32`) neu fahren.
+4. B3 (Fenster) auf dem dann laufenden Kern.
+5. Teil C — und **nur** wenn A2 zeigt, dass die Rate noch die Lücke ist, int8-WMMA als eigenes
+   Vorhaben.
+
 ---
 
 ## Teil C — Die Optimierung (beginnt erst nach A2)
