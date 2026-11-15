@@ -531,12 +531,80 @@ aus dem llama.cpp PR #31802 überhaupt 17–79 % holt).
 
 **Die Reihenfolge, die daraus folgt:**
 
-1. 4K-Nadel mit `STRATA_KV_Q4_PROMPT=1` (~70 s): Geometrie oder Länge?
-2. Falls Geometrie: den realen Pool dumpen, in den Harness, Differenz benennen.
+1. 4K-Nadel mit `STRATA_KV_Q4_PROMPT=1`: **erledigt** (A.12) — es hängt auch bei 4k; die Länge ist
+   nicht die Bedingung, der Übergang zum Verify-Fenster ist es.
+2. Den Trace so erweitern, dass er die **Form des Aufrufs** nennt (`n_q`, Route) statt der Selektion
+   der ersten Query — sonst ist „kein Trace nach dem Bulk" nicht von „der Tail nimmt einen anderen
+   Zweig" zu unterscheiden (B6, Befund 4).
 3. Hänger beheben → Pfad ist Default-fähig → **A2** (`int8`, `q4_0`, `q4u32`) neu fahren.
 4. B3 (Fenster) auf dem dann laufenden Kern.
 5. Teil C — und **nur** wenn A2 zeigt, dass die Rate noch die Lücke ist, int8-WMMA als eigenes
    Vorhaben.
+
+### B6 — Review der Änderungen (statische Analyse, keine Messung)
+
+Der beauftragte Review-Lauf ist am Nutzungslimit gestorben; diese Runde ist die Prüfung von Hand. Sie
+liest die drei geänderten Dateien (`qsa_prompt_attn.cu`, `qsa_decode_attn.cu`,
+`qsa_prompt_attn_parity.cpp`) gegen den Stand `ac33b0c4b`. Alles hier ist **Code-Lesen**, nicht
+gemessen — das steht bei jedem Befund dabei. Die Reihenfolge ist die, in der es weh tut.
+
+| # | Befund | Wirkung | Art |
+|---|---|---|---|
+| 1 | `g_wmma_failed` ist zwischen int8 und q4 **geteilt** | ein q4-Launchfehler schaltet den int8-Matrixpfad für den Rest des Prozesses ab | Fehler |
+| 2 | `qsa_prompt_attn_batch_gated` hat **keinen** q4-Zweig | Gate an ⇒ q4 verliert die Gate-Fusion, und die Logzeile sagt es nicht | Lücke |
+| 3 | `pa_said` ist **once-per-process** | eine Zeile je Lauf kann die Route je Schicht nicht belegen — genau die Frage beim Hänger | Werkzeug |
+| 4 | `QA_Q4TRACE` liest `steps` **ohne Query-Offset** | die Zeile nennt die Selektion der *ersten* Query, nicht die Form des Aufrufs; sie erscheint außerdem nur im q4-Zweig | Werkzeug |
+| 5 | zwei leere `if constexpr (Q4) {}`-Blöcke (`qsa_prompt_attn.cu` 2018–2021) | toter Code, der wie ein fehlender Schritt aussieht | Junk |
+| 6 | der Harness prüft weder den gated-Zweig (`Q4, GATE=true`) noch den Fensterfall (`k_win != nullptr`) | zwei Konfigurationen, in denen der Kern *nicht* läuft, sind ungetestet | Abdeckung |
+
+**1. Ein Fehlerflag für zwei Routen** (`qsa_prompt_attn.cu`: `g_wmma_failed` 2360, gesetzt in
+`launch_wmma` 2490, gelesen in `hip_wmma_usable` 2396 und 2559). `launch_wmma` ist für int8 **und**
+q4 dieselbe Funktion; jeder Fehler setzt das globale Flag, und danach lehnt `hip_wmma_usable` **beide**
+ab. Für ein opt-in-Experiment heißt das: **ein Fehler im Experiment verändert den Default** (int8
+fällt still auf den FP32-Kern zurück, eine Zeile stderr, danach nichts). Der Fehlerfall des
+Experiments darf den geprüften Pfad nicht mitnehmen — getrennte Flags, oder das Flag nur im
+int8-Zweig setzen.
+
+**2. Der gated-Zweig kennt q4 nicht** (`qsa_prompt_attn_batch_gated`, 2596–2609): seine Bedingung
+fordert `pools.k_q4 == nullptr && pools.v_q4 == nullptr` und gibt für einen 4-Bit-Zustand deshalb
+immer `false`. Der Aufrufer (`prefill.cpp` 4824) versucht zuerst den gated-Zweig und fällt dann auf
+`qsa_prompt_attn_batch` — mit Gate **an** läuft q4 also über den ungated Kern, während die Zeile
+„the matrix-core prompt path serves the 4-bit uniform grid" meldet. Die Fusion fehlt, nicht die
+Funktion. Fix: die Bedingung um `q4u_wmma_ok` erweitern und `launch_wmma<8, true>` **mit** `qf/o16`
+aufrufen (die Instantiierung `Q4, GATE=true` existiert bereits, sie wird nur nie gewählt).
+
+**3. `pa_said` ist einmal je Prozess** (2589–2594): `static bool said` — die erste Route gewinnt, alle
+weiteren Aufrufe schweigen. Genau beim Hänger ist die Frage aber „welche Route nahm **diese** Schicht",
+und ein Motor, der Bulk-Prompt und Verify-Fenster in einem Prozess fährt, kann mit dieser Zeile nicht
+beantwortet werden. Vorschlag: einmal je (Route × `n_q`-Klasse) oder ein Zähler je Route am Ende.
+
+**4. Der Trace nennt nicht die Form des Aufrufs** (2455–2466): `cudaMemcpy(h.data(), steps, …)` liest
+`steps[0]`, nicht `steps + q0 * kStepCount` — die Zeile zeigt also die Selektion der ersten Query
+eines Aufrufs, für Bulk-Prompt **und** Verify-Fenster gleichermaßen (`cells 1 chunks 1`). „Nach dem
+Bulk kein Trace mehr" belegt damit nur dann „der Host stand vor `launch_wmma<8,true>`", wenn der Tail
+diesen Zweig überhaupt nehmen würde — und der Trace erscheint **nicht**, wenn der Aufruf im
+Decode-Kern oder im gated-Zweig landet (oder wenn `q4u_wmma_ok` wegen `k_win != nullptr` `false`
+sagt). Die Deutung von A.12 hängt an dieser Annahme; sie ist nicht belegt. **Der nächste Schritt ist
+deshalb kein weiterer Motor-Lauf, sondern eine Zeile im Aufrufer**: `n_q`, `cap` und welche Funktion
+geantwortet hat.
+
+**5. Junk** (2018–2021): zwei leere `if constexpr (Q4) { }` hintereinander, direkt vor `const int t =
+threadIdx.x`. Sie tun nichts und riechen nach einem entfernten Schritt. Weg damit.
+
+**6. Was der Harness nicht prüft** (`qsa_prompt_attn_parity.cpp`): kein `gated`, kein `k_win`, kein
+`STRATA_KV_Q4_PROMPT` (die Falle aus A.12). Er prüft genau die Instantiierung `Q4, GATE=false` ohne
+Fenster — also die, die in der Engine am wenigsten Kritik hat. Der gated-Zweig ist heute **nirgends**
+getestet, und der Fensterfall ist der, den B3 bauen soll: beides braucht einen Fall im Harness, bevor
+es Default werden kann.
+
+**Was das Review *nicht* gefunden hat** (und was damit als geprüft gilt): int8 bleibt byte-identisch
+(`NGRP = 4` ist der Default, damit sind `SmemWT`-Layout, Ausdrücke und Reihenfolge die alten; die
+Prüfsummen sind unverändert — das ist gemessen, nicht gelesen); die Chunk-Schleife ist blockuniform
+(`n` hängt nur an `qi`, kein Barrieren-Deadlock); die 4-Bit-Adressierung ist Zeile für Zeile die des
+Decode-Kerns (`base + row*144 + b*18`), und `q4u_block_codes`/`q4u_lane_codes` lesen nie über die 16
+Byte eines Blocks hinaus; die Gruppen- und Skalenzuordnung stimmt für `GPW = 2`. **Kein** Befund in
+der Arithmetik — der Hänger ist damit weiter offen, aber die Liste der Verdächtigen ist kürzer und die
+Werkzeuge, die ihn finden sollen, sind jetzt selbst geprüft.
 
 ---
 
