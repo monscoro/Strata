@@ -433,9 +433,90 @@ nicht das Fenster allein, sondern **der Matrix-Pfad davor**. Zwei Möglichkeiten
 Der Test, der das trennt, ist `HIP_LAUNCH_BLOCKING=1`: dann ist jeder Launch synchron, und die letzte
 Zeile vor dem Stillstand ist der Launch, der nicht zurückkommt.
 
-**Nebenbefund:** `cap` ist im Motor **2.051**, im Harness war es die volle Kontextlänge (3.328). Der
-Harness prüft also nie den Fall „die Selektion stößt an ihr Cap" (`cells = cap`, letzter Chunk mit 3 von
-32 lebenden Zellen). Das ist die nächste Abdeckungslücke, nach dem gated-Zweig (B6).
+**Nebenbefund — und eine Korrektur an mir selbst:** ich hatte notiert, `cap` sei im Motor 2.051 und im
+Harness die volle Kontextlänge. Das ist **falsch**: der Harness nimmt `qsa_selection_width(ctx)` =
+`min(ctx, idx_top_k + idx_block − 1)` = `min(ctx, 2051)` (`include/strata/kernels/qsa.hpp` 131–140),
+also genau dieselbe 2.051, und die letzten 1.277 Queries eines 3.328er Laufs sättigen sie. Was der
+Harness **nicht** prüft, ist ein Aufruf, in dem die Queries **verschiedene** Weiten haben (Position 0
+mit `n = 1` bis Position 3.320 mit `n = 2.051` in einem Grid) — der Motor macht genau das (A.13, elf
+Bulk-Aufrufe `n_q 3321`) — und den gated-Zweig (B6).
+
+### A.14 — Der Hänger ist ein Doorbell-Deadlock im Fenster-Launch, und der Fast Path läuft (15.11.2026)
+
+Vier Läufe, 4K und 32K gegen `needle-fastpath-q4u32.json`, alle mit `STRATA_KV_Q4_PROMPT=1`.
+
+**1. `HIP_LAUNCH_BLOCKING=1` änderte nichts** (76 s statt 72 s, gleicher Stall) — der Schalter greift in
+diesem HIP-Build also **nicht**; der Lauf ist damit **kein** Beleg gegen einen asynchronen Rest des
+Bulks. Als Befund gestrichen.
+
+**2. `STRATA_VERIFY_DEBUG=1` nennt den Ort** (Laufzeitvariable, kein Build):
+
+```
+verify dbg: captured; staging
+verify dbg: staged; launching
+   ... 60 s nichts ...
+verify dbg: launched                 (erst nach dem Abbruch)
+verify dbg: layer 0 rang … layer 15 served      (16 Zeilen in 35 ms)
+```
+
+Der Host steht **im Launch-Aufruf** des Fensters — nicht in einer Warteschleife danach, nicht in der
+Attention.
+
+**3. `STRATA_LAUNCH_PROBE=1` nennt den Grund:**
+
+```
+strata tdr-probe: the 6-token window graph has 1876 nodes, 1876 of them kernels
+strata tdr-probe: window 0 T=6 pos=3321: launching
+strata tdr-probe: window 0 T=6: the launch call has not returned after 50000 ms;
+                  GPU rang 1, flags served 0 A 0 B 0       (bei 50 / 250 / … / 30000 ms unverändert)
+strata tdr-probe: window 0 T=6: launch call returned in 62964.00 ms;
+                  the GPU had rung 4 layer(s) and the host served 4294967295 at the return
+```
+
+Der Launch blockiert **in der Submission**, während die GPU auf die **Host-Doorbell** wartet (`A 0 B 0` =
+Plan und Kopien sind noch nicht veröffentlicht). Der aufrufende Thread kann sie nicht bedienen, weil er
+im Launch steht — ein Deadlock. Genau dafür gibt es `STRATA_VERIFY_ASYNC_LAUNCH=1` (der Graph startet auf
+einem Helfer-Thread, der Aufrufer bedient die Doorbells; `verify.cpp` 3551: „a blocking instrumented
+launch cannot also serve the graph's CPU doorbells"). Dass es normalerweise gutgeht, ist ein
+**Wettlauf**: der Launch kehrt zurück, *bevor* die erste Doorbell fällig wird. Der 4-Bit-Pfad verliert
+ihn.
+
+**4. Mit dem Helfer-Thread läuft es — und zwar richtig.** Dieselbe Nadel, derselbe Build
+(`1a63531b8` + Review), derselbe Schalter, nur der KV-Modus verschieden, drei Tiefen je Arm:
+
+| Tiefe | `q4u32` (Matrix-Pfad) | `int8` | Verhältnis |
+|---|---|---|---|
+| 10 % (~30.782 Token) | **785,1 tok/s** | 626,6 tok/s | 1,25× |
+| 50 % | 617,3 tok/s | 626,7 tok/s | 0,985× |
+| 90 % | 619,4 tok/s | 620,8 tok/s | 0,998× |
+| Nadeln | 3 von 3 | 3 von 3 | |
+
+Alles Prompt-Lesen (30.782 / 30.783 Token); Generierung 27,5–27,6 gegen 35,0–45,3 tok/s (der
+4-Bit-Pfad ist ein **Prompt**-Pfad, er ändert die Decode-Kerne nicht — die Differenz dort ist Rauschen
+der Draft-Annahme: 6/6, 5/8, 6/11 gegen 6/6, 6/6, 6/9).
+
+**Also: `q4u32` erreicht int8.** Zwei der drei Läufe liegen innerhalb von 0,4 % von int8, einer (der
+erste der Serie) ist **25 % schneller** — und das ist **nicht** erklärt; ein Wiederholungslauf gehört
+dazu, bevor daraus ein Satz wird. Gegen A.1 (263,7 tok/s, Build `fdd3823e…`, ohne den Pfad) sind es
+**2,35×**.
+
+Der Gewinn, der bleibt, ist der **Speicher**: `q4u32` braucht je Kopf 2 × (128/32) × 18 = 144 Byte
+gegen int8's 2 × (128 + 2) = 264 Byte — **54,5 %** (aus den Layouts gerechnet: `kv_q4_bytes_per_head` in
+`kv_q4.hpp` 127–130, `kv_q8_bytes_per_cell` in `kv_q8.hpp` 25–27; nicht gemessen). Gleiche Prompt-Rate,
+gut halb so viel KV.
+
+**Was das für den Default heißt:** der Hänger ist **nicht** der 4-Bit-Kern (das Fenster ruft ihn nie,
+A.13) und kein Rechenfehler — die Nadeln werden mit dem Fast Path an allen drei Tiefen gefunden, die
+Attention liest den Kontext also richtig. Es ist ein **vorbestehender Wettlauf im Fenster-Launch**, den
+der schnellere Pfad verliert. Zwei Wege, und der erste ist der richtige:
+
+1. den Launch reparieren (den Helfer-Thread zum Default machen, wo Doorbells bedient werden müssen, oder
+   die Doorbell vor dem Submit veröffentlichen);
+2. `q4u32` als Default erst danach — ein Umweg über eine Diagnose-Variable ist kein Default.
+
+Die 619,4 tok/s gelten **mit** `STRATA_VERIFY_ASYNC_LAUNCH=1`; ohne sie hängt der Lauf bei 3.321 von
+3.328 Token. Das gehört in jede Tabelle, die diese Zahl zitiert. Auch die 4K-Nadel lief so (3 von 3,
+8 s je Anfrage).
 
 ---
 
@@ -547,16 +628,20 @@ Reihenfolge:
 * der echte Pool: dumpen und in den Harness geben — der Harness baut seinen Pool selbst, und genau
   darin liegt die eine Differenz, die noch nicht ausgeschlossen ist.
 
-**Gemessen und nicht mehr offen:** dass es an der Länge liegt (`A.12`), und dass ein grüner q4-Fall im
+**Gemessen und nicht mehr offen:** dass es an der Länge liegt (`A.12`), dass ein grüner q4-Fall im
 Harness ohne `STRATA_KV_Q4_PROMPT=1` den Matrix-Kern überhaupt testet (tut er nicht — er testet den
-Decode-Kern und druckt `PASS`).
+Decode-Kern und druckt `PASS`), und **was der Hänger ist** (`A.14`): ein Doorbell-Deadlock im
+**Launch** des Verify-Fensters, den der schnellere Pfad im Wettlauf verliert. Mit
+`STRATA_VERIFY_ASYNC_LAUNCH=1` läuft `q4u32` durch: 4K 3/3, **32K 3/3, Prompt 619,4 tok/s gegen int8's
+626,7 auf demselben Build** — die Rate ist also **keine** Lücke mehr (Punkt 3 unten).
 
 **2. Das Fenster** ist keine Optimierung, sondern Funktionsumfang (B3, entschieden). Solange es fehlt,
 ist `q4u32` + Fenster — die Konfiguration, die im Paper steht — **kein** Fast-Path-Arm.
 
-**3. Die Rate ist der *letzte* Hebel, nicht der erste.** B2 hat den Kern 5,12× schneller gemacht
-(97,3 → 19,0 ms/Chunk, gemessen); ob der Arm damit in die Nähe von int8 kommt, sagt erst A2. Der
-naheliegende nächste Schritt — **int8-WMMA** (`wmma_i32_16x16x16_iu8`, laut AMD-Tabelle 2× fp16) —
+**3. Die Rate war der *letzte* Hebel, nicht der erste — und sie ist gemessen.** B2 hat den Kern 5,12×
+schneller gemacht (97,3 → 19,0 ms/Chunk, gemessen); A.14 zeigt, dass der Arm damit **auf int8-Niveau**
+liegt (Prompt: 619,4 gegen 626,7 tok/s, derselbe Build, dieselbe Nadel). Der naheliegende nächste
+Schritt — **int8-WMMA** (`wmma_i32_16x16x16_iu8`, laut AMD-Tabelle 2× fp16) —
 ist geprüft und **zurückgestellt** (`docs/research/KV_Q4_MATRIX_PATH_RDNA4.md`): die 2× kommen nicht
 ganz an (Fremdmessung 1,20× bzw. 1,61×, weil das Descaling je 32-Werte-Block die Hälfte zurücknimmt),
 er erzwingt **Q in int8** (ein Qualitätspreis, den wir heute nicht zahlen: beim Nachbarn +0,02 %
@@ -576,10 +661,12 @@ aus dem llama.cpp PR #31802 überhaupt 17–79 % holt).
    der ersten Query — sonst ist „kein Trace nach dem Bulk" nicht von „der Tail nimmt einen anderen
    Zweig" zu unterscheiden (B6, Befund 4). **Erledigt, und das Ergebnis verschiebt den Verdacht**
    (A.13): der Tail nimmt gar keinen q4-Kern, das Fenster läuft im Decode-Kern.
-3. Hänger beheben → Pfad ist Default-fähig → **A2** (`int8`, `q4_0`, `q4u32`) neu fahren.
-4. B3 (Fenster) auf dem dann laufenden Kern.
+3. Den **Launch** des Fensters reparieren (der Helfer-Thread als Default, wo Doorbells bedient werden
+   müssen) — **dann** ist `q4u32` default-fähig. A2 ist mit dem Schalter schon gelaufen (`int8` 626,7 /
+   `q4u32` 619,4 tok/s auf demselben Build); `q4_0` fehlt noch in dieser Serie.
+4. B3 (Fenster) auf dem dann laufenden Kern — erst damit ist der Produktarm ein Fast-Path-Arm.
 5. Teil C — und **nur** wenn A2 zeigt, dass die Rate noch die Lücke ist, int8-WMMA als eigenes
-   Vorhaben.
+   Vorhaben. Nach A.14 ist sie es **nicht**; Teil C ist damit Feinschliff, keine Voraussetzung.
 
 ### B6 — Review der Änderungen (statische Analyse, keine Messung)
 
