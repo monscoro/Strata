@@ -928,7 +928,9 @@ PCIe-/Experten-Nachschub vom Host, die WDDM-Seitenwechsel, der Takt. Keiner ist 
 3. **Die Kernaussage des Zweigs verschiebt sich damit:** `q4u32` ist der int8-Ersatz **bei gleicher
    Prompt-Zeit und kleinerem KV-Speicher** — 144 Byte je Zelle und Kopf (`block_q4_0`: 8 Blöcke × 18 Byte)
    gegen 264 Byte (256 int8-Werte + 4 fp16-Skalen), also **45 % weniger** — nicht durch Geschwindigkeit.
-   Das ist eine echte, belegte Eigenschaft und eine andere als die, die A.18 nahlegte.
+   Das ist eine echte, belegte Eigenschaft und eine andere als die, die A.18 nahlegte. **Die
+   Prompt-Gleichheit gilt mit `STRATA_KV_Q4_PROMPT=1`** (A.20/A.21); ohne den Schalter ist der Prompt
+   **2,5×** langsamer (A.21).
 
 **Offen bleibt:** ein `int8`-Lauf im schnellen Niveau (0 von 9 Anfragen) — ohne ihn bleibt offen, ob `int8`
 dort langsamer wäre als `q4u32` (868,0 tok/s). Das ist die einzige Zahl, die die alte Behauptung noch
@@ -1043,13 +1045,70 @@ langsamen Niveau** (40–49 s Prompt) — das schnelle Niveau trat in dieser Sit
   behauptet.)
 * **`int8` bringt gegenüber `q4u32` nichts an Prompt-Zeit** (±3 %, im Rauschen) und kostet **83 % mehr KV**
   (264 gegen 144 Byte je Zelle und Kopf). Der einzige offene Punkt bleibt das schnelle Niveau.
-* **Der Prompt-Kern ist ~5–7 % wert**, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende Pfad, nicht
-  der Unterschied zweier Kerne. Das ist die Zahl, an der sich entscheidet, ob `STRATA_KV_Q4_PROMPT=1`
-  Default werden soll: 5–7 % Prompt-Geschwindigkeit gegen den (in A.15 behobenen, aber weiterhin
-  opt-in gehaltenen) Hänger.
+* **Der Prompt-Kern ist für `q4_0` ~5–7 % wert** — nicht 2,3×, wie A.1 nahelegte. ~~Das ist die Zahl, an
+  der sich entscheidet, ob `STRATA_KV_Q4_PROMPT=1` Default werden soll.~~ **Korrigiert durch A.21:** die
+  5–7 % gelten für `q4_0`, das im Decode-Kern schon die schnelle Instantiation nutzt. Für `q4u32` ist
+  derselbe Kern **2,5×** wert (265 gegen 655 tok/s), weil sein Decode-Kern die fensterfähige
+  Instantiation ist. Die Default-Frage hängt damit an `q4u32`, nicht an `q4_0`.
 * **Nicht gemessen:** `q4u32` **ohne** den Schalter, also im Decode-Kern wie `q4_0`. Der `q4_0`-Arm ist
   dafür nur ein Stellvertreter (gleicher Kern, anderer Codec); die 631,3 tok/s sind **kein** Messwert für
-  `q4u32` ohne Schalter.
+  `q4u32` ohne Schalter. ~~Das wird in A.21 nachgeholt.~~ **A.21 hat es nachgeholt, und der Stellvertreter
+  war falsch — siehe die Korrektur unten.**
+
+### A.21 — Das Ergebnis: ohne den Schalter ist `q4u32` 2,5× langsamer (17.11.2026)
+
+**Die Vorbedingungen sind erfüllt:** alle sechs Läufe 3950 Slots, Chunk 6144; die **Opt-in-Zeile**
+(„the matrix-core prompt path for the 4-bit grid is opt-in") steht **3 von 3** `q4u32`-Läufen, die
+Matrix-Kern-Zeile **nie**. Der Arm lief also wirklich im Decode-Kern, wie vorregistriert. 3 von 3 Nadeln
+gefunden.
+
+| Arm | Anfragen | Mittel | Median | Spannweite | Niveau |
+|---|---:|---:|---:|---|---|
+| `int8` | 12 | **654,6** (n=8 langsam) | 652,2 | 641,3–676,5 | 11 langsam, **1 schnell** (785,3) |
+| `q4u32` ohne Schalter | 9 | **265,0** | 264,5 | 263,1–272,6 | **9 von 9 langsam** |
+
+**Im langsamen Niveau: −59,5 %** (Mittel), −59,4 % (Median) — **2,47× langsamer** als `int8`.
+
+**Die Vorregistrierung ist damit widerlegt, und zwar klar.** Erwartet war (Hypothese, aus dem `q4_0`-Arm
+von A.20) ein Niveau um 631 tok/s, also 5–7 % unter `int8`. Gemessen: **265 tok/s**. Der `q4_0`-Arm ist
+**kein** Stellvertreter für `q4u32` im Decode-Kern — er sieht nur so aus, weil beide dieselbe Zeile
+„no prompt fast path on this backend" drucken. Der Unterschied liegt in der **Instantiation**, nicht im
+Codec (statische Analyse, in A.1 schon so beschrieben): `q4_0` läuft als `kv_mode 2` (`kUniform`, ohne
+Overlay-Zweig), `q4u32` als `kv_mode 6` (`kUniformLs`, fensterfähige Instantiation **mit** Overlay-Zweig).
+
+**Und dieser Preis ist reproduzierbar:** 263,1–272,6 tok/s hier gegen **263,7 tok/s** in A.1 (14.11.,
+anderer Tag, anderer Cache: 3015 gegen 3950 Slots). Zwei unabhängige Messungen, dieselbe Zahl.
+
+**Der Aufbau der 116 s** (aus den Konsolenzeilen, Ursache **nicht** gemessen): je Anfrage ein
+**Vorlauf über den ganzen Prompt** (~20 s; die Zeilen „30.782 tokens, 10 s / 20 s") und danach
+**~13 s je 6144-Token-Chunk** — gegen 9 s bei `int8`. Zum Vergleich die Zeile aus dem `q4_0`-Arm in A.20:
+9–10 s je Chunk, ohne Vorlauf. Der Vorlauf ist der größte Einzelposten und in dieser Serie nicht zerlegt.
+
+**Was das ändert:**
+
+1. **Die Kernaussage des Zweigs gilt nur mit dem Schalter.** `q4u32` ist der int8-Ersatz **bei gleicher
+   Prompt-Zeit und 45 % kleinerem KV** — mit `STRATA_KV_Q4_PROMPT=1`. **Ohne** ihn ist der Prompt
+   **2,5× langsamer** als `int8`; damit wäre `q4u32` kein Ersatz, sondern ein Rückschritt.
+2. **Die 5–7 % aus A.20 gehören zum Stock-Codec, nicht zum uniformen Gitter.** Für `q4_0` (das den schnellen
+   Decode-Kern hat) ist der Matrix-Kern 5–7 % wert; für `q4u32` (das den langsamen hat) ist er **2,5×**
+   wert. Beides ist gemessen, beides gilt für seinen eigenen Vergleich.
+3. **Der Schalter ist damit die eigentliche Default-Frage**, nicht der KV-Typ: mit ihm liegt `q4u32` bei
+   `int8` (±3 %) und spart 83 % KV-Bytes; ohne ihn ist es 2,5× langsamer. Die Entscheidung ist eine
+   Risiko-Entscheidung (der Hänger aus A.15, dort behoben, aber weiter opt-in) — keine
+   Geschwindigkeitsfrage mehr.
+4. **Nebenbeobachtung:** `int8` hat **einmal** das schnelle Niveau erreicht (38 s, **785,3 tok/s**,
+   Anfrage 1 von `a21-int8-c`) — in A.18/A.19/A.20 in 0 von 21 Anfragen. Das Niveau ist also **nicht**
+   arm-spezifisch; eine Anfrage ist aber keine Aussage über das Niveau, und `q4u32`/`q4_0` kamen in
+   diesem Lauf nicht in seine Nähe.
+
+### Korrektur zu A.20
+
+A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
+Pfad". Der zweite Halbsatz ist **falsch** und wird hiermit zurückgenommen: A.21 misst für `q4u32` ohne
+Kern **2,47×** (265 gegen 655 tok/s), und A.1s 2,3× war genau dieser Pfad, nicht ein Messfehler. Richtig
+ist: **5–7 %** ist der Wert des Kerns für `q4_0` (das im Decode-Kern schon die schnelle Instantiation
+nutzt); **2,5×** ist er für `q4u32` wert. Die A.20-Tabelle und der `q4_0`-Befund bleiben unberührt, nur
+die Verallgemeinerung auf `q4u32` war falsch.
 
 ### A.21 — vorregistriert: `q4u32` ohne den Schalter, also der heutige Default-Zustand (17.11.2026, vor dem ersten Lauf)
 
@@ -1615,8 +1674,9 @@ Revert ohne Verhaltensänderung. **Nicht gebaut:** der CUDA-Zweig (kein `nvcc` a
 
 **Die Reihenfolge nach der Messung (17.11., neu):** ~~H1~~ → ~~H2~~ → ~~H6~~ → ~~H5a~~ (bitgleich,
 ohne Gewinn) → ~~H7~~ (Gate rot) → ~~H4/H3~~ (−5…−6 %, Gate rot, als Opt-in behalten) → der
-**cvt-Mikrohebel** nur zusammen mit einem Bau — sonst ist die Hebel-Liste abgearbeitet. **Danach die
-Motor-Serie A.20** (`int8`, `q4_0`, `q4u32` im gleichen Niveau), erst dann die Default-Entscheidung. M2: 3
+**cvt-Mikrohebel** nur zusammen mit einem Bau — sonst ist die Hebel-Liste abgearbeitet. **Motor-Serie
+~~A.20~~/~~A.21~~ gefahren:** `q4_0` 5–7 % unter `q4u32` (kein Prompt-Kern), `int8` und `q4u32` gleichauf,
+`q4u32` ohne den Schalter **2,5× langsamer** — damit steht die Default-Entscheidung an. M2: 3
 Wiederholungen, ≥5 % zählt, und seit dem 17.11. zusätzlich: **nur das A/B-Verhältnis im selben Lauf**
 ist über Builds hinweg belastbar (der Kartenzustand verschob die Absolutzeiten um ~49 %).
 
