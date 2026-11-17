@@ -1350,6 +1350,10 @@ berichtet, **wie viele Koordinaten** im Anker die Skala bestimmen (die „Outlie
 
 ### A.26 — Das Ergebnis: die Skalierungsachse ist keine (17.11.2026)
 
+**Für die Veröffentlichung:** `docs/paper/KV-q4u32-matrix-core.pdf` (q4u32: A 4-Bit KV Cache the Matrix Core
+Can Read) trägt die Serie A.16–A.26 in der Form, in der sie erscheint; dieses README bleibt der
+Arbeitsstand mit den offenen Armen (A.24/A.25) und den Vorregistrierungen.
+
 **Die Messung** (offline, `tools/kv_scale_axis.py`, auf dem Zellen-Dump des Centering-Projekts: 768 Records,
 **392.952 Token**, **201.191.424 Werte** je Seite, alle **12 QSA-Layer**; MSE je Wert, dB gegen den Anker):
 

@@ -2,6 +2,9 @@
 
 Stand 2026-11-14, fortgeschrieben 2026-11-17 (§7 Laufzeitstand, §8 Literatur-Update, §9 die gfx11-Familie).
 Gehört zu `bench/results/2026-11-14-q4u32-fastpath/README.md` (Serie #1, Teil B).
+**Das Paper zum Produktpfad:** `docs/paper/KV-q4u32-matrix-core.pdf` (q4u32: A 4-Bit KV Cache the Matrix Core
+Can Read) — es trägt die Messungen A.16–A.26 und die Ablation in der Form, in der sie veröffentlicht
+werden; diese Notiz bleibt der Arbeitsstand mit den offenen Armen (A.24/A.25).
 Die eigene Messung ist als **Messung** markiert, alles andere als **Quelle** oder als **Rechnung**.
 Eine Rechnung ist keine Messung: sie sagt, was zu erwarten wäre, nicht was gilt.
 
