@@ -545,7 +545,7 @@ def _engine_view(component: ec.EngineComponent | None) -> dict | None:
         return None
     return {"version": component.version, "platform": component.platform, "backend": component.backend,
             "variant": component.variant, "build_id": component.build_id, "folder": component.root.name,
-            "signed": bool(component.signature)}
+            "signed": bool(component.signature), "flavor": component.flavor}
 
 
 def decide_engine(feed: feedmod.Feed, ctx: Context, state: State) -> dict:
@@ -600,7 +600,8 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
                 "download_bytes": 0, "previous": state.section("engine").get("previous"), "pinned": state.section("engine").get("pinned"),
                 "problem": None}, None
     installed, missing_reason = installed_engine(ctx.components, ctx.hardware)
-    sticky = {**ctx.hardware, "installed_variant": installed.variant if installed is not None and installed.backend in ("hip", "cuda") else ""}
+    sticky = {**ctx.hardware, "installed_variant": installed.variant if installed is not None and installed.backend in ("hip", "cuda") else "",
+              "installed_flavor": installed.flavor if installed is not None else ""}   # an update never switches the variant of Strata (feed.select_engine)
     offered, reasons = feedmod.select_engine([p for p in feed.engine], sticky)
     section = state.section("engine")
     report = {"installed": _engine_view(installed), "offered": offered.to_dict() if offered else None,
@@ -610,6 +611,12 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
     if offered is None:
         if not feed.engine:
             report["status"] = "not-in-feed"
+        elif installed is not None and installed.flavor and not any(
+                getattr(p, "flavor", "") == installed.flavor for p in feed.engine):
+            # the feed's engine is another variant of Strata: an update never switches the installed one (feed.select_engine)
+            report["status"] = "kept-variant"
+            report["note"] = (f"your {installed.flavor} build is kept: an update never switches the variant of Strata that is "
+                              f"installed. Install the other variant yourself if you want it.")
         else:
             hip = [p for p in feed.engine if p.backend == "hip" and p.platform == ctx.hardware.get("platform")]
             if hip and ctx.hardware.get("backend") == "hip" and ctx.hardware.get("gfx") and not any(
