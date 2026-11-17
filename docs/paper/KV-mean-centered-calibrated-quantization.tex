@@ -3,6 +3,25 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v1.0 2026-11-17  the paper is restructured around the development line
+%                     it actually describes --- int8, the stock 4-bit grid
+%                     after the rotation (q4_0), the Max-Lloyd table with
+%                     the exact-cell window (q4lm32), the affine shear, and
+%                     the uniform grid with a fitted step (q4u32) --- and the
+%                     question the development ends in is named and answered
+%                     in a section of its own: why the product arm carries
+%                     no calibration.  The measurement: on the uniform grid
+%                     the per-channel offset is worth +0.00043 nats
+%                     (t = +0.36) against +0.00677 on the coarse probe,
+%                     because the grid and the offset recover the same
+%                     wasted range --- they are substitutes, and the grid's
+%                     fitted step already absorbs the bias.  Nothing in the
+%                     measurements was re-run; the sections were reordered,
+%                     two were added, the title and the abstract were
+%                     rewritten, and the closing paragraph now names the
+%                     product arm.  The sibling paper (the implementation
+%                     and optimization paper on the matrix-core path) is
+%                     cited for the part it measures.
 %   v0.24 2026-11-14  q4u32 enters the paper early, and the two axes the
 %                     plan asks about are answered from the measurements.
 %                     (1) The uniform-grid arm is introduced in Section 2
@@ -243,9 +262,9 @@
 \definecolor{ACMPurple}{cmyk}{0.55,1,0,0.15}
 \definecolor{ACMDarkBlue}{cmyk}{1,0.58,0,0.21}
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
-  pdftitle={Mean-Centered Calibrated KV Quantization: int8 Quality Below 5 bit/cell},
+  pdftitle={From int8 to a Uniform Grid: How Strata's 4-bit KV Cache Was Chosen},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 0.24, built \buildstamp; first version 2026-10-25}}
+  pdfsubject={Version 1.0, built \buildstamp; first version 2026-10-25}}
 
 \setlength{\parindent}{10pt}
 
@@ -254,13 +273,13 @@
 % Full-width ACM conference title block, then the two columns start with the abstract.
 \twocolumn[{%
   \begin{center}
-    {\LARGE\bfseries Mean-Centered Calibrated KV Quantization\par}
+    {\LARGE\bfseries From int8 to a Uniform Grid\par}
     \vspace{0.6em}
-    {\large For int8 quality below 5 bit/cell: status, work plan, and the one measured lever\par}
+    {\large How Strata's 4-bit KV cache was chosen, and why the product arm carries no calibration\par}
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 0.24 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
+    {\small Version 1.0 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-10-25\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -268,27 +287,95 @@
 \noindent\textbf{Abstract}\par
 \vspace{0.6ex}
 \noindent
-The exact-cell window stores a 4-bit KV cache at 5.29 bit/cell (1,016\,MiB at 128K, 36\% below \texttt{int8}'s 1,584\,MiB), but \texttt{int8} remains ahead on the statistics that carry weight: the paired 4K mean, the 128K whole segment, p99 and the last 1,024 positions on both texts. The predecessor paper left two bars for a follow-up: opt-in parity at 6.0 bit/cell, and a default change at any rate below 8.25. Neither is a product target --- 6.0 sits above the shipped 5.29, and a win at 8.2 saves 0.6\% of the cache. This paper asks the follow-up question in product terms: what would a point have to look like that stores at most \textbf{5.0 bit/cell} --- 6\% below the shipped window and 39\% below \texttt{int8} --- and is not behind \texttt{int8} on any robust statistic? We fix the target operationally (six criteria, set before the first run), compute the byte budget (0.50 bit/cell for the ring: 4,096 cells in fp16, 7,943 with an \texttt{int8} ring, 5,461 at 12 bit, against 6,464 today), locate the remaining error from the predecessor's measurements (the bulk, not the overlay; and immediately outside the window, not only far from it), list six levers with their bit cost and their kill, and give a five-stage falsification ladder with explicit stop conditions. \emph{No number in this paper is a measurement of the 5.0-bit point.} Since version 0.5 the paper carries one lever that is measured rather than proposed: the per-channel offset of the cached K and V rows. Removing it before the rotation --- a calibrated table of 6,144 values per side (48\,KB as stored for this model), which is the zero-point of an asymmetric quantizer --- is worth 1.70\,dB of block error on the key side and 4.63\,dB on the value side. End to end it is worth $+0.00677$ nats on the plain 4-bit arm, and that is where it ends: on the 8-level value table the gain shrinks to $+0.00218$, and on the 16-level-on-both-sides codec it disappears ($-0.00079$, not significant), because the level table and the calibration recover the same wasted range and the level table is the cheaper of the two. The arm the plan therefore selects is \textbf{16 levels on both sides with the exact-cell window}: on cwe-4k it reaches \texttt{int8}'s level (mean KL 0.01689 against 0.01688, a paired difference of $+0.00002$, $t = -0.02$), with no per-model artifact, no basis discipline in the snapshot and no extra runtime. At 128K this reading does not hold. Against the fairest \texttt{int8} anchor --- rotation and calibration, mean KL 0.06419 --- the calibrated product arm is $+0.00442$ nats behind ($t = +2.90$, upper 95\,\% bound $+0.00741$) against the pre-registered parity bound of $0.00254$, and $+0.00623$ behind the best rotated anchor (0.06238, $t = +4.23$); the 5.0-bit target is not reached on this corpus. The calibration is codec-dependent and changes sign: it is worth 0.00314 nats on the 16/16 codec (with a significantly better top-1), 0.00045 on the shipped 16/8 codec, and it costs 0.00181 on \texttt{int8}, so it stays a substitute for the level split rather than a second lever. The 5.0 numbers remain byte-model arithmetic on measured points and are labelled as such.
+This paper is the development line of one decision: which 4-bit format Strata's KV cache should use. It
+runs from \texttt{int8} (8.25 bit per cell, the anchor) through the stock 4-bit grid after the rotation
+(\texttt{q4\_0}, $+0.00843$ nats behind \texttt{int8}), the Max-Lloyd table with the exact-cell window
+(\texttt{q4lm32}: 16 levels on both sides, a statistical tie with \texttt{int8} at $+0.00002$, but a table to
+read at run time and $2.25\times$ the prompt read time of the grid), the affine shear with a per-block zero
+point (0.86\,dB better in the block measure, half a bit per cell more), and the uniform grid with a
+least-squares-fitted step (\texttt{q4u32}: $+0.00052$ nats, a tie with the product arm, and no table, no
+codebook and no per-model artifact). Every step is a measurement on the engine's own cells or on its own
+outputs, and every step has the kill that closed it.
+
+The question the development ends in gets a section of its own, because it is the one that decides the
+product: \emph{why does the product arm carry no calibration?} The per-channel offset --- the lever this line
+of work is named after --- is worth 1.70\,dB of block error on the key side and 4.63\,dB on the value side,
+and $+0.00677$ nats end to end on the coarse 4-bit probe. On the uniform grid it is worth $+0.00043$ nats
+($t = +0.36$): nothing. The reason is a substitution, not a coincidence: the grid and the offset recover the
+same wasted range, and the uniform grid's fitted step already absorbs the bias that the offset removes. The
+calibration therefore has nothing to win on the product arm, and it would cost a per-model table, a basis
+discipline in the snapshot and a portability question. The paper also fixes the target that came out of this
+line (5.0 bit per cell with \texttt{int8} not ahead on any robust statistic), computes the byte budget at
+that target, locates the remaining error, and lists the levers with their bit cost and their kill. The
+implementation of the chosen format --- how the matrix core reads it, and what it buys --- is the subject of
+the sibling paper\,\cite{q4u32paper}.
 \par\medskip
 
 \section{Introduction}
 
-The predecessor paper ended with a measured trade-off and an open question\,\cite{kvwin}. The exact-cell window keeps the most recent $S{=}256$ cells and $R{=}64$ sink cells of each of the 12 cache-carrying QSA layers in fp16 while the rest of the cache stays in the 4-bit Lloyd format. At 128K it uses 5.29 bit/cell and 1,016\,MiB against \texttt{int8}'s 8.25 bit/cell and 1,584\,MiB, frees 568\,MiB for expert weights (416 more resident slots), holds prefill throughput (528 against 526\,t/s) and keeps decode inside run-to-run spread. On the fixed cwe corpora it removes 73\% of the plain 4-bit base's KL gap to \texttt{int8} at 4K and 34--58\% of its 128K tail-mean KL. It does not beat \texttt{int8}: at 4K \texttt{int8} is ahead on the paired mean ($t{=}-3.55$, 7 of 8 segments), and at 128K it keeps the p99, the last 1,024 positions and the whole segment on both texts.
+This paper tells how one format was chosen, and it tells it in the order the choices were made: from the
+8-bit anchor through the stock 4-bit grid that the rotation already produces, through the Max-Lloyd table
+that the shipped window arm uses, through the affine shear that the block measurements favoured, to the
+uniform grid with a fitted step that the product now runs. Each step is a measurement --- on the engine's
+own cells or on the engine's own outputs --- and each step has the kill that closed it. The reading is not
+that a format won a contest but that each step removed one possibility and named the next.
 
-That paper named two bars for a successor\,\cite{kvwin}. Bar~A asked for opt-in parity within half of the measured gaps at no more than 6.0 bit/cell. Bar~B asked for a default change: not behind \texttt{int8} on the paired 4K mean, the 128K whole segment or p99 on either text, at any rate below 8.25 bit/cell. Both were written to be honest about what the evidence supports, and both are too weak as a \emph{target}.
+\paragraph{The line in one table.} The arms below are the same model, the same build, the same text and the
+same ids; the numbers are the mean KL against an fp16 reference over the 32,746 positions of cwe-4k, with
+the paired difference against \texttt{int8} in the sixth column (positive: behind \texttt{int8}).
 
-Bar~A's ceiling sits above today's measured point: an arm at 6.0 bit/cell would be 13\% \emph{larger} than the shipped window while merely tying \texttt{int8} within a margin. Bar~B has no byte ceiling at all, so a win at 8.2 bit/cell saves 0.6\% of the cache --- a quality result without a product. A target that is worth a branch has to bind both sides at once: a byte ceiling below today's point and a quality floor at \texttt{int8}.
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{The development line as measured (cwe-4k, 32,746 positions, the merged engine; the KL values and
+the paired differences are from Table~\ref{tab:center}; the byte model of the arms is Section~\ref{sec:bytes}).}
+\label{tab:line}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Arm & KL & $\Delta$ vs \texttt{int8} & what it costs \\
+\midrule
+\texttt{int8} (the anchor)   & 0.01688 & ---         & twice the memory \\
+\texttt{q4\_0} (stock grid) & 0.02530 & $+0.00843$ & the widest gap \\
+\texttt{q4lm32w} + window   & 0.01689 & $+0.00002$ & a table to read \\
+\texttt{q4u32} + window     & 0.01739 & $+0.00052$ & nothing \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-This paper sets that target at \textbf{5.0 bit/cell}: 6\% below the shipped window (5.29) and 39\% below \texttt{int8} (8.25), with \texttt{int8} not ahead on any robust statistic. Five bits is not a round number borrowed from the literature; it is the point where the arithmetic below still leaves a ring large enough to cover the cells the indexer reads, while the bulk has to become better than 4-bit Lloyd to close the rest. The paper's contributions are:
+\paragraph{The three questions the line raises.} \emph{(i) Which grid?} The stock grid after the rotation
+is $+0.00843$ behind; a Max-Lloyd table with 16 levels on both sides closes that gap completely, but the
+table has to be read in the operand, and the prompt kernel reads the cache on the matrix cores --- where a
+table lookup is an operation per element. \emph{(ii) Which step?} The uniform grid's step is fitted, not
+taken from the block maximum, and the fit is worth 0.43\,dB; the fitted step also costs nothing to read,
+because it is the affine map the kernel already applies per group of 32 dimensions. \emph{(iii) Which
+calibration?} The per-channel offset is the lever this line of work is named after, and it is worth decibels
+on the coarse probe --- and nothing on the uniform grid, for a reason that is a substitution rather than a
+coincidence. Section~\ref{sec:calibration} answers that question in its own section, because it is the one
+that decides the product.
 
-\begin{itemize}[leftmargin=1.2em,itemsep=0.15em,topsep=0.2em]
-\item an operational definition of ``better than \texttt{int8} in all areas'' (six criteria, fixed before the first run, with the statistics that are deliberately excluded and why);
-\item the byte budget at 5.0 bit/cell, including three ring tiers (fp16, \texttt{int8}, 12 bit) and the break-even move;
-\item the location of the remaining error, read off the predecessor's measurements: the bulk carries it, and the last-1,024 loss sits immediately outside the exact window, not only far from it;
-\item six levers with their bit cost, their gate and their kill, and a five-stage ladder with explicit stop conditions.
-\end{itemize}
+\paragraph{What the target was and is.} The predecessor paper ended with a measured trade-off and two bars
+for a successor\,\cite{kvwin}: opt-in parity at 6.0 bit/cell, and a default change at any rate below 8.25.
+Neither is a product target --- 6.0 sits above the shipped 5.29, and a win at 8.2 saves 0.6\,\% of the
+cache. This paper fixed the target operationally instead: \textbf{5.0 bit per cell}, 6\,\% below the
+shipped window and 39\,\% below \texttt{int8}, with \texttt{int8} not ahead on any robust statistic (six
+criteria, set before the first run). Five bits is not a round number borrowed from the literature; it is the
+point where the arithmetic still leaves a ring large enough to cover the cells the indexer reads, while the
+bulk has to become better than 4-bit Lloyd to close the rest.
 
-What this paper is not: it reports no new measurement, changes no engine code, and does not claim that 5.0 bit/cell is reachable. Its 5.0 numbers are byte-model arithmetic on two measured points, and every such number is marked. The paper is a pre-registration: it fixes the target, the byte ceiling and the kills before the first GPU run, so that a later result cannot be fitted to a moving bar. A negative result --- the ladder ending without a winner --- is an intended outcome and is cheaper than an open-ended sweep.
+\paragraph{The contributions.} (i) The development line with every step measured and every kill named
+(Sections~\ref{sec:line} and~\ref{sec:levers}); (ii) the calibration question, answered with a number
+(Section~\ref{sec:calibration}); (iii) the byte budget at 5.0 bit per cell, including three ring tiers
+(fp16, \texttt{int8}, 12 bit) and the break-even move (Section~\ref{sec:bytes}); (iv) the location of the
+remaining error, read off the predecessor's measurements: the bulk carries it, and the last-1,024 loss sits
+immediately outside the exact window, not only far from it (Section~\ref{sec:error}); (v) six levers with
+their bit cost, their gate and their kill, and a five-stage ladder with explicit stop conditions
+(Sections~\ref{sec:levers} and~\ref{sec:ladder}).
+
+\paragraph{What this paper is not.} It changes no engine code, and it does not claim that 5.0 bit per cell is
+reachable: its 5.0 numbers are byte-model arithmetic on two measured points, and every such number is
+marked. The ladder's negative result --- an intended outcome --- is cheaper than an open-ended sweep. The
+implementation of the format the line selected --- how the matrix core reads the 4-bit pool, and what that
+buys --- is a separate paper\,\cite{q4u32paper}; this one is the development that chose the format.
 
 \section{The Measured Point and the Target}\label{sec:target}
 
@@ -459,6 +546,105 @@ K5's 10\% is the only threshold without a measured basis; it is a choice, set be
 
 Finally, what ``all areas'' cannot mean here. The harness measures single-segment, teacher-forced KL on one task family, on one GPU, one operating system, one weight set. It does not measure multi-turn growth, concurrency, mid-segment KL against the other arms, or a second task family. The target is therefore a claim about the statistics in Table~\ref{tab:target} and nothing wider; Section~\ref{sec:threats} states the bound.
 
+\section{The Development Line: from int8 to a uniform grid}\label{sec:line}
+
+The line has five steps, and each of them was a candidate for the product arm. The measurements are in
+Table~\ref{tab:center} and in the block measurements of Section~\ref{sec:levers}; what follows is the order
+and the reason.
+
+\paragraph{Step 1: \texttt{int8} is the anchor, and it is not a candidate.} 8.25 bit per cell, one fp16 scale
+per 64 values. Every comparison in this paper is against it, and every product decision has to keep it ahead
+on the statistics that carry weight (the paired 4K mean, the 128K whole segment, p99 and the last 1,024
+positions on both texts). It costs twice the memory of the 4-bit arms, which is the whole reason the line
+exists.
+
+\paragraph{Step 2: the stock grid after the rotation (\texttt{q4\_0}).} The cache is rotated before it is
+written, so the 4-bit grid that needs no writer of its own is already there --- and it is $+0.00843$ nats
+behind \texttt{int8} (Table~\ref{tab:center}), worse than the level-table family without the window
+($+0.01495$), because that probe carries the 8-level value table. The grid is also the cheapest possible
+4-bit format: no table, no per-model artifact, and the reconstruction $({\rm code}-8)\cdot d$ is exactly the
+affine map the prompt kernel applies per group of 32 dimensions.
+
+\paragraph{Step 3: the Max-Lloyd table with the exact-cell window (\texttt{q4lm32}).} Replacing the uniform
+grid with a fitted Max-Lloyd table and giving both sides 16 levels closes the gap completely: $+0.00002$
+nats against \texttt{int8}, a statistical tie ($t = -0.02$), with a p99 of 0.2410 against
+\texttt{int8}'s 0.1888. It is the codec this line of work produced, and it is the product arm of the
+sibling paper's predecessor. Its price is the table: the prompt kernel's value mapping is hardcoded to
+$({\rm code}-8)$, so a level table has to be looked up in the operand, once per element. Measured on the
+same arms, that costs $2.25\times$ the prompt read time, and it is a kernel-structure price, not a
+matrix-core price --- the level table is what the fast path declines.
+
+\paragraph{Step 4: the affine shear with a per-block zero point.} The block measurements liked it: a uniform
+grid with a fitted step \emph{and} a fitted zero point is 0.86\,dB better than the fitted Lloyd table it
+would replace, because the cached rows carry a fixed per-channel offset and a grid centred on zero spends
+half its range on it. The same measurement prices the version without the zero point (0.43\,dB against that
+table, and it rides the existing kernel with no change) and the byte cost of the zero point (one more
+number per 32-value block: the bulk grows from 4.5 to 5.0 bit per cell, which is the whole margin the plan
+had). The end-to-end arm then landed the kill: the shear and the calibrated product arm are a statistical
+tie ($+0.00001$ nats), so the half bit per cell buys nothing.
+
+\paragraph{Step 5: the uniform grid with a fitted step (\texttt{q4u32}).} The same block measurement that
+killed the shear names the product arm: a uniform grid with a least-squares-fitted step is 0.43\,dB
+\emph{better} than the fitted Lloyd table on the same blocks, it needs no table at read time, no codebook and
+no per-model artifact, and it costs the same bytes as the stock 4-bit cache (4.5 bit per cell with the
+window). On quality it is a tie with the product arm ($+0.00052$ nats against \texttt{int8}, $+0.00050$
+against the 16/16 codec, $-0.00029$ against the calibrated 16/16 codec), with a worse tail (p99 0.2653
+against 0.2410). What it buys is not quality but architecture --- and architecture is what the engine was
+missing, because a 4-bit pool that the matrix core cannot read is 2.5 times slower than the 8-bit cache it
+replaces\,\cite{q4u32paper}.
+
+\paragraph{The reading of the line.} Two of the five steps were about quality and are now closed: the level
+split (both sides at 16 levels) and the shear. Three were about what the format costs to hold and to read:
+the table, the zero point and the per-block scale. The format the product runs is the one that survived all
+three, and it is not the one the quality measurements preferred --- it is the one that costs the least to
+read on the hardware that reads it.
+
+\section{Why the Product Arm Carries No Calibration}\label{sec:calibration}
+
+The lever this line of work is named after is the per-channel offset: the cached K and V rows carry a fixed
+offset per channel, and removing it before the rotation --- a calibrated table of 6,144 values per side,
+48\,KB as stored for this model, which is the zero point of an asymmetric quantizer --- is worth 1.70\,dB of
+block error on the key side and 4.63\,dB on the value side, and $+0.00677$ nats end to end on the plain 4-bit
+probe (8 of 8 segments, per-position interval $[+0.00350, +0.01003]$).
+
+On the product arm it is worth $+0.00043$ nats ($t = +0.36$): nothing. The product arm does not carry the
+calibration, and the reason is worth stating precisely, because it is the reason the paper's own lever did
+not become the product's.
+
+\paragraph{It is a substitution, and the grid is already on the other side of it.} The offset and the level
+table buy back the same wasted range: both spend their bytes on the bias that a grid centred on zero would
+otherwise carry. That is why the offset's end-to-end effect shrinks as the codec gets better --- $+0.00677$
+on the coarse 16/8 probe, $+0.00218$ with the window (per-position interval $[-0.00022, +0.00459]$, no
+longer excluding zero), and $-0.00079$ on the 16/16 codec, where it is nothing and the mean KL is even
+slightly worse with it (0.01689 against 0.01768). The uniform grid is the fourth member of that family: its
+step is a \emph{fitted} step, and the fit absorbs the bias that the offset would have removed. The block
+measurement says the same thing from the other side: the uniform grid with the fitted step is 0.43\,dB
+better than the Lloyd table, and the reason given for that gain is the same fixed per-channel offset --- the
+grid recovers the range without a table. So on the uniform grid the calibration has nothing left to win,
+and the numbers confirm it ($+0.00043$, $t = +0.36$).
+
+\paragraph{The cost side is not small either.} The calibration is not free even where it wins: it is a
+per-model artifact (48\,KB for this model), it brings a basis discipline --- a snapshot of a centered state
+must not be restored into an uncentered one --- and it carries a portability question of its own (whether the
+offsets hold on a text they were not calibrated on; they do, in the sense that the effect survives the change
+of text and length: correlation 0.9489, mean deviation 0.0799\,sd). The uniform grid asks for none of the
+three.
+
+\paragraph{The honest caveat, and what it does not change.} The calibrated uniform-grid arm does look better on
+two statistics: the p99 (0.2062 against 0.2653) and the top-1 agreement (98.96\,\% against 98.89\,\%). Both
+were put to a paired test. The top-1 difference is not significant: the two arms disagree on 346 of 32,746
+positions, 186 in favour of the calibrated arm and 160 against it, an exact McNemar $p = 0.18$. On a tail
+defined once and independently of the arms --- the 1\,\% of positions where \texttt{int8}'s KL is largest ---
+the uncalibrated arm is the better one (mean KL 1.080 against 1.211), while both are far ahead of
+\texttt{int8} (1.445). The reading that survives is the paired mean, and it says the calibration is worth
+nothing here. The p99 has to be re-checked on the 128K texts, where it is a criterion of its own (K3).
+
+\paragraph{What the calibration stays.} It is a lever for a codec that wastes range --- the 8-level-value
+probe, and the coarse 4-bit base --- and a useful general result about where the bias of a trained model
+sits. It is not part of the product arm, and the reason is not that it was too expensive to implement: it
+is that on the format the product runs there is nothing for it to win, and a per-model artifact with a basis
+discipline is a cost that only pays when it buys something.
+
 \section{The Byte Budget at Five Bits}\label{sec:bytes}
 
 The predecessor's byte model is one line\,\cite{kvwin}:
@@ -577,7 +763,11 @@ Together these facts point one way: the bulk must become a better code than 4-bi
 
 The predecessor also closed five doors, and this plan does not reopen them\,\cite{strata-wp}: clipping after the Walsh--Hadamard (worse 2K KL), Hadamard on/off as a quality arm (a tie on the 16-level base at 2K and 4K), the K-versus-V bit contrast ($t{=}+0.05$), a 3-bit base without the window (worse), and $R{=}8$ as a sink count (too small). The published direction that keys keep the bits\,\cite{spectralkv} stands as its authors' result on their models; it is not a reason to rerun a contrast this model has already failed.
 
-\section{Six Levers}\label{sec:levers}
+\section{The levers, in the order they were tried}\label{sec:levers}
+
+The development line of Section~\ref{sec:line} closed on axes; this section names them, with the gate that
+decided each and the byte cost it would have carried. The order is the order they were tried, and each entry
+ends with the measurement that closed it.
 
 Table~\ref{tab:levers} lists the levers in the order the ladder tests them. Each has a bit cost that comes out of the same 0.50, a gate that must pass before it is built, and a kill. None is a result.
 
@@ -690,10 +880,30 @@ The plan's most likely outcomes are a negative result and a 6.0-bit fallback, in
 
 \paragraph{The state after the first ladder step.} One measurement is in, and it decides the codec. The 16-levels-on-both-sides codec with the exact-cell window reaches \texttt{int8}'s level on cwe-4k (paired $+0.00002$ nats, $t = -0.02$), while the shipped 8-level-value probe is $+0.00402$ behind, and the level split is worth $+0.00400$ nats against it (per-position $[+0.00138, +0.00663]$, $t = +2.99$). The per-channel offset --- the lever this paper is named after --- turns out to be a \emph{substitute} for the level table rather than an addition to it: $+0.00677$ nats on the coarse probe, $+0.00218$ with the window (not significant), and nothing on the 16/16 codec. The product reading on 4K is therefore the 16/16 codec with the window and without the calibration: no per-model artifact, no basis discipline in the snapshot, no extra runtime.
 
+
+\paragraph{Where the line ended.} The development of Sections~\ref{sec:line} and~\ref{sec:calibration} names
+the product arm: the uniform grid with a fitted step, the exact-cell window, and no calibration --- because on
+that grid the calibration has nothing to win (Section~\ref{sec:calibration}), and because the grid's
+reconstruction is the affine map the matrix core already applies, which is what makes the format readable on
+the card that dominates the product's prompt time. The 5.0-bit target is a separate question and it stays
+open: the ladder's first step reached \texttt{int8}'s level at 4K on the 16/16 codec, and at 128K the gap
+against the fairest anchor is $+0.00442$ nats, so the byte model of the ring is still the binding constraint
+and the bulk is still where the error sits. What the line delivered is not a smaller cache but a format
+whose cost is known: 4.5 bit per cell, one step per 32 values, no codebook, no zero point, no per-model
+artifact --- and the implementation that serves it on the matrix cores is the sibling paper\,\cite{q4u32paper}.
+
+
 At 128K that reading does not hold, and the plan says so. Against the unrotated anchor the same arm is $+0.00741$ nats behind on the first 128K text ($t = +4.80$), wider on the p99, and the gap grows with the context length rather than shrinking. That anchor, however, is not the fairest one this engine can produce, and this is what the 128K block adds to the reading: the rotation the product arm already uses lowers the anchor from 0.06435 to 0.06238, and adding the calibration brings it back to 0.06419 --- the calibration hurts \texttt{int8} at this length. Against those two anchors the calibrated product arm is $+0.00442$ (R2b, paired $t = +2.90$, upper 95\,\% bound $+0.00741$) and $+0.00623$ (R2a, $t = +4.23$), against the pre-registered parity bound of 0.00254; the gate fails against the milder of the two. The 5.0-bit target is therefore not reached by this arm on this corpus, and the reason is the bulk codec in the long context, not the overlay --- the overlay is what buys the 5.29 against 8.25 bit per cell. The calibration, worth nothing on this codec at 4K, is worth $+0.00314$ nats here (paired, $t = +2.05$), improves the p99 and is significantly better on the top-1 of that pair ($p = 0.0080$); it removes 41\,\% of the gap to R2b and leaves the arm $+0.00442$ behind, so K2 and K3 fail with and without it. On the codec that is shipped today the same measurement says almost nothing --- 0.00045 nats at this length, not significant --- and on \texttt{int8} it costs 0.00181, which is the third leg of the reading that the calibration is a substitute for the level split and not a second lever.\footnote{The 4K tie quoted throughout this paper is a tie against the \emph{unrotated} anchor. Against the fair 4K anchor the same 16/16 window arm is already $+0.00293$ ($t = +2.42$, interval $[+0.00056, +0.00529]$), so the long context does not break a tie that held against the fair anchor: it widens a small deficit by half, from 0.00293 to 0.00442 nats. In proportion the deficit shrinks with the length (19.8\,\% of the fair anchor's mean at 4K, 6.9\,\% at 128K); in nats it grows.} What the measurements close is more than the codec axis: the level split in both directions, the per-layer allocation, the codebook and the scale, and the calibration as a second lever (Section~\ref{sec:levers}). What they leave open is the ring: an \texttt{int8} ring would halve the overlay's byte price and make the 5.0 mark arithmetically reachable, and that is a geometry question, not a codec one.
 
 \begin{thebibliography}{34}
 \setlength{\itemsep}{0pt}\footnotesize\raggedright
+
+\bibitem{q4u32paper}
+M.~Kronenberger.
+\emph{q4u32: A 4-Bit KV Cache the Matrix Core Can Read}.
+In-repo, \texttt{docs/paper/}, version 1.1, 2026-11-17.
+(The implementation and optimization paper: how the chosen format is read by the prompt kernel on the matrix
+cores, what that buys, and the product rule that follows.)
 
 \bibitem{kvwin}
 M.~Kronenberger.
