@@ -1,6 +1,9 @@
 # AGENTS.md
 
-Version 0.2.13, engine 0.1.59. The public model families are DeepSeekV4.1-Flash-1017,
+Version 0.2.13, engine 0.1.59.1-q4u32 (this tree's engine: the Strata release it was changed from plus the suffix of
+what it adds — the measured `q4u32` KV default, so a fork build is never mistaken for an upstream one. Upstream's
+v0.2.15 ships app/Terminal 0.2.15, Control 0.1.61, engine 0.1.60; a merge with upstream re-checks the numbers). The
+public model families are DeepSeekV4.1-Flash-1017,
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B. DeepSeek V4.1-Flash runs in the app and in the Terminal
 (`strata launch --family deepseek41 --model ist-das-2.00bpw`; sets in
 [docs/MODELS.md](docs/MODELS.md#deepseek-v41-flash)). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and

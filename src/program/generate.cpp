@@ -19,6 +19,7 @@
 #include "strata/platform/io_priority.hpp"
 #include "strata/core/adapt_async_default.hpp"
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/engine_version.hpp"
 #include "strata/core/gfx12_chunk.hpp"
 #include "strata/core/gfx12_platform_defaults.hpp"
 #include "strata/core/nv_chunk.hpp"
@@ -1880,7 +1881,7 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
 #endif
     strata::core::Progress& p = strata::core::progress();
     std::fprintf(f, "strata serve: stall report (engine %s): stage \"%s\" for %lld s; %llu layers served since the "
-                    "last finished step (0 = stopped, more = slow)\n", STRATA_VERSION, stage_text().c_str(),
+                    "last finished step (0 = stopped, more = slow)\n", STRATA_ENGINE_VERSION, stage_text().c_str(),
                  (long long) ((strata::core::progress_now_ms() - p.since_ms.load()) / 1000),
                  (unsigned long long) layers_during);
     if (const int64_t vf = g_req_vram_free_mib.load(); vf >= 0) {
@@ -3366,7 +3367,7 @@ int main(int argc, char** argv) {
     // `strata --version` / `-V` (also `strata generate --version`): the version and nothing else, before any GPU is touched
     for (int i = 1; i < argc && i < 3; ++i) {
         if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0) {
-            std::printf("strata %s\n", STRATA_VERSION);
+            std::printf("strata %s\n", STRATA_ENGINE_VERSION);
             return 0;
         }
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
@@ -9437,7 +9438,7 @@ int main(int argc, char** argv) {
     }
 
     mem_mark("the expert cache and the graphs");
-    std::fprintf(stderr, "strata generate: session is up (engine %s)\n", STRATA_VERSION);
+    std::fprintf(stderr, "strata generate: session is up (engine %s)\n", STRATA_ENGINE_VERSION);
     auto run_head = [&](void* stream) -> bool {
         if (!native_head.loaded())
             return strata::core::lm_head(wt, g, ss.block, d_logits, stream, err);
@@ -12288,7 +12289,7 @@ int main(int argc, char** argv) {
             }
             if (!config_fp) {
                 strata::core::SessionConfig c;
-                c.engine_version = STRATA_VERSION;
+                c.engine_version = STRATA_ENGINE_VERSION;
 #if defined(STRATA_USE_HIP)
                 c.backend = "hip";
 #else
@@ -14167,7 +14168,7 @@ int main(int argc, char** argv) {
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
-                        "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
+                        "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_ENGINE_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -14190,7 +14191,7 @@ int main(int argc, char** argv) {
                                        " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
             if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: engine choice and budgets (a diagnostic; off by default)
                 auto& M = strata::core::manifest::instance();
-                M.engine("version", STRATA_VERSION);
+                M.engine("version", STRATA_ENGINE_VERSION);
                 M.engine("engine", stages.empty() ? "native-single-gpu" : "native-layer-split");
                 M.engine("stages", std::to_string(stages.size() + 1));
                 M.engine("kv_format", o.kv);

@@ -10,6 +10,10 @@
 # building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
+# The base is the Strata version this tree changed (0.1.59.1, the 0.2.13 release's engine); the variant suffix says
+# what this build is.  So the engine calls itself "0.1.59.1-q4u32": the numbers of the release it came from, plus the
+# measured q4u32 default it adds.  Upstream's engines have no suffix, so nobody mistakes a fork build for an upstream
+# one and the Terminal can tell the two apart (strata_control/kv_default.py).
 project(strata VERSION 0.1.59.1 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
@@ -31,6 +35,15 @@ if(STRATA_ENABLE_SYCL)
   return()
 endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
+# The variant this build is: a fork's engine says so in its own version string ("0.1.59.1-q4u32"), so nobody mistakes it
+# for an upstream build (upstream's engine source is 0.1.61) and the updater can tell the two apart.  An upstream build
+# has no suffix: STRATA_ENGINE_FLAVOR is empty there.
+set(STRATA_ENGINE_FLAVOR "q4u32" CACHE STRING "the suffix this engine's version carries (empty: an upstream build)")
+if(STRATA_ENGINE_FLAVOR)
+  add_compile_definitions(STRATA_ENGINE_VERSION="${PROJECT_VERSION}-${STRATA_ENGINE_FLAVOR}")
+else()
+  add_compile_definitions(STRATA_ENGINE_VERSION="${PROJECT_VERSION}")
+endif()
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
 if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
