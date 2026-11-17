@@ -1471,6 +1471,12 @@ geschlossen —, (b) die **Skalierungsachse** (A.26, geschlossen), (c) der **per
 Eigenschaft des Caches, kein Hebel auf das Format), (d) die **A.24/A.25** (gfx11 und APUs, Hardware fehlt)
 und (e) der **int8-Umstieg** (die int8-Route, kein Formatproblem).
 
+**Die Entscheidung (17.11.2026):** die Gruppe bleibt **32**. Die 64er-Gruppe ist baubar, bringt aber
+**1,2 % Slots gegen 0,92 dB** — das ist die falsche Richtung für ein Format, dessen Marge gegenüber
+\texttt{int8} der Grund der Wahl war; die 16er-Gruppe ist nicht baubar. Das Produktionsformat ist damit
+**4,5 bit je Zelle, eine Skala je 32 Werte, uniformes Gitter, kein Codebook, kein Nullpunkt, keine
+Kalibrierung** — und bleibt es.
+
 ### Korrektur zu A.20
 
 A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
