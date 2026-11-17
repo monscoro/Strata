@@ -769,8 +769,14 @@ vollständige Läufe (`hip_prompt_attn_wmma.exe 32768 512 3`, gfx1200):
 
 Das Fenster kostet also **6,2 % bis 13,4 % der Attention-Kernelzeit** (drei Läufe: der dritte Kontrolllauf
 derselben Bauart gab +12,7 % / +6,2 % / +13,4 %, `FAILURES: 0`, Exit 0), und zwar **chunk-granular, nicht
-zellproportional**: bei 2,0 % exakten Zellen kostet es 6,2–9,7 %, weil in jeder Selektion Sinks liegen und
-damit *jeder* Chunk Fensterzellen hat (der zweite V-Satz fällt je Chunk an, nicht je Zelle).
+zellproportional**: der zweite V-Satz fällt je Chunk an, nicht je Zelle.
+
+> **Korrektur (17.11.2026, gemessen).** Der Satz, der hier stand — „in jeder Selektion liegen Sinks,
+> damit hat *jeder* Chunk Fensterzellen" — ist **falsch**: die 8 Sinks sind die Zellen 0..7 und landen
+> in **Chunk 0**, die 128 Recent-Zellen am Ende in den letzten vier Chunks. Bei 32K/512 sind das 5 von
+> 65 Chunks und 9 von 130 Kachel-Durchläufen. Die 6,2–13,4 % sind deshalb auch **nicht** der zweite
+> V-Satz, sondern das divergente Lesen des Seitenpools in genau diesen Chunks; ein A/B mit halbierter
+> Matrixarbeit (`SPLIT` aus) senkt den Aufpreis nicht (17.11., C.0.1).
 
 **Warum der Motor das nie zeigen kann (Hochrechnung, keine Messung am Motor).** Der Harness mißt für
 `q4u32` bei 32K **11,2 ms** je Aufruf mit 1.024 Queries. Der Motor liest 6.144 Token je Chunk, also grob
@@ -1184,7 +1190,7 @@ Verdacht verschoben (A.13).
 
 ## Teil C — Die Optimierung (beginnt erst nach A2)
 
-### C.0 — Voranalyse: wo der 4-Bit-Fast-Path verliert (15.11.2026; statische Analyse, nichts gebaut)
+### C.0 — Voranalyse: wo der 4-Bit-Fast-Path verliert (15.11.2026; statische Analyse, nichts gebaut; H5a/H7 in C.0.1 nachträglich gemessen)
 
 **Die gemessene Ausgangslage** (A.18, Harness, gleiche Selektionen und gleiche Pools, 32K/1.024 Queries,
 je ein Lauf): **int8 8,26 ms/Chunk, `q4u32` 11,33 ms/Chunk** — der 4-Bit-Kern ist **37 % langsamer**. Im
@@ -1225,9 +1231,9 @@ B3-Vermerk nennt 5 → 3 Blöcke für 24 KiB).
 | **H2** | **Gepacktes Staging**: die Nibbles gepackt in den shared memory (36 statt 64 B je Zelle) und **einmal** vor dem WMMA entpacken | −4.096 B LDS **und** die halbe Expansion (b) | der Zeilen-Stride (72/80 B, „banks spread") muss neu abgestimmt werden — Bankkonflikte sind messbar, nicht lesbar | Harness |
 | **H3** | **Gruppen vor dem Schreiben summieren**: die zwei Gruppen einer Welle im Register summieren, dann `S.part` schreiben | `part` **8 → 4** Slots = −6.336 B LDS | die fp32-Additionsreihenfolge ändert sich → die Prüfsumme ändert sich, die Genauigkeit nicht messbar | Harness + Qualitäts-Gate |
 | **H4** | **Skala in den Operand falten**: `K = (code−8)·step` **vor** dem WMMA in fp16 | `part` fällt 12.672 → 1.584 B (−11 KiB), die 8-fache Gruppensumme entfällt | **die K-Werte werden fp16-gerundet** (heute sind die Codes exakt, die Skala wirkt in fp32): der Fehler gegen FP64 stiege von ~1e-6 auf ~1e-4 relativ. Das ist eine **Qualitätsentscheidung**, und sie betrifft gleich gebaut auch int8 | **nein** (nicht in diesem Zweig) |
-| **H5** | **Fenster zellproportional**: die Fensterzellen eines Chunks in eine dichte 16er-Kachel sammeln und nur diese rechnen | der zweite p.v-Satz kostet heute **6,2–13,4 %** der Kernelzeit bei 2–6,6 % exakten Zellen, weil er **je Chunk** läuft (Sinks in jeder Selektion); zellproportional wären es ~2–7 % | ein Gather in die Kachel (Aufwand im Register), keine Zahlenänderung | Harness (`window%d timing:`) |
+| **H5** | **Fenster zellproportional**: die Fensterzellen eines Chunks in eine dichte 16er-Kachel sammeln und nur diese rechnen | ~~der zweite p.v-Satz kostet 6,2–13,4 % der Kernelzeit, weil er je Chunk läuft~~ — **gemessen widerlegt (17.11.):** der zweite Satz läuft in 5 von 65 Chunks (9 von 130 Kacheln), und der Aufpreis bleibt bei halbierter Matrixarbeit gleich: er ist das **divergente Lesen des Seitenpools**, nicht der Satz selbst | ein Gather in die Kachel (Aufwand im Register); H5a ist bitgleich, H5b ändert die Bits | Harness (`window%d timing:`) — **erledigt, negativ** |
 | **H6** | **`WIN` als Template-Parameter**: die Q4-Instantiierung in `WIN = true/false` spalten, damit der Arm ohne Fenster weder `tmpw` noch den Laufzeit-Zweig trägt | unbekannt — aber die A.17-Lektion (ein **unbenutztes** 32-VGPR-Array kostete den int8-Kern den Faktor **2,16**) sagt, dass dieser Kern auf Registerdruck sehr empfindlich reagiert | keine Zahlenänderung; zwei Instantiierungen mehr (Compile-Zeit) | Harness + **M1** |
-| **H7** | **`SPLIT` aus** (`STRATA_PA_FAST=1`): halbiert die WMMA-Zahl | der 4-Bit-Pfad rechnet ohnehin rund; bestehendes, qualitätsgegatetes Experiment | Genauigkeit (ein FP16-Bild statt hi/lo) | Harness + Qualitäts-Gate |
+| **H7** | **`SPLIT` aus** (`STRATA_PA_FAST=1`): halbiert die WMMA-Zahl | **gemessen (17.11.): −9,8 %** (q4u32 32768: 6,137 → 5,533 ms), aber FP64-Abweichung 1,06e-05 → **7,18e-03** und `new vs old` 0,0016 der Skala (Grenze 1e-4), `FAILURES: 9` | Genauigkeit (ein FP16-Bild statt hi/lo) | Harness + Qualitäts-Gate — **erledigt, Gate rot** |
 
 **Tote Enden (mit Begründung, nicht als Vorschlag):**
 
@@ -1344,14 +1350,76 @@ manuelle Packung halbierte den Kodierungsanteil auf ~2,1 % — **unter der 5-%-R
 `gfx12` kennt für zwei fp16-Halbworte nur die `c_pk`-Formen. Es wird nicht allein gebaut; nur zusammen mit
 einem Hebel, der ohnehin baut.
 
-**Messtechnik-Status (15.11.): die GPU ist belegt, der RAM fast ausgelastet — alle GPU-Läufe sind auf
-Reserve.** Bei Freigabe-Meldung startet zuerst **H5** (Build, dann `window%d timing:`-A/B wie in A.18:
-3 Wiederholungen, ≥5 % zählt, int8-Zweig in jedem Lauf). Jetzt ist nur CPU-Arbeit an bestehenden Daten
-und `cmake`/`ninja`-Builds erlaubt. **H3** bleibt der einzige Hebel für LDS (Banken abstimmen, Zahlen-Gate).
+#### C.0.1 — H5a und H7 gemessen (17.11.2026)
 
-**Die Reihenfolge nach der Messung (15.11., neu):** ~~H1~~ → ~~H2~~ → ~~H6~~ **H5** (sobald die GPU frei
-ist: Build, dann `window%d timing:`-A/B), → **H3** (Banken abstimmen, Zahlen-Gate) → **H4**/**H7** nur mit
-Qualitätsentscheidung → **cvt-Mikrohebel** nur zusammen mit einem Bau. M2: 3 Wiederholungen, ≥5 % zählt.
+**H5a ist gebaut, gemessen und verworfen (17.11.2026) — bitgleich, aber ohne Gewinn.** Vorregistriert
+war derselbe Aufruf wie in A.18 (`hip_prompt_attn_wmma.exe 32768 512 3`), der `window%d timing:`-A/B,
+drei Wiederholungen je Stand, der int8-Arm in jedem Lauf, und **`NEWHASH` musste unverändert bleiben**
+(bei einer bitgleichen Änderung ist das der Beweis).
+
+Gebaut wurde: in `chunk()` ersetzt ein `__ballot(cd.wrow >= 0)` die wellenweite `__any`-Abfrage, und
+die zwei 16er-Kacheln des zweiten p.v-Satzes bekommen je ein eigenes Flag — Kachel `ks` liest ihre
+Zellen aus den Lanes `ks*16 … ks*16+15`. Eine Kachel ohne Fensterzelle lässt `tmpw` auf seiner
+Null-Initialisierung, und der Epilog `tq + tmpw` ist dann `tq + 0.0f`: dieselben Bits, die der
+übersprungene WMMA aus Null-Operanden addiert hätte.
+
+* **Die Bitgleichheit ist belegt.** Alle sieben `NEWHASH`-Werte (int8 32768/1500/2100, q4u32 32768,
+  q4u32 64, q4u32 512, Fenster 1/2/3) sind vor und nach dem Umbau identisch, ebenso die
+  FP64-Abweichungen auf allen gedruckten Stellen (Fenster 1: `7.09e-06`, `new vs old 1.18e-05`);
+  `FAILURES: 0` in allen sechs Läufen.
+* **Der Gewinn ist null.** Der Fenster-Aufpreis im selben Aufruf (drei Läufe je Stand, in Prozent):
+
+  | Fall | ohne H5a | mit H5a |
+  |---|---|---|
+  | 1 (6,6 % exakt) | +10,2 / +9,2 / +10,1 | +10,7 / +10,7 / +10,5 |
+  | 2 (2,0 % exakt) | +7,1 / +4,2 / +7,4 | +10,0 / +7,9 / +7,6 |
+  | 3 (2,9 % exakt) | +10,5 / +11,3 / +10,5 | +10,9 / +10,1 / +11,0 |
+
+  Keine Verbesserung, in Fall 2 eher schlechter: **unter der 5-%-Schwelle, also negativ.** Der Umbau
+  ist zurückgenommen; der Pfad bleibt wie im letzten Release.
+* **Die Vorhersage stand vor dem Lauf fest und stimmt (statische Analyse aus dem Harness selbst).**
+  Die exakten Zellen sind **zusammenhängend**: 8 Sinks am Anfang jeder Selektion (Chunk 0, Kachel 0)
+  und 128 Recent-Zellen am Ende (die letzten vier Chunks, beide Kacheln). Bei 32K/512 sind das 5 von
+  65 Chunks und **9 von 130** Kachel-Durchläufen; H5a kann davon genau **eine** Kachel überspringen.
+  Erwartung war damit 1–2 % *des Aufpreises*, also 0,1–0,2 Prozentpunkte — nicht messbar. Die frühere
+  Aussage in A.18 („jeder Chunk hat Fensterzellen") war falsch und ist dort korrigiert.
+
+**Wo der Fenster-Aufpreis wirklich sitzt (gemessen, 17.11.2026).** `SPLIT` aus (`STRATA_PA_FAST=1`)
+halbiert **jede** WMMA im Kern, auch die des zweiten p.v-Satzes. Drei Läufe je Einstellung, gemittelt:
+
+| Fall | Aufpreis mit SPLIT | Aufpreis ohne SPLIT | absolut mit / ohne SPLIT |
+|---|---|---|---|
+| 1 | +10,6 % | +13,3 % | 0,59 / 0,67 ms |
+| 2 | +8,5 % | +6,2 % | 0,25 / 0,17 ms |
+| 3 | +10,7 % | +12,1 % | 0,23 / 0,24 ms |
+
+Der absolute Aufpreis sinkt in keinem Fall systematisch — im größten Fall (1) steigt er sogar, obwohl
+die halbe Matrixarbeit wegfällt. Der Fenster-Aufpreis ist also **nicht** der zweite p.v-Satz, sondern
+das **divergente Lesen des Seitenpools** in den Fenster-Chunks: die `h8_win`-Gathers je Lane, das
+übersprungene V-Staging, die per-Lane-Auswahl `wr >= 0`. Das ist der Preis der Exaktheit, nicht einer
+Doppelrechnung — und damit ist auch **H5b** (dichte Kachel, ändert die Bits) zwecklos, weil es
+dieselbe Stelle angreift. Ein Fenster-Hebel bliebe nur das **Layout** des Seitenpools (zusammenhängende,
+für die Welle coalescte Zeilen statt zeilenweiser Gather) — ein neuer Hebel, nicht H5.
+
+**Nebenbefund 1 (Messtechnik, wichtig).** Zwischen den beiden Messphasen sind die **unberührten** Arme
+— int8 3,10 → 4,60 ms, q4u32 ohne Fenster 4,10 → 6,12 ms — um **~49 %** langsamer geworden: das ist
+der Kartenzustand, nicht der Code. Absolute Zeiten sind in dieser Sitzung **nicht** über Builds hinweg
+vergleichbar; belastbar ist nur das **A/B-Verhältnis im selben Lauf**. Die ±2–3 % aus M2 gelten für
+Wiederholungen in einer Phase, nicht über Phasen.
+
+**Nebenbefund 2 (H7, aus denselben Läufen).** `SPLIT` aus bringt **−9,8 %** (q4u32 32768: 6,137 →
+5,533 ms) und −7,7 … −8,8 % in den Fensterfällen, aber das Qualitäts-Gate wird **rot**: die
+FP64-Abweichung geht von 1,06e-05 auf **7,18e-03** (~Faktor 680, Ausgabenskala 7,8), `new vs old`
+auf **0,0016 der Skala** (Grenze 1e-4), `FAILURES: 9`. Das ist die vorhergesagte fp16-Rundung
+(~2⁻¹⁰ nach der Akkumulation über 32 Werte). **H7 ist damit gemessen und abgelehnt**, nicht offen.
+
+**H3** bleibt der einzige Hebel für LDS (Banken abstimmen, Zahlen-Gate).
+
+**Die Reihenfolge nach der Messung (17.11., neu):** ~~H1~~ → ~~H2~~ → ~~H6~~ → ~~H5a~~ (gebaut, bitgleich,
+ohne Gewinn) → ~~H7~~ (Gate rot) → **H3** (Banken abstimmen, Zahlen-Gate) → **H4** nur mit
+Qualitätsentscheidung → **cvt-Mikrohebel** nur zusammen mit einem Bau. M2: 3 Wiederholungen, ≥5 % zählt,
+und seit dem 17.11. zusätzlich: **nur das A/B-Verhältnis im selben Lauf** ist über Builds hinweg
+belastbar (der Kartenzustand verschob die Absolutzeiten um ~49 %).
 
 **Die Reihenfolge nach Erwartung (vor M1, überholt):** M1 → **H1** (kein Zahlenrisiko) → **H2** → **H3**
 (Qualitäts-Gate) → **H6** (nach M1 entscheiden) → **H5** → **H4**/**H7** nur mit Qualitätsentscheidung.
