@@ -1143,6 +1143,76 @@ gemessen).
   Route-Zeile geprüft und **nicht** umgedeutet.
 * **Ergebnis C:** kein Niveau mit mindestens zwei Armen → berichten, kein weiterer Start.
 
+### A.22 — Das Ergebnis: die Kopplung trägt, ohne Flag (17.11.2026)
+
+**Die Vorbedingungen sind erfüllt:** alle sieben Läufe **3950 Slots**, **Chunk 6144**. Die Matrix-Kern-Zeile
+(„serves the 4-bit uniform grid") steht in **3 von 3** `q4u32 Default`-Läufen, die `=0`-Zeile in **keinem**;
+der Aus-Lauf zeigt sie (**1 von 1**, einmal je Start, wie der Code sie druckt). Die Zeile „no prompt fast path"
+kommt **nie**. **21 von 21 Nadeln** gefunden (7 Läufe × 3).
+
+| Arm | Anfragen | Mittel | Median | Spannweite | Niveau |
+|---|---:|---:|---:|---|---|
+| `int8` (a+b) | 6 | **663,6** | 664,9 | 636,0–682,5 | 6 langsam |
+| `int8` (c) | 3 | 860,9 | 862,2 | 841,0–879,5 | **3 schnell** |
+| `q4u32 Default` (a+b+c) | 9 | **651,6** | 650,8 | 641,3–664,8 | 9 langsam |
+| `q4u32 Aus` | 3 | 264,3 | 264,2 | 262,0–266,8 | 3 langsam |
+
+**Im langsamen Niveau: −1,8 %** (Mittel), **−2,1 %** (Median) gegen `int8` — **Ergebnis A**: innerhalb der
+vorab fixierten 5 %, also liegt der gekoppelte Schalter auf dem gemessenen A.20-Zustand (dort 676,7 gegen
+680,2 tok/s, ebenfalls innerhalb 5 %). **Der Aus-Lauf bestätigt den Aus-Schalter:** 264,3 tok/s gegen
+**265,0** in A.21 und **263,7** in A.1 — drei Messungen, dieselbe Zahl, und in dieser Serie −60,2 % gegen `int8`.
+
+**Nebenbeobachtung zum Niveau:** `int8-c` lief **alle drei** Anfragen im schnellen Niveau (35,0 / 35,7 / 36,6 s,
+841,0–879,5 tok/s) — in A.21 war es **eine** von zwölf `int8`-Anfragen, hier **drei von sechs**. `q4u32` kam in
+dieser Serie **9 von 9** Anfragen nicht in seine Nähe (46,3–48,0 s). Der Vergleich oben wird deshalb **innerhalb
+des Niveaus** geführt (9 gegen 6 langsame Anfragen); das Niveau selbst bleibt unerklärt und ist **nicht**
+arm-spezifisch, wie A.21 schon zeigte.
+
+**Damit ist `q4u32` ab jetzt „`q4u32` mit Prompt-Kern".** Die Kopplung braucht **kein** Env-Flag; `=0` ist nur
+noch das A/B-Werkzeug, um den alten Decode-Kern-Pfad zu zeigen.
+
+### A.23 — vorregistriert: der KV-Default im Motor (17.11.2026, vor dem ersten Lauf)
+
+**Die Änderung (Code, statisch, zu diesem Zeitpunkt noch nicht gebaut):** Ohne `--kv` entscheidet die Karte.
+
+* **gfx12** (gfx1200/gfx1201) **mit** dem Prompt-Default → **`q4u32`**, Log-Zeile
+  `KV storage: q4u32 (the default on this part: …)`.
+* **sonst** → **`fp16`**, Log-Zeile `KV storage: fp16 (the default here: …)`.
+
+Dafür schaltet der **Windows**-HIP-Build die beiden freigegebenen gfx12-Prompt-Defaults ein
+(`kGfx12PromptDefaultsOn`; vorher war Windows dort aus, A.17–A.22 sind der Test, der das ändert).
+`STRATA_HIP_WMMA=0` hält den KV-Typ bei `fp16`, weil das der „kein Prompt-Pfad"-Zustand ist. **CUDA bleibt
+`fp16`** (mode 4 existiert dort, wurde auf diesem Zweig aber weder gebaut noch gemessen).
+
+**Die Frage.** Kommt ein Start **ohne `--kv` und ohne Env** auf den gemessenen Zustand — Matrix-Kern, `q4u32`
+— und kommt der freigewordene KV-Platz mit `--expert-cache auto` **im Experten-Cache** an?
+
+**Die Arme** (3 Nadeln, 32K, 30 s Abstand, dieser Build; Env nur `STRATA_PREFILL_CPU_SHARE=0`, **kein**
+`STRATA_HIP_WMMA`):
+
+| Arm | Flags | erwartete Route | Läufe |
+|---|---|---|---|
+| `default` | **kein `--kv`**, `--expert-cache auto` | Zeile `KV storage: q4u32` **und** Matrix-Kern-Zeile | 3 |
+| `int8` | `--kv int8`, `--expert-cache auto` | int8-Matrix-Pfad (keine 4-Bit-Zeile) | 2 |
+| `fp16` | `--kv fp16`, `--expert-cache auto` | Routen-Prüfung: **keine** 4-Bit-Gitter-Zeile | 1 |
+
+**Reihenfolge:** `default`, `int8`, `default`, `int8`, `default`, `fp16`.
+
+**Kriterien, vorher festgelegt:**
+
+* `default` zählt nur, wenn **3 von 3** Läufen die Zeile `KV storage: q4u32` **und** die Matrix-Kern-Zeile
+  zeigen. Erscheint `KV storage: fp16`, ist die Karte nicht als gfx12 erkannt → Lauf ungültig, Ursache prüfen.
+* **Slots:** `default` ≥ `int8` + 1 % — der KV-Platz muss im Experten-Cache ankommen. Sind die Slots gleich,
+  wird das **berichtet** (dann begrenzt etwas anderes den Cache), nicht umgedeutet.
+* **Geschwindigkeit:** `default` nicht mehr als 5 % unter `int8` im selben Niveau. (Kein „schneller erwartet":
+  mehr Slots ändern die Trefferquote, der Vergleich ist bewusst „nicht schlechter".)
+* **Chunk:** wird berichtet, wie er kommt. Ändert er sich gegenüber 6144, ist das **kein** Fehler, sondern
+  eine Folge des größeren freien VRAM — die tok/s-Zahl gilt dann für diesen Chunk.
+* 3 von 3 Nadeln je Lauf.
+* `fp16`-Lauf: keine 4-Bit-Gitter-Zeile; dient nur der Route, kein Vergleich.
+* **Ergebnis A:** alle Punkte erfüllt → der Default bleibt.
+* **Ergebnis B:** ein Punkt verletzt → berichten, Default überprüfen (nicht „weil erwartet" stehen lassen).
+
 ### Korrektur zu A.20
 
 A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
