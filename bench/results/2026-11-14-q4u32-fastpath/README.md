@@ -1213,6 +1213,33 @@ Dafür schaltet der **Windows**-HIP-Build die beiden freigegebenen gfx12-Prompt-
 * **Ergebnis A:** alle Punkte erfüllt → der Default bleibt.
 * **Ergebnis B:** ein Punkt verletzt → berichten, Default überprüfen (nicht „weil erwartet" stehen lassen).
 
+### A.23 — Das Ergebnis: der Motor wählt `q4u32`, und der KV-Platz kommt im Experten-Cache an (17.11.2026)
+
+**Alle Vorbedingungen erfüllt.** In **3 von 3** `default`-Läufen steht `KV storage: q4u32 (the default on this
+part: 45 % of int8's bytes, level with it at 32K; …)` (das ist die neue, motoreigene Zeile — kein `--kv` im
+Aufruf), dazu die Matrix-Kern-Zeile. Die `int8`- und der `fp16`-Lauf zeigen **keine** 4-Bit-Gitter-Zeile, „no
+prompt fast path" kommt **nie**. **18 von 18 Nadeln** gefunden (6 Läufe × 3).
+
+| Arm | Slots (3 bzw. 2 Starts) | Mittel | Chunk | Anfragen | Mittel tok/s |
+|---|---|---:|---:|---:|---:|
+| `default` (kein `--kv`) | 3438 / 3414 / 3434 | **3428,7** | 6144 | 9 | **664,5** |
+| `int8` | 2917 / 2860 | 2888,5 | 6144 | 6 | 669,0 |
+| `fp16` (nur Route) | 1970 | — | **5888** | 3 | 559,4 |
+
+**Slots: +18,7 %** (3428,7 gegen 2888,5) — der freigewordene KV-Platz kommt im Experten-Cache **an**, das
+Kriterium war ≥ +1 %. **Geschwindigkeit: −0,7 %** im Mittel, **−0,1 %** im Median (664,5 gegen 669,0 tok/s) —
+innerhalb der vorab fixierten 5 %. **Chunk** bleibt bei `default` und `int8` **6144**; der `fp16`-Lauf bekommt
+**5888**, weil sein KV mehr Platz braucht — berichtet, kein Fehler, und dieser Lauf dient nur der Route.
+`fp16` läuft mit 1970 Slots und 559,4 tok/s deutlich langsamer, was hier **nicht** als Vergleich zählt (anderer
+KV-Typ **und** anderer Chunk).
+
+Alle Punkte der Vorregistrierung erfüllt → **Ergebnis A**: **ohne `--kv` entscheidet die Karte, und auf gfx12
+ist das `q4u32` mit dem Prompt-Kern.** `--kv int8` / `--kv fp16` bleiben der Weg, einen anderen Typ zu erzwingen.
+
+**Einordnung.** A.22 maß `q4u32` gegen `int8` mit **festem** `--expert-cache 2967` (beide 3950 Slots, −1,8 %).
+A.23 misst das, was ein Start **ohne Flags** tut (`--expert-cache auto`): der Motor legt 3438 statt 2917 Slots
+an, und das kostet nichts an Prompt-Geschwindigkeit (innerhalb des Harness-Rauschens von 2–3 %).
+
 ### Korrektur zu A.20
 
 A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
