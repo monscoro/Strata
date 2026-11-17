@@ -33,7 +33,7 @@ PLAIN = {
     "--ple-gguf": "The model file that holds the word-embedding table.",
     "--expert-profile": "A table of which experts are used most, to decide what stays in graphics memory.",
     "--max-context": "How much text the model remembers at once.",
-    "--kv": "The format of the conversation memory (int8 uses half of fp16; q4_0 uses less still).",
+    "--kv": "The format of the conversation memory. Left out, the engine picks: q4u32 on RDNA4 (half of int8's memory, measured level with it at 32K), fp16 elsewhere. int8, q4_0 and k8v4 name one.",
     "--kv-resident": "How much of the conversation memory stays in graphics memory.",
     "--vision": "Let the model read pictures.",
     "--vram-reserve-mib": "Graphics memory (in MiB) kept free for other programs.",

@@ -35,6 +35,7 @@ class SetupInputs:
     draft_vocab: Any = None
     eng: Any = None
     engine_ver: Any = None
+    engine_flavor: Any = None
     esp: Any = None
     fam: Any = None
     family: Any = None
@@ -120,6 +121,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     draft_vocab = inp.draft_vocab
     eng = inp.eng
     engine_ver = inp.engine_ver
+    engine_flavor = str(inp.engine_flavor or "")   # the engine's own variant ("q4u32", a fork's build); empty for an upstream engine
     esp = inp.esp
     fam = inp.fam
     family = inp.family
@@ -220,8 +222,12 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
-    if ctx > 8192:
-        args += ["--kv", kv]
+    from strata_control.kv_default import kv_flag, kv_value
+    _arch = str((gpu or {}).get("arch") or "")
+    _kv = kv_flag(engine_flavor, ctx, a.kv, hip=bool(hip), arch=_arch)   # a person who named it keeps it; on gfx12 with a q4u32 engine the engine picks the format, everywhere else the format it always had
+    if _kv:
+        args += ["--kv", _kv]
+    kv = kv_value(engine_flavor, ctx, a.kv, hip=bool(hip), arch=_arch)   # the format the engine will run with: the estimates below need one
     if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
         resident = False                               # an engine from before --resident-experts would refuse it
         ok(f"low-RAM mode: engine {meta.get('version')} has no resident variant yet; the experts are read through "

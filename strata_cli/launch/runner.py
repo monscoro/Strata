@@ -314,8 +314,9 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
 
     if s.context:
         put("--max-context", str(int(s.context)))
-    kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
-    if "--kv" in args or s.kv:
+    from strata_control.kv_default import kv_value
+    kv = kv_value("", s.context or 32768, s.kv)   # a preview of the installed config: the engine is not known here, so the format is named
+    if kv and ("--kv" in args or s.kv):
         put("--kv", kv)
     if cfg.get("arch") == "deepseek41":                      # the engine's own tower: --vision on / off is its whole picture setting
         if s.vision:

@@ -270,7 +270,7 @@ CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
-KV_CELL_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}
+KV_CELL_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "q4u32": 576, "k8v4": 816}
 KV_WINDOW_RING_MIB = 152               # q4lm8v's exact-cell window at B=6144: 12.6 MiB x 12 QSA layers + tags
 WINDOW_KV = True                       # the q4lm8v choice; sycl/setup_intel.py sets this False (the SYCL engine has no q4lm8*/window)
 
@@ -5298,11 +5298,12 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
              "the installed engine is left as it was", "delete the folder build-hip and run this again")
     shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
     meta = {"source": "local-hip", "backend": "hip", "version": source_version(), "archs": archs, "vision": "none",
-            "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {})}
+            "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {}),
+            **({"flavor": binary_engine_flavor(eng / EXE)} if binary_engine_flavor(eng / EXE) else {})}
     if vision != "none":
         return build_vision_hip(eng, stamp, meta, llama, vsrc, archs, vision)
     stamp.write_text(json.dumps(meta, indent=1))
-    ok(f"engine compiled: {eng / EXE}")
+    ok(f"engine compiled: {eng / EXE}" + (f" ({binary_engine_label(eng / EXE)})" if binary_engine_label(eng / EXE) else ""))
     return eng
 
 
@@ -7440,14 +7441,41 @@ def source_version() -> str:
     return m.group(1) if m else "0"
 
 
+#: the engine's own version line: the numbers, then an optional variant suffix ("0.1.59.1-q4u32", a fork's build).
+#: The numbers are what versions are compared by; the suffix says which build it is (an upstream build has none).
+ENGINE_VERSION_RE = rb"engine=(\d+\.\d+\.\d+(?:\.\d+)?)(-[A-Za-z0-9.]+)?\n"
+
+
 def binary_engine_version(exe) -> str | None:
     """The version compiled into an engine binary (the `engine=X.Y.Z` line it prints at start; 0.1.13 and newer carry
-    it), read from the file without running it.  None: unreadable, or a binary without it."""
+    it), read from the file without running it.  None: unreadable, or a binary without it.  The numbers only: a fork's
+    build ("0.1.59.1-q4u32") is compared by its numbers."""
     try:
-        m = re.search(rb"engine=(\d+\.\d+\.\d+(?:\.\d+)?)\n", Path(exe).read_bytes())
+        m = re.search(ENGINE_VERSION_RE, Path(exe).read_bytes())
     except OSError:
         return None
     return m.group(1).decode() if m else None
+
+
+def binary_engine_flavor(exe) -> str:
+    """The variant suffix of an engine binary's own version line ("q4u32"), or "" when it has none."""
+    try:
+        m = re.search(ENGINE_VERSION_RE, Path(exe).read_bytes())
+    except OSError:
+        return ""
+    return m.group(2).decode().lstrip("-") if m and m.group(2) else ""
+
+
+def binary_engine_label(exe) -> str:
+    """The engine's own version as it calls itself ("0.1.59.1-q4u32"), for what a person reads."""
+    try:
+        m = re.search(ENGINE_VERSION_RE, Path(exe).read_bytes())
+    except OSError:
+        return ""
+    if not m:
+        return ""
+    suffix = (m.group(2) or b"").decode()
+    return m.group(1).decode() + suffix
 
 
 def stale_binary(exe) -> bool:
@@ -7469,7 +7497,7 @@ def engine_version(exe: Path) -> tuple:
     v = str(meta.get("version") or "")
     if not v:                                          # the version compiled into the binary: 0.1.13 and newer
         try:                                           # carry it, so a binary without it is older
-            m = re.search(rb"engine=(\d+\.\d+\.\d+(?:\.\d+)?)\n", Path(exe).read_bytes())
+            m = re.search(ENGINE_VERSION_RE, Path(exe).read_bytes())
             v = m.group(1).decode() if m else "0.1.12"
         except OSError:
             v = "0"
@@ -7980,9 +8008,10 @@ UD_FIT_MIN_SLACK_MIB = 64         # at least a few cache slots beside the estima
 UD_FIT_CARD_GB = 9.5              # the check is for cards up to here
 UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the SYCL measurement above has none of it)
 UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
-KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit",
+KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "q4u32": "4-bit uniform grid (the default on gfx12)",
+            "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit",
             "q4lm8v": "4-bit with exact window (256/64)"}
-UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816, "q4lm8v": 576}   # per token per attention layer (13)
+UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "q4u32": 576, "k8v4": 816, "q4lm8v": 576}   # per token per attention layer (13)
 UD_FIT_CTX_STEPS = (8192, 6144, 4608)
 
 
@@ -8482,7 +8511,10 @@ def control_engine_step(gpu, vision):
     try:
         found = EC.resolve(full=False)
         eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local"}
-        ok(f"engine component: {found.version} ({found.platform}-{found.backend}) in {eng}")
+        if getattr(found, "flavor", ""):
+            meta["flavor"] = found.flavor          # a fork's engine (q4u32): the Terminal asks it for the format itself
+        ok(f"engine component: {found.version}" + (f" ({found.flavor})" if getattr(found, "flavor", "") else "") +
+           f" ({found.platform}-{found.backend}) in {eng}")
         if found.backend == "hip" and is_rdna2(gpu) and any(a in RDNA2_ARCHS for a in found.hip_archs):
             for line in rdna2_notes(gpu):                       # the RX 6000 package: built, not tested on a real card
                 say(line)
@@ -8580,10 +8612,12 @@ def install_local_engine(src: Path, gpu: dict, hip: bool, llama: Path | None = N
     libs = local_rocm_lib_dirs() if hip else []
     meta = {"source": "local", "backend": "hip" if hip else "cuda",
             "version": binary_engine_version(src / EXE) or source_version(),
+            **({"flavor": binary_engine_flavor(src / EXE)} if binary_engine_flavor(src / EXE) else {}),
             "archs": [str(gpu["arch"])] if gpu.get("arch") else [], "vision": "none",
             **({"lib_dirs": libs} if libs else {})}
     (eng / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
-    ok(f"engine from this tree (not the ready-made one): {eng / EXE}")
+    _label = binary_engine_label(src / EXE)
+    ok(f"engine from this tree (not the ready-made one): {eng / EXE}" + (f" ({_label})" if _label else ""))
     if hip and not libs:
         warn("no ROCm bin folder found for the engine's libraries: set STRATA_ROCM_BIN to it (e.g. "
              "C:\\Program Files\\AMD\\ROCm\\7.1\\bin)")
@@ -10375,11 +10409,14 @@ def main() -> int:
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor, finite and >= 1 (default: the final context over the trained "
                          "262144, at least 1 - 1.5 for 384K, 2 for 512K, 1 inside the trained range)")
-    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "q4lm8v", "fp16"],
-                    help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
-                         "precise), k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell), q4lm8v (4-bit with the exact-cell "
-                         "window, 256/64: 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8; opt-in, "
-                         "NVIDIA/AMD only) or fp16 (16-bit, twice the memory of int8)")
+    ap.add_argument("--kv", choices=["int8", "q4_0", "q4u32", "k8v4", "q4lm8v", "fp16"],
+                    help="KV cache precision above 8K context. Left out, a q4u32 build (this tree's engine, "
+                         "0.1.59.1-q4u32) picks q4u32 on gfx12 (45 %% of int8's bytes, level with it at 32K, measured); "
+                         "setup names 8-bit on every other card and on an upstream engine, as before. q4_0 (half the "
+                         "memory, a little less precise), k8v4 (hybrid: INT8 K + "
+                         "4-bit V, 816 B/cell), q4lm8v (4-bit with the exact-cell window, 256/64: 5.29 bit/cell at 128K, "
+                         "1,016 MiB against 1,584 MiB for int8; opt-in, NVIDIA/AMD only) or fp16 (16-bit, twice the "
+                         "memory of int8) name one")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (on by default where the model can; yes = the best reader for this card: the CPU "
                          "under 24 GB of VRAM, the GPU from 24 GB, any make; gpu / cpu = that reader; no = text only)")
@@ -11112,25 +11149,37 @@ def main() -> int:
     if ctx > 8192 and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
-        say("  1) 8-bit   (recommended: what every published number was measured with)")
-        say("  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
+        say("  1) the engine's choice  (q4u32 on gfx12, where its prompt path was measured: 45% of 8-bit's memory,")
+        say("             level with it at 32K; 8-bit on every other card and on an upstream engine)")
+        say("  2) 8-bit   (what every published number was measured with)")
+        say("  3) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
         say("             documents; long-context lookups (needle tests) still pass")
-        opts = ["int8", "q4_0"]
+        opts = ["auto", "int8", "q4_0"]
         if ctx >= 32768 and WINDOW_KV:   # below ~28K the 152 MiB ring costs more than the 4-bit base saves
             int8_mib = ctx * 12 * 1056 / 2 ** 20
             win_mib = ctx * 12 * 576 / 2 ** 20 + KV_WINDOW_RING_MIB
-            say(f"  3) 4-bit with exact window  (q4lm8v + 256/64: {win_mib:.0f} MiB at {ctx // 1024}K against "
+            say(f"  4) 4-bit with exact window  (q4lm8v + 256/64: {win_mib:.0f} MiB at {ctx // 1024}K against "
                 f"{int8_mib:.0f} MiB")
             say("             for 8-bit, about as fast, more expert slots; accuracy at 4K between 8- and 4-bit, at")
             say("             8-bit level in the answer region; needles 6/6 at 32K and 128K; opt-in)")
             opts.append("q4lm8v")
-        kv = opts[int(ask("KV cache?", [str(i + 1) for i in range(len(opts))], "1", a.yes)) - 1]
+        picked = opts[int(ask("KV cache?", [str(i + 1) for i in range(len(opts))], "1", a.yes)) - 1]
+        if picked != "auto":
+            kv = picked
+            a.kv = picked                          # a format the person named is written into the run config, on every card
     if kv == "q4lm8v" and ctx < 32768:
         warn(f"the exact-cell window's ring is resident: at {ctx // 1024}K it needs about "
              f"{ctx * 12 * 576 / 2 ** 20 + KV_WINDOW_RING_MIB:.0f} MiB against "
              f"{ctx * 12 * 1056 / 2 ** 20:.0f} MiB for 8-bit (break-even ~28K); your choice is kept")
     if ctx > 8192:
-        ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
+        # on gfx12 the engine's own default is the measured 4-bit one, but only in a q4u32 build (0.1.59.1-q4u32); the engine is not
+        # known yet (step 4 comes later), so the line says both
+        _gfx12 = hip and str((gpu or {}).get("arch") or "").lower().startswith(("gfx1200", "gfx1201"))
+        if a.kv is None and _gfx12:
+            ok(f"KV cache: {KV_WORDS['q4u32']} (the default on this card in a q4u32 build (0.1.59.1-q4u32); "
+               "an upstream engine uses 8-bit)")
+        else:
+            ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
     if MODELS[model].get("vision", fam.get("vision")) is False:     # UD-IQ4_XS: images, unlike UD-Q4_K_XL
         vision = "none"
         if a.vision not in (None, "no", "none"):
@@ -11443,7 +11492,7 @@ def main() -> int:
                       *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
     from strata_control import setup_config            # the seam: the lines that built the run config live in strata_control/setup_config.py
     _built = setup_config.config_for(setup_config.SetupInputs(
-        a=a, adopted=adopted, chosen=chosen, cuda_tk=cuda_tk, draft_vocab=draft_vocab, eng=eng, engine_ver=engine_ver, esp=esp, fam=fam, family=family, gpu=gpu, hip=hip, in_budget=in_budget, lib_dirs=lib_dirs, low_ram=low_ram, meta=meta, mmproj=mmproj, model=model, model_args=model_args, models_dir=models_dir, multi=multi, pack=pack, ple=ple, port=port, q4_split=q4_split, ram=ram, reader=reader, ready=ready, rope_scale=rope_scale, rt=rt, scaling=scaling, shards=shards, tag=tag, vision=vision, ctx=ctx, kv=kv, resident=resident, budget=budget, GGUFFile=GGUFFile), sys.modules[__name__])
+        a=a, adopted=adopted, chosen=chosen, cuda_tk=cuda_tk, draft_vocab=draft_vocab, eng=eng, engine_ver=engine_ver, engine_flavor=str(meta.get("flavor") or ""), esp=esp, fam=fam, family=family, gpu=gpu, hip=hip, in_budget=in_budget, lib_dirs=lib_dirs, low_ram=low_ram, meta=meta, mmproj=mmproj, model=model, model_args=model_args, models_dir=models_dir, multi=multi, pack=pack, ple=ple, port=port, q4_split=q4_split, ram=ram, reader=reader, ready=ready, rope_scale=rope_scale, rt=rt, scaling=scaling, shards=shards, tag=tag, vision=vision, ctx=ctx, kv=kv, resident=resident, budget=budget, GGUFFile=GGUFFile), sys.modules[__name__])
     cfg, cfg_path, cal, args, ctx, kv, resident = (_built.cfg, _built.cfg_path, _built.cal, _built.args, _built.ctx, _built.kv, _built.resident)
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a),
                        after_carry=(lambda c: uma_cache_guard(c, model, gpu)) if gpu.get("uma") else None)

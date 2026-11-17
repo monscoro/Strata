@@ -14,7 +14,7 @@
 #   CONTEXT       32k, 64k, 128k, 256k or a number of tokens
 #   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card; DeepSeek: one at a time)
 #   VISION        off | on | gpu | cpu  (pictures; the picture reader file is downloaded with the model)
-#   KV            int8 | q4_0 | k8v4 | fp16  (conversation memory format)
+#   KV            int8 | q4_0 | q4u32 | k8v4 | fp16  (conversation memory format; empty: the engine picks)
 #   GPU / GPUS    card numbers, e.g. 0 or 0,1 (empty or "all": the engine's choice)
 #   GPU_ROLES     a role for each card, e.g. 1=main,0=helper (main, helper or off; cards you do not name are off; not together with GPU / GPUS)
 #   TUNE          quick | thorough | skip   (done once; RETUNE=1 tunes again)

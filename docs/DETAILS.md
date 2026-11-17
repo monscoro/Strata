@@ -229,7 +229,9 @@ reported and, for files in your own folder, never deleted. Without `uvx`, `pip i
 
 | Option | What it does |
 | --- | --- |
-| `--kv int8` (default) | 8-bit KV cache. |
+| `--kv` left out | The engine picks the format: `q4u32` on gfx12 (RDNA4), where its prompt path was measured (45% of 8-bit's bytes, level with it at 32K), 16-bit elsewhere. This tree's engine (`0.1.59.1-q4u32`) does that since the A.23 series; an upstream engine has no such default and uses 16-bit, so the Terminal names a format there. |
+| `--kv int8` | 8-bit KV cache. What the Terminal writes above 8K context on every card that is not gfx12, and on every engine that is not a q4u32 build. |
+| `--kv q4u32` | 4-bit KV cache on the uniform grid (a per-32-value block scale, fitted instead of taken from the block maximum). The default on gfx12 in this tree; on other cards it runs the prompt 2.5x slower (the decode kernel it replaces), so it is named only there. |
 | `--kv q4_0` | Half the KV memory with a Hadamard rotation before 4-bit rounding. About 4% faster at 128K, measurably less precise on long documents (perplexity +8-12%; needle tests still pass). Setup asks above 8K context. |
 | `--kv k8v4` | Keys at 8 bits, values as rotated 4-bit: 23% less KV memory than 8-bit, so more experts fit in VRAM. More precise than `q4_0` on long documents. Prompts are 2-5% slower. |
 | `--kv q4lm8v` (this tree, opt-in) | 4-bit Lloyd K and V plus an exact-cell window (the recent 256 and the sink 64 cells of each QSA layer stay fp16 in a resident side pool): 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for 8-bit. Exists only in a build from this source; needs the engine env `STRATA_KV_WINDOW=1` (setup writes it). Does not combine with `--kv-streaming`. Details: [KV cache quantization](#kv-cache-quantization-above-8k-context). |

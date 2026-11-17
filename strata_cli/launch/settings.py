@@ -59,7 +59,7 @@ def speed_words(speed: str, default: bool) -> str:
     if speed == "faster":
         return "Faster" + (" (default on this PC)" if default else "")
     return "Full quality" + (" (default on this PC)" if default else "") + ": all 6 experts per word"
-KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
+KV_MODES = ("int8", "q4_0", "q4u32", "k8v4", "fp16")
 DEFAULT_PORT = 8080
 
 #: How many requests the card can answer at once (the spec's "fit to card" default): by graphics memory.
