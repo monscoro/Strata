@@ -1051,6 +1051,40 @@ langsamen Niveau** (40–49 s Prompt) — das schnelle Niveau trat in dieser Sit
   dafür nur ein Stellvertreter (gleicher Kern, anderer Codec); die 631,3 tok/s sind **kein** Messwert für
   `q4u32` ohne Schalter.
 
+### A.21 — vorregistriert: `q4u32` ohne den Schalter, also der heutige Default-Zustand (17.11.2026, vor dem ersten Lauf)
+
+**Die Frage.** A.20 misst `q4u32` **mit** `STRATA_KV_Q4_PROMPT=1` (Matrix-Core-Prompt-Kern) und `q4_0`
+**ohne** Prompt-Kern. Damit ist der Unterschied zweier Arme gemessen, aber **nicht** der heutige
+Default-Zustand von `q4u32`: der Schalter ist opt-in, ein `q4u32`-Default liefe heute im **Decode-Kern**.
+Der `q4_0`-Arm (631,3 tok/s) ist dafür nur ein Stellvertreter — gleicher Kern, anderer Codec.
+
+**Die Arme** (drei Starts je Arm, 3 Nadeln, 32K, 30 s, dieser Build):
+
+| Arm | KV | Env | Cache | erwartete Route |
+|---|---|---|---|---|
+| `int8` | int8 | — | `--expert-cache 2967` | int8-Matrix-Pfad (keine Zeile) |
+| `q4u32 off` | q4u32 | **ohne** `STRATA_KV_Q4_PROMPT` | `--expert-cache 2967` | **Decode-Kernel**, Zeile „the matrix-core prompt path for the 4-bit grid is opt-in" |
+
+**Reihenfolge:** `int8`, `q4u32 off`, `q4u32 off`, `int8`, `int8`, `q4u32 off` (verschränkt, jeder Arm
+einmal am Anfang, in der Mitte, am Ende).
+
+**Kriterien, vorher festgelegt:**
+
+* Ein Lauf zählt nur mit **3950 Slots ±1 %**, **Chunk 6144** und der **Opt-in-Zeile** (Decode-Kernel).
+  Erscheint stattdessen „matrix-core prompt path serves the 4-bit uniform grid", lief der Schalter
+  entgegen der Annahme **an** — der Lauf ist ungültig und wird nicht umgedeutet.
+* Niveau je Anfrage (≥ 40 s langsam), verglichen wird nur innerhalb eines Niveaus.
+* **Erwartung (Hypothese, kein Ergebnis):** `q4u32 off` liegt auf dem Niveau des `q4_0`-Arms aus A.20
+  (631,3 tok/s), also ~5–7 % unter `int8`. Trifft das zu, ist der Schalter genau diese 5–7 % wert.
+* **Ergebnis A:** `q4u32 off` liegt innerhalb 5 % von `int8` → der Matrix-Kern trägt im Motor bei 32K
+  nichts Messbares, und der Default kann ohne ihn bleiben.
+* **Ergebnis B:** `q4u32 off` liegt ≥ 5 % unter `int8` und auf dem Niveau von A.20s `q4_0` → der Schalter
+  ist die 5–7 % wert; die Entscheidung „Schalter als Default" wird damit eine Risiko-, keine
+  Geschwindigkeitsfrage.
+* **Ergebnis C:** kein Niveau mit mindestens zwei Armen, oder die Route-Zeile fehlt → berichten, kein
+  weiterer Start derselben Bauart.
+* **Kein Decode-Vergleich**, keine Aussage über andere Kontexte als 32K.
+
 
 ---
 
