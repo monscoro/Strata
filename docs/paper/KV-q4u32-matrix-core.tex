@@ -3,6 +3,17 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v1.1 2026-11-17  the last open knob of the format is closed (A.27): the
+%                     block's group size.  A group of 16 wins 1.19 dB and
+%                     costs 0.5 bit per value more, a group of 64 loses
+%                     0.92 dB and saves 0.25 bit per value; neither is
+%                     buildable, because the prompt attention applies the
+%                     scale per group of 32 dimensions and a block is a row
+%                     along the head dimension.  The format is therefore
+%                     fixed at 4.5 bit per cell, one step per 32 values, a
+%                     uniform grid, no codebook, no zero point, no
+%                     calibration; the ablation table gains the two rows
+%                     and the abstract states the closure.
 %   v1.0 2026-11-17  the first version of the q4u32 paper.  It reports the
 %                     product path that the engine series A.16-A.23 measured:
 %                     a 4-bit KV pool that the RDNA4 prompt kernel reads
@@ -73,7 +84,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={q4u32: A 4-bit KV Cache the Matrix Core Can Read},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 1.0, built \buildstamp; first version 2026-11-17}}
+  pdfsubject={Version 1.1, built \buildstamp; first version 2026-11-17}}
 
 \setlength{\parindent}{10pt}
 
@@ -88,7 +99,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 1.0 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-11-17\par}
+    {\small Version 1.1 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-11-17\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -114,7 +125,11 @@ the per-block scale is load-bearing (a fitted Lloyd codebook on the same blocks 
 power-of-two step costs 1.81\,dB), the codebook is not (the ``codebook barely matters'' finding of
 UltraQuant, measured here on 1.57 million of our own blocks), and the per-channel axis of the 4-bit
 literature is closed: a scale per coordinate instead of per token is \textbf{1.26\,dB worse} on the key side
-in 12 of 12 layers, because after the rotation the dynamic range lives in the token, not in the channel. The
+in 12 of 12 layers, because after the rotation the dynamic range lives in the token, not in the channel.
+The block's group size is closed as well (a group of 16 wins 1.19\,dB for half a bit per value more, a
+group of 64 loses 0.92\,dB for a quarter of a bit less, and the kernel's own group of 32 dimensions admits
+neither), so the format is fixed: \textbf{4.5 bit per cell, one step per 32 values, a uniform grid, no
+codebook, no zero point, no calibration}. The
 product decision follows the measurement and is stated as such: on gfx12 the engine chooses the format, the
 Terminal follows it, every other card and every upstream engine keeps 8-bit, and an update never switches
 the variant of Strata that is installed.
@@ -491,6 +506,8 @@ codebook (Lloyd vs.\ uniform grid) & $0.43$\,dB & the codebook barely matters \\
 power-of-two step (vs.\ fitted) & $1.81$\,dB & a UE8M0 exponent is expensive here \\
 per-block zero point & $0.86$\,dB & buys range, costs $0.5$ bit per cell \\
 per-coordinate scale (A.~26) & $+1.26$\,dB & \textbf{worse}: the channel axis is closed \\
+group size 64 (A.~27) & $+0.92$\,dB & saves 0.25 bit per value, spans two kernel groups \\
+group size 16 (A.~27) & $-1.19$\,dB & wins, but costs 0.5 bit per value and two scales per group \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -541,11 +558,20 @@ once after the rotation, and each closure is a measurement.
 
 \subsection{What stays open}
 
-The group size of 32 is the one knob this work never varies: the per-block scale costs half a bit per cell
-at 32 and a quarter at 64, and no run prices the quality side of that trade\,\cite{shear}. The per-block
-zero point is a byte question rather than a quality one (it buys 0.86\,dB and costs half a bit per cell),
-and the offset table is a property of the format rather than a lever on it. The next measurement in this
-line, on the same blocks, is the group size.
+The group size of the block is the one knob the sibling campaign never varied, and A.~27 varies it here on
+the same blocks: a group of 16 wins 1.19\,dB and costs 0.5 bit per value more (5.0 against 4.5), a group of
+64 loses 0.92\,dB and saves 0.25 bit per value (4.25 against 4.5). Neither is buildable, and that is a
+property of the kernel rather than of the data: the prompt attention applies the scale per group of 32
+dimensions, and a block is a row along the head dimension, so a 64-value block spans two kernel groups and
+a 16-value block asks for two scales inside one. The group size is therefore pinned to 32, and with it the
+format: \textbf{4.5 bit per cell, one step per 32 values, a uniform grid, no codebook, no zero point, no
+calibration}. What is left open is not a format question: the per-channel offset (a property of the cache,
+not a lever on this format), the RDNA3 and APU arms (Section~\ref{sec:limits}), and the integer path
+(a kernel question, not a format one).
+
+\paragraph{The one remaining format question is the byte model's.} The group's step costs half a bit per
+value at 32 values and a quarter at 64; the quality side of that trade is now measured, and it says the
+32-value group is the only one the kernel can serve (Section~\ref{sec:ablation}).
 
 \section{The Product Path}
 \label{sec:product}

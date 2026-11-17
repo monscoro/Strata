@@ -91,14 +91,20 @@ def main() -> int:
     ap.add_argument("--dump", required=True)
     ap.add_argument("--max-records", type=int, default=None)
     ap.add_argument("--layers", type=int, default=None, help="only this layer")
+    ap.add_argument("--groups", default="32", help="the block sizes to compare (comma separated: 16,32,64)")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
+    groups = [int(g) for g in str(args.groups).split(",") if g.strip()]
     want = [args.layers] if args.layers is not None else None
     recs = read_dump(args.dump, max_records=args.max_records, want_layers=want)
     if not recs:
         print("keine Records im Dump")
         return 1
+
+    # A.27: the group size of the block (the anchor's group against the others), on the same cells.
+    group_err = {g: {"K": 0.0, "V": 0.0} for g in groups}
+    group_values = {"K": 0, "V": 0}
 
     err = {("q4u32", "K"): 0.0, ("q4u32", "V"): 0.0,
            ("per-kanal", "K"): 0.0, ("per-kanal", "V"): 0.0,
@@ -119,6 +125,14 @@ def main() -> int:
             e_q4 = float(np.sum((flat - recon) ** 2))
             err[("q4u32", side)] += e_q4
             lay[("q4u32", side)] += e_q4
+            # the group sizes of A.27: the same rule, a different block
+            for size in groups:
+                if hd % size:
+                    continue
+                gg = x.reshape(-1, hd // size, size)
+                ff = gg.reshape(-1, size)
+                rc, _dc = quantize_blocks(ff)
+                group_err[size][side] += float(np.sum((ff - rc) ** 2))
             # who sets the scale in the anchor: the largest |value| of the block, as a coordinate along head_dim
             within = np.argmax(np.abs(g), axis=2)                    # (T*nkv, groups)
             coord = (np.arange(within.shape[1])[None, :] * GROUP + within).ravel()
@@ -134,6 +148,8 @@ def main() -> int:
             e_hy = e_pc if side == "K" else e_q4
             err[("hybrid", side)] += e_hy
             lay[("hybrid", side)] += e_hy
+
+    group_values = dict(values)
 
     mse = {name: err[name] / values[name[1]] for name in err}
     base = mse[("q4u32", "K")], mse[("q4u32", "V")]
@@ -164,6 +180,25 @@ def main() -> int:
         dk = 10.0 * math.log10(lay[("per-kanal", "K")] / n) if lay[("per-kanal", "K")] > 0 else float("nan")
         dv = 10.0 * math.log10(lay[("per-kanal", "V")] / kv) if lay[("per-kanal", "V")] > 0 else float("nan")
         print(f"{layer:6d} {dk:+8.3f} {dv:+8.3f}   {int(n):>14,d}")
+
+    if len(groups) > 1:
+        print("\nA.27: die Gruppengröße des Blocks (dB gegen die 32er-Gruppe, dem Anker)")
+        print(f"{'Gruppe':>7s} {'bits/Wert':>10s} {'dB K':>8s} {'dB V':>8s}")
+        base_group = 32 if 32 in groups else groups[0]
+        for size in sorted(groups):
+            bits = 4.0 + 16.0 / size
+            dbk = dBV = float("nan")
+            if size == base_group:
+                dbk = dBV = 0.0
+            elif base_group in group_err:
+                bk = group_err[base_group]["K"] / max(group_values["K"], 1)
+                sk = group_err[size]["K"] / max(group_values["K"], 1)
+                bv = group_err[base_group]["V"] / max(group_values["V"], 1)
+                sv = group_err[size]["V"] / max(group_values["V"], 1)
+                dbk = 10.0 * math.log10(sk / bk) if sk > 0 and bk > 0 else float("nan")
+                dBV = 10.0 * math.log10(sv / bv) if sv > 0 and bv > 0 else float("nan")
+            print(f"{size:7d} {bits:10.3f} {dbk:+8.3f} {dBV:+8.3f}")
+        print("  (eine 64er-Gruppe überspannt zwei Kerngruppen: der Kern wendet die Skala je 32 Dimensionen an.)")
 
     print("\nDie Skala im Anker: wer setzt sie (Anteil der Blöcke je Koordinate)")
     for layer, counts in sorted(scale_owner.items()):

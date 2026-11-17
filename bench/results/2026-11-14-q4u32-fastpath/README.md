@@ -1394,6 +1394,71 @@ ist der **per-Kanal-Offset** (1,70 dB K / 4,63 dB V), den das Paper bereits als 
 Quantisierung des Motors (`tools/kv_codec_mse.py`) und misst die Achse ohne Engine- und ohne
 Kernel-Änderung. Rohdaten: `a26-scale-axis.json` (im Bench-Ordner).
 
+### A.27 — vorregistriert: die Gruppengröße des Blocks (16, 32, 64 Werte) (17.11.2026, vor dem ersten Lauf)
+
+**Die Frage.** Die Gruppengröße ist der eine Knopf, den keine Messung dieser Linie verändert hat: die
+Skala kostet **0,5 bit je Wert** bei 32 Werten je Block (4,5 bit/Zelle), **0,25** bei 64 (4,25 bit/Zelle) und
+**1,0** bei 16 (5,0 bit/Zelle). Die Byteseite ist eine Rechnung; die **Qualitätsseite** ist offen: eine
+größere Gruppe deckt einen weiteren Dynamikbereich, eine kleinere kostet Bytes.
+
+**Die Arme** (Block-Ebene, dieselbe Metrik wie A.26: MSE je Wert, in dB gegen die 32er-Gruppe; dieselben
+echten Zellen, derselbe Dump):
+
+| Arm | Gruppe | Bytes je Wert | erwartete Route |
+|---|---:|---:|---|
+| `g32` (Anker) | 32 | 4,5 | die heute gebaute Geometrie |
+| `g16` | 16 | 5,0 | zwei Skalen je 32er-Gruppe des Kerns |
+| `g64` | 64 | 4,25 | eine Skala über zwei Kern-Gruppen |
+
+**Kriterien, vorher festgelegt:**
+
+1. **Qualität:** der Fehler je Gruppe gegen die 32er-Gruppe: die dB-Zahl je Arm, **kein** Schwellwert —
+   berichtet wird, was der Handel kostet.
+2. **Struktur (Rechnung, kein Messwert):** die Gruppengröße ist **nicht** ein freier Knopf, sondern an
+   die Kerngeometrie gebunden: der Prompt-Kern wendet die Skala **je 32 Dimensionen** an, und ein Block ist
+   eine Zeile entlang head_dim — eine 64er-Gruppe überspannt also **zwei** Kerngruppen und kann ihre eine
+   Skala nicht je Gruppe anwenden. Eine 16er-Gruppe passt in eine Kerngruppe, kostet aber das Doppelte an
+   Skalen-Bytes.
+3. **Kill-Regel:** bleibt die 32er-Gruppe sowohl qualitäts- **als** strukturseitig die einzige mögliche
+   Geometrie, ist der letzte offene Knopf des Formats geschlossen: das Format ist fest (4,5 bit/Zelle,
+   eine Skala je 32 Werte, uniformes Gitter, kein Codebook, kein Nullpunkt, keine Kalibrierung).
+
+**Die Messung:** offline auf demselben Dump (`tools/kv_scale_axis.py`, eine Minute CPU), mit der
+Gruppengröße als Parameter; keine Engine- und keine Kernel-Änderung.
+
+### A.27 — Das Ergebnis: die Gruppengröße ist an die Kerngeometrie gebunden (17.11.2026)
+
+**Die Messung** (offline, `tools/kv_scale_axis.py --groups 16,32,64`, dieselben Zellen wie A.26: 768 Records,
+392.952 Token, 201.191.424 Werte je Seite; dB gegen die 32er-Gruppe):
+
+| Arm | Gruppe | Bit je Wert | dB K | dB V |
+|---|---:|---:|---:|---:|
+| `g16` | 16 | 5,000 | **−1,185** | −1,163 |
+| `g32` (Anker) | 32 | 4,500 | 0,000 | 0,000 |
+| `g64` | 64 | 4,250 | **+0,924** | +0,889 |
+
+**Die Rechnung geht auf:** eine größere Gruppe deckt einen weiteren Dynamikbereich und verliert **0,92 dB**
+dafür, dass sie **0,25 bit je Wert** einspart (4,5 → 4,25); eine kleinere Gruppe gewinnt **1,19 dB** und
+kostet dafür **0,5 bit je Wert** mehr (4,5 → 5,0). Beides ist der Handel zwischen dem Dynamikbereich der
+Gruppe und den Bytes ihrer Skala — die Skala ist bei 32 Werten **0,5 bit je Wert** und damit **ein Zehntel**
+des Codes.
+
+**Und beide sind nicht baubar (statische Analyse, keine Messung):** der Prompt-Kern wendet die Skala
+**je 32 Dimensionen** an, und ein Block ist eine Zeile entlang head_dim. Eine **64er**-Gruppe überspannt
+zwei Kerngruppen — ihre eine Skala kann der Kern nicht je Gruppe anwenden. Eine **16er**-Gruppe passt in
+eine Kerngruppe, verlangt aber **zwei** Skalen je Kerngruppe, und die Kerngeometrie kennt nur eine.
+
+**Damit ist die Kill-Regel erfüllt: die 32er-Gruppe ist die einzige mögliche Geometrie, und der letzte
+offene Knopf des Formats ist geschlossen.** Das Format steht fest: **4,5 bit je Zelle, eine Skala je 32
+Werte, uniformes Gitter, kein Codebook, kein Nullpunkt, keine Kalibrierung** — und es ist auf der
+Kernel-Geometrie **angewiesen**, nicht nur mit ihr vereinbar.
+
+**Was das für die Produktentscheidung heißt:** es gibt nichts mehr zu tun am Format. Die offenen Punkte der
+Linie sind damit nicht mehr Formatfragen, sondern (a) die **Gruppengröße im Byte-Modell** — sie ist
+geschlossen —, (b) die **Skalierungsachse** (A.26, geschlossen), (c) der **per-Block-Offset** (eine
+Eigenschaft des Caches, kein Hebel auf das Format), (d) die **A.24/A.25** (gfx11 und APUs, Hardware fehlt)
+und (e) der **int8-Umstieg** (die int8-Route, kein Formatproblem).
+
 ### Korrektur zu A.20
 
 A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
