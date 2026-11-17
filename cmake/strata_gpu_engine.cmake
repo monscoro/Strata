@@ -802,7 +802,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(hip_router_fast PRIVATE strata_kernels strata_hip_runtime)
     add_test(NAME hip_router_fast COMMAND hip_router_fast)
     list(APPEND _strata_hip_tests hip_router_fast)
-    # S6: the RDNA4 matrix-core prompt attention (STRATA_HIP_WMMA) against the FP32 kernel and FP64; skips off gfx12
+    # S6: the matrix-core prompt attention (STRATA_HIP_WMMA) against the FP32 kernel and FP64; skips off gfx11/gfx12
     # the prompt attention on a recorded selection (STRATA_QSA_DUMP), for A/B of kernel variants (STRATA_QSA_UNION=1)
     add_executable(hip_pa_bench tests/cuda/pa_bench.cpp)
     target_link_libraries(hip_pa_bench PRIVATE strata_kernels strata_hip_runtime)

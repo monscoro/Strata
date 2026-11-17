@@ -159,7 +159,8 @@ source-checkout option for developers, not a way to start the released app.
   and it reserves each GPU address range while the arena is pinned. When a range's GPU address still covers memory in use,
   that range and the ones after it stay unpinned and the log says so (`strata pin: ... (#3431)`); that start reads prompts more
   slowly but correctly. `STRATA_STACK_ISOLATE=0` runs the engine as before, without the reservation below 1 TiB.
-- **WMMA prompt attention** is opt-in on Windows (`STRATA_HIP_WMMA=1`); it is the default on gfx12 on Linux.
+- **WMMA prompt attention** is on by default on gfx12 (Windows and Linux); `STRATA_HIP_WMMA=0` turns it off.
+  On gfx11 it is opt-in (`STRATA_HIP_WMMA=1`; the integrated gfx1103/gfx1151 cards take it by default).
 
 **Reporting a Windows AMD run.** Give your card, the driver version (AMD Software > System), the output of the two commands
 below (from the Strata folder, after `set PATH=%CD%\engine\rocm\bin;%PATH%`), the end of `strata-<model>.log`, and the speed

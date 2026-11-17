@@ -1240,6 +1240,79 @@ ist das `q4u32` mit dem Prompt-Kern.** `--kv int8` / `--kv fp16` bleiben der Weg
 A.23 misst das, was ein Start **ohne Flags** tut (`--expert-cache auto`): der Motor legt 3438 statt 2917 Slots
 an, und das kostet nichts an Prompt-Geschwindigkeit (innerhalb des Harness-Rauschens von 2–3 %).
 
+**Die Versionsfrage dazu.** Der Motor dieses Zweigs ist **`0.1.62-q4u32`**: eine eigene Version über der
+Upstream-Engine (0.1.61, v0.2.15), mit der Variante als Suffix, damit ein Zweig-Build nie für einen
+Upstream-Build gehalten wird und der Updater die beiden unterscheiden kann. Das Terminal-Gate hängt an genau
+dieser Nummer (`strata_control/kv_default.py`, `KV_DEFAULT_ENGINE = (0, 1, 62)`): nur eine Engine ab 0.1.62
+**und** eine gfx12-Karte lassen den Format-Wahl dem Motor; überall sonst schreibt das Terminal das Format wie
+vorher (`int8`), damit diese Starts byte-identisch zum Release bleiben.
+
+### A.24 — vorregistriert: die gfx11-Familie (17.11.2026, vor dem ersten Lauf)
+
+**Die Frage.** Der Matrix-Core-Prompt-Kern hat im Baum **schon eine gfx11-Variante**
+(`src/kernels/cuda/qsa_prompt_attn.cu:1897–1916` und `:1941–1950`: eigener Builtin, `PA_KL = 16`,
+`PA_KOFF = 0`, `PA_ROW = 2·i + half`). Mit `STRATA_HIP_WMMA=1` läuft dort auch der **4-Bit-Pool**
+(`hip_wmma_usable:2503–2513`, `q4_prompt_on:2723–2729`, `:2812–2826`); der integrierte gfx1103 (780M)
+nimmt das per Default (`src/core/arch_defaults.cpp:163`, **gemessen**: Prompt 1K 98,5 → 157,3 tok/s,
+4K 115,1 → 233,3, `docs/RADEON_780M.md:82–105`). Was fehlt, ist nur die **Voreinstellung** des
+KV-Formats: `kv_default_mode()` (`src/program/generate.cpp:2547`) wählt auf gfx11 `fp16`.
+
+**Der Plan (auf einer gfx1100/gfx1101/gfx1102-Karte):**
+
+| Schritt | Was | Erwartung |
+|---|---|---|
+| 1 | `hip_prompt_attn_wmma.exe 32768 512 3` auf gfx11 | `FAILURES: 0`; der Harness akzeptiert gfx11 und fährt den 4-Bit-Fall (`src/kernels/qsa_prompt_attn_parity.cpp:466–469`, `:487`) |
+| 2 | Nadel-Lauf 32K, 3 Tiefen, drei Arme: `--kv q4u32` **mit** `STRATA_HIP_WMMA=1`, `--kv q4u32` **ohne** (also `STRATA_HIP_WMMA=0`), `--kv int8` mit Kern | der 4-Bit-Arm mit Kern nicht mehr als 5 % unter int8; der 4-Bit-Arm ohne Kern deutlich langsamer (auf gfx12 waren das 264 gegen 663 tok/s) |
+| 3 | **Logit-Gate**: KL der Prefill-Logits des WMMA-Prefills gegen den FP32-Kern, gleiches Top-p | KL ≤ 0,005 und Top-p ≥ 98 % — die Schwelle aus dem gfx11-Fork (stew675 PR #199), dessen WMMA-Prefill die Logits messbar verschiebt (KLD 0,0293, Top-p 92,59 %) |
+
+**Kriterien, vorher festgelegt:** alle drei Schritte grün → der Motor darf auf gfx12 **und** gfx11
+selbst entscheiden (`q4u32`), das Terminal folgt (`strata_control/kv_default.py`, `setup.py:11177`).
+Ein verletzter Punkt → berichten, die Voreinstellung bleibt auf gfx12 beschränkt.
+
+**Stand in dieser Umgebung: offen.** Hier steht **keine gfx11-Karte** (der Testrechner ist eine
+gfx1201). Schritt 1 lässt sich dort nicht fahren; die Schritte 2 und 3 brauchen die Karte erst recht.
+Bis dahin bleibt alles gfx11-Spezifische **statische Analyse** (siehe
+`docs/research/KV_Q4_MATRIX_PATH_RDNA4.md` §9) und die Voreinstellung gilt nur auf gfx12.
+
+### A.25 — vorregistriert: der APU-Fall (Strix Halo gfx1151, 780M gfx1103) (17.11.2026, vor dem ersten Lauf)
+
+**Die Frage.** Auf den APU-Karten läuft der Matrix-Core-Prompt-Pfad **schon per Default**
+(`src/core/arch_defaults.cpp:129–137`, `:172–191`; **gemessen** auf dem Strix-Box: 4K 690 → 1.090 und
+8K 785 → 1.183 tok/s, ×1,58 / ×1,51, erster Token KL 0,0088; 780M: 109,5 → 214,7 tok/s). Offen ist dort
+nur der **4-Bit-KV-Pool**. Das ist eine andere Frage als auf einer dGPU mit eigenem VRAM: auf dem APU
+ist der Speicher **geteilt** (UMA), der KV **streamt ab 64K** (`setup_config.py:329–330`), und der APU
+hat eigene gemessene Defaults (PF_FUSED, PF_F16, PF_DM16, SELECT_WMMA, Prompt-Chunk 4096).
+
+**Die Arme** (Strix-Halo-Box, Windows, gfx1151; 3 Nadeln, 32K, 30 s Abstand, dieser Build):
+
+| Arm | Flags | erwartete Route |
+|---|---|---|
+| `q4u32` | `--kv q4u32` (Matrix-Kern per Default an) | Matrix-Kern-Zeile, 4-Bit-Pool |
+| `q4u32 ohne Kern` | `--kv q4u32`, `STRATA_HIP_WMMA=0` | Decode-Kern (der langsame Pfad) |
+| `int8` | `--kv int8` | der Vergleichsarm |
+
+**Kriterien, vorher festgelegt:**
+
+1. **Parität:** `hip_prompt_attn_wmma.exe 32768 512 3` auf gfx1151 → `FAILURES: 0` (der Harness
+   akzeptiert gfx11 und fährt den 4-Bit-Fall, `src/kernels/qsa_prompt_attn_parity.cpp:466–469`, `:487`).
+2. **Tempo:** der 4-Bit-Arm **mit** Kern nicht mehr als 5 % unter `int8` im selben Niveau; der Arm
+   **ohne** Kern deutlich langsamer (auf gfx12 waren das 264 gegen 663 tok/s).
+3. **Speicher:** die **Experten-Slots** des 4-Bit-Arms gegen `int8`, getrennt gemessen: unter 64K
+   (ohne KV-Streaming, der KV liegt im Pool) und über 64K (mit Streaming, der KV liegt im RAM). Der
+   Gewinn wird **pro Fall** berichtet, nicht verrechnet.
+4. **Logit-Gate:** KL der Prefill-Logits des WMMA-Prefills gegen den FP32-Kern ≤ 0,005 und gleiches
+   Top-p ≥ 98 % (die Schwelle aus dem gfx11-Fork, dessen WMMA-Prefill die Logits messbar verschiebt:
+   KLD 0,0293, Top-p 92,59 %).
+5. 3 von 3 Nadeln je Lauf.
+
+**Ergebnis A:** alle Punkte erfüllt → der Motor darf auch auf gfx1151 selbst entscheiden; das Terminal
+folgt (`strata_control/kv_default.py`, `setup.py:11177`).
+**Ergebnis B:** ein Punkt verletzt → berichten; die Voreinstellung bleibt auf gfx12.
+**Ergebnis C:** keine APU-Karte verfügbar → berichten, offen lassen.
+
+**Stand in dieser Umgebung: offen** (kein Strix Halo, kein 780M hier). Alles APU-Spezifische in
+diesem Abschnitt ist **statische Analyse** — siehe `docs/research/KV_Q4_MATRIX_PATH_RDNA4.md` §9a.
+
 ### Korrektur zu A.20
 
 A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
