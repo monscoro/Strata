@@ -2712,12 +2712,19 @@ static bool q4u_wmma_ok(const QsaAttnPools& p) {
            !g_q4_wmma_failed.load(std::memory_order_relaxed);
 }
 
-// STRATA_KV_Q4_PROMPT=1: the 4-bit uniform grid on the matrix-core prompt path.  Opt-in until the engine
-// hang is explained (the kernel passes the parity harness but the engine stops making progress in the
-// prompt; the default path stays byte-identical).  One switch for both prompt entry points: the ungated
-// kernel and the one with the attention gate fused into its epilogue.
+// STRATA_KV_Q4_PROMPT: the 4-bit uniform grid (--kv q4u32) on the matrix-core prompt path.  It is ON for
+// that grid by default: A.21 measured 265 tok/s without it against 655 with it (2.47x, same level, int8
+// control) - the decode kernel the grid falls back to is the window-capable instantiation, and that is the
+// whole price.  STRATA_KV_Q4_PROMPT=0 is the escape hatch (the A/B arm and the pre-A.22 route back through
+// the decode kernel); =1 still states it explicitly.  The logic is the same for both prompt entry points:
+// the ungated kernel and the one with the attention gate fused into its epilogue.
+// The switch used to be opt-in while the engine hang was unexplained; A.15 fixed it (the striped grid), the
+// parity checksums are unchanged since, and the engine series A.17/A.20/A.21 ran green with the path on.
 static bool q4_prompt_on() {
-    static const bool on = [] { const char* e = std::getenv("STRATA_KV_Q4_PROMPT"); return e != nullptr && e[0] == '1'; }();
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_KV_Q4_PROMPT");
+        return !(e != nullptr && e[0] == '0');   // unset or 1: on, 0: off
+    }();
     return on;
 }
 
@@ -2803,10 +2810,11 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     if (q4u_wmma_ok(pools)) {
-        // The 4-bit uniform grid on the matrix-core prompt path; q4_prompt_on() carries why it is opt-in.
+        // The 4-bit uniform grid on the matrix-core prompt path; q4_prompt_on() carries the default and the
+        // escape hatch.
         if (!q4_prompt_on()) {
-            pa_said("the q4 arm runs the prefill in the decode kernel (the matrix-core prompt path for the "
-                    "4-bit grid is opt-in: STRATA_KV_Q4_PROMPT=1)");
+            pa_said("STRATA_KV_Q4_PROMPT=0: the q4 grid runs the prefill in the decode kernel (A.21: 2.5x "
+                    "slower prompt than int8; the default sends it through the matrix core)");
             return false;
         }
         // the 4-bit uniform grid: eight scale groups of 32 dims instead of four of 64

@@ -1101,6 +1101,48 @@ anderer Tag, anderer Cache: 3015 gegen 3950 Slots). Zwei unabhängige Messungen,
    arm-spezifisch; eine Anfrage ist aber keine Aussage über das Niveau, und `q4u32`/`q4_0` kamen in
    diesem Lauf nicht in seine Nähe.
 
+### A.22 — vorregistriert: der gekoppelte Schalter (17.11.2026, vor dem ersten Lauf)
+
+**Die Änderung (Code, statisch):** `q4_prompt_on()` liest `STRATA_KV_Q4_PROMPT` jetzt als **Aus**-Schalter:
+unset oder `1` = an, `0` = aus. Die Funktion wird nur auf dem HIP-Zweig erreicht, und dort nur, wenn
+`q4u_wmma_ok()` gilt — also **nur für das uniforme Gitter (`--kv q4u32`)**. int8, fp16, `q4_0` und alle
+Lloyd-Modi laufen denselben Code wie vorher; ihr Pfad ist byte-identisch. Der CUDA-Zweig (mode 4) ist
+unberührt, dort war der Schalter nie im Spiel.
+
+**Das Gate (gelaufen, 17.11.):** `hip_prompt_attn_wmma.exe 32768 512 3` mit dem neuen Binary —
+**`FAILURES: 0`**, und **alle neun `NEWHASH` identisch** zum Lauf vom 17.11. vor der Änderung
+(`232d4781a2b59ccc`, `2455dbed6eba900f`, `9f901d5231c4013e`, `d791e4bfb2fd064d`, `82ef1dc3fa5dd4e7`,
+`6c01e0a92922cca5`, `ad466135a4d13e70`, `06c917251ed1d5cf`, `1d3b59ff22ef3ea5`). Die Änderung fasst keine
+Arithmetik an; das Gate prüft, dass das so bleibt.
+
+**Die Frage.** Kommt `q4u32` **ohne jedes Env** im Motor auf das Niveau von `int8` — also auf dem Weg, den
+ein Nutzer ohne Flags geht?
+
+**Die Arme** (3 Starts je Arm, 3 Nadeln, 32K, 30 s, dieser Build):
+
+| Arm | KV | Env | erwartete Route |
+|---|---|---|---|
+| `int8` | int8 | — | int8-Matrix-Pfad (keine Zeile, wie immer) |
+| `q4u32 Default` | q4u32 | **kein Env** | **Matrix-Kern**, Zeile „serves the 4-bit uniform grid" |
+| `q4u32 Aus` | q4u32 | `STRATA_KV_Q4_PROMPT=0` | Decode-Kern (Zeile „STRATA_KV_Q4_PROMPT=0: … decode kernel") |
+
+**Reihenfolge:** `int8`, `q4u32 Default`, `q4u32 Default`, `int8`, `int8`, `q4u32 Default`, danach **ein**
+Lauf `q4u32 Aus` als **Routing-Prüfung** (kein Vergleich — die 2,5× sind in A.21 mit neun Anfragen
+gemessen).
+
+**Kriterien, vorher festgelegt:**
+
+* `q4u32 Default` zählt nur, wenn die Matrix-Kern-Zeile **3 von 3** im Log steht; erscheint die
+  `=0`-Zeile, ist die Kopplung nicht wirksam und der Lauf ungültig.
+* `q4u32 Aus` muss die `=0`-Zeile zeigen und ~265 tok/s liefern (A.21: 265,0) — sonst ist der Aus-Schalter
+  nicht der alte Pfad.
+* 3950 Slots ±1 %, Chunk 6144, Niveau je Anfrage (≥ 40 s langsam), Vergleich nur innerhalb eines Niveaus.
+* **Erwartung:** `q4u32 Default` liegt innerhalb 5 % von `int8` (A.20: 676,7 gegen 680,2 tok/s).
+* **Ergebnis A:** innerhalb 5 % → die Kopplung liefert den gemessenen A.20-Zustand ohne Flags.
+* **Ergebnis B:** ≥ 5 % unter `int8` → die Kopplung ist nicht der gemessene Pfad; dann wird die
+  Route-Zeile geprüft und **nicht** umgedeutet.
+* **Ergebnis C:** kein Niveau mit mindestens zwei Armen → berichten, kein weiterer Start.
+
 ### Korrektur zu A.20
 
 A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
