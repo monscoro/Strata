@@ -1443,10 +1443,22 @@ kostet dafür **0,5 bit je Wert** mehr (4,5 → 5,0). Beides ist der Handel zwis
 Gruppe und den Bytes ihrer Skala — die Skala ist bei 32 Werten **0,5 bit je Wert** und damit **ein Zehntel**
 des Codes.
 
-**Und beide sind nicht baubar (statische Analyse, keine Messung):** der Prompt-Kern wendet die Skala
-**je 32 Dimensionen** an, und ein Block ist eine Zeile entlang head_dim. Eine **64er**-Gruppe überspannt
-zwei Kerngruppen — ihre eine Skala kann der Kern nicht je Gruppe anwenden. Eine **16er**-Gruppe passt in
-eine Kerngruppe, verlangt aber **zwei** Skalen je Kerngruppe, und die Kerngeometrie kennt nur eine.
+**Und die Kerngeometrie entscheidet, welche Seite baubar ist (statische Analyse, keine Messung — und
+eine Korrektur der früheren Fassung dieser Notiz):** der Prompt-Kern wendet die Skala **je 32
+Dimensionen** an, und ein Block ist eine Zeile entlang head_dim. Ein Block, der **größer** ist als die
+Kerngruppe, wird von derselben Skala zweimal bedient: die Skala ist **innerhalb** jeder 32er-Gruppe
+konstant, und der Kern faltet sie in den Operanden (`qsa_prompt_attn.cu`: die Stufe der Gruppe wird aus dem
+Block gelesen und in die Codes gefaltet). Eine **64er**-Gruppe bräuchte also drei lokale Änderungen (den
+Blockindex, den Lane-Offset im Block und die Nibble-Regel von zwei auf vier Quadranten), und die
+Stufen-Abfrage läse jede zweite Gruppenstufe aus demselben Block — sie ist **baubar**. Ein Block, der
+**kleiner** ist als die Kerngruppe, ist es nicht: zwei Blöcke fallen in eine Gruppe, und der Kern wendet
+eine Stufe je Gruppe an — die **16er**-Gruppe fällt damit heraus.
+
+**Der Handel ist also ein Handel, kein Abschluss:** die 64er-Gruppe spart **0,25 bit je Wert** (5,6 % vom
+Bulk; auf der gemessenen Karte rund **40 zusätzliche Experten-Slots** bzw. +1,2 %) und kostet **0,92 dB**
+Blockfehler — über die gemessene Block→nats-Brücke (0,00116–0,00167 nats je dB) rund **+0,0012 nats**.
+Gegen ein Produktarm, das im Mittel auf 	exttt{int8} liegt und im p99 bereits dahinter, ist das die
+falsche Richtung: es kauft Bytes, indem es die Marge verbraucht, wegen der das Format gewählt wurde.
 
 **Damit ist die Kill-Regel erfüllt: die 32er-Gruppe ist die einzige mögliche Geometrie, und der letzte
 offene Knopf des Formats ist geschlossen.** Das Format steht fest: **4,5 bit je Zelle, eine Skala je 32

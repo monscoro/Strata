@@ -3,6 +3,21 @@
 % content revision, newest first).  The version counts content revisions; the
 % build time on page 1 is generated at compile time (\buildstamp), so it always
 % matches the file it is printed on.
+%   v1.2 2026-11-17  a correction to v1.1, from reading the kernel: the
+%                     statement that a 64-value block "spans two kernel groups
+%                     and cannot apply its one scale per group" was wrong.
+%                     The step of a 64-value block is constant inside each
+%                     32-dimension group, so the kernel serves it with the
+%                     same fold it uses now; what the change costs is the
+%                     block index, the lane's offset and a four-quadrant
+%                     nibble rule --- three local changes, not a blocker.
+%                     A 16-value block, on the other hand, is the one that
+%                     cannot be served (two blocks inside one group, one step
+%                     per group).  The trade is therefore a trade and not a
+%                     closure: 0.25 bit per value (about 1.2 % more resident
+%                     experts on the measured card) against 0.92 dB.  The
+%                     abstract and Section 6.3 are corrected; the group size
+%                     stays at 32, for a stated reason.
 %   v1.1 2026-11-17  the last open knob of the format is closed (A.27): the
 %                     block's group size.  A group of 16 wins 1.19 dB and
 %                     costs 0.5 bit per value more, a group of 64 loses
@@ -84,7 +99,7 @@
 \hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
   pdftitle={q4u32: A 4-bit KV Cache the Matrix Core Can Read},
   pdfauthor={Matthias Kronenberger},
-  pdfsubject={Version 1.1, built \buildstamp; first version 2026-11-17}}
+  pdfsubject={Version 1.2, built \buildstamp; first version 2026-11-17}}
 
 \setlength{\parindent}{10pt}
 
@@ -99,7 +114,7 @@
     \vspace{1.0em}
     {\large Matthias Kronenberger\par}
     \vspace{0.35em}
-    {\small Version 1.1 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-11-17\par}
+    {\small Version 1.2 \,\textperiodcentered\, built \buildstamp\ \,\textperiodcentered\, first version 2026-11-17\par}
   \end{center}
   \vspace{1.0em}
 }]
@@ -126,10 +141,11 @@ power-of-two step costs 1.81\,dB), the codebook is not (the ``codebook barely ma
 UltraQuant, measured here on 1.57 million of our own blocks), and the per-channel axis of the 4-bit
 literature is closed: a scale per coordinate instead of per token is \textbf{1.26\,dB worse} on the key side
 in 12 of 12 layers, because after the rotation the dynamic range lives in the token, not in the channel.
-The block's group size is closed as well (a group of 16 wins 1.19\,dB for half a bit per value more, a
-group of 64 loses 0.92\,dB for a quarter of a bit less, and the kernel's own group of 32 dimensions admits
-neither), so the format is fixed: \textbf{4.5 bit per cell, one step per 32 values, a uniform grid, no
-codebook, no zero point, no calibration}. The
+The block's group size is settled with it (a group of 16 wins 1.19\,dB for half a bit per value more and
+cannot be served by the kernel's 32-dimension group at all; a group of 64 loses 0.92\,dB for a quarter of a
+bit less and could be served, for about 1.2\,\% more resident experts --- the wrong direction for a format
+whose margin over \texttt{int8} is what it was chosen for), so the format is fixed: \textbf{4.5 bit per
+cell, one step per 32 values, a uniform grid, no codebook, no zero point, no calibration}. The
 product decision follows the measurement and is stated as such: on gfx12 the engine chooses the format, the
 Terminal follows it, every other card and every upstream engine keeps 8-bit, and an update never switches
 the variant of Strata that is installed.
@@ -506,8 +522,8 @@ codebook (Lloyd vs.\ uniform grid) & $0.43$\,dB & the codebook barely matters \\
 power-of-two step (vs.\ fitted) & $1.81$\,dB & a UE8M0 exponent is expensive here \\
 per-block zero point & $0.86$\,dB & buys range, costs $0.5$ bit per cell \\
 per-coordinate scale (A.~26) & $+1.26$\,dB & \textbf{worse}: the channel axis is closed \\
-group size 64 (A.~27) & $+0.92$\,dB & saves 0.25 bit per value, spans two kernel groups \\
-group size 16 (A.~27) & $-1.19$\,dB & wins, but costs 0.5 bit per value and two scales per group \\
+group size 64 (A.~27) & $+0.92$\,dB & saves 0.25 bit per value; the kernel can serve it \\
+group size 16 (A.~27) & $-1.19$\,dB & wins, but costs 0.5 bit per value and is not buildable \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -560,11 +576,27 @@ once after the rotation, and each closure is a measurement.
 
 The group size of the block is the one knob the sibling campaign never varied, and A.~27 varies it here on
 the same blocks: a group of 16 wins 1.19\,dB and costs 0.5 bit per value more (5.0 against 4.5), a group of
-64 loses 0.92\,dB and saves 0.25 bit per value (4.25 against 4.5). Neither is buildable, and that is a
-property of the kernel rather than of the data: the prompt attention applies the scale per group of 32
-dimensions, and a block is a row along the head dimension, so a 64-value block spans two kernel groups and
-a 16-value block asks for two scales inside one. The group size is therefore pinned to 32, and with it the
-format: \textbf{4.5 bit per cell, one step per 32 values, a uniform grid, no codebook, no zero point, no
+64 loses 0.92\,dB and saves 0.25 bit per value (4.25 against 4.5).
+
+The kernel decides which of the two is buildable, and the rule is not the obvious one. The prompt attention
+applies the step per group of 32 dimensions, and a block is a row along the head dimension --- so a block
+that is \emph{larger} than the kernel's group is served by the same step twice: the step is constant inside
+each 32-dimension group, and the kernel folds it into the operand as it does now
+(\texttt{src/kernels/cuda/qsa\_prompt\_attn.cu}: the step of the group is read from the block, and the fold
+multiplies the group's codes by it). A 64-value block would therefore need three local changes --- the block
+index, the lane's offset inside the block, and the nibble rule, which goes from two quadrants to four --- and
+the step lookup would read every second group's step from the same block. A block that is \emph{smaller}
+than the kernel's group cannot be served at all: two blocks would fall inside one group, and the kernel
+applies one step per group.
+
+So the 32-value group is not the only buildable one, and the honest statement is a trade rather than a
+closure: the 64-value group is buildable and saves 0.25 bit per value (5.6\,\% of the bulk, which on the
+measured card is about 40 more resident experts, or 1.2\,\%), and it costs 0.92\,dB of block error --- about
+0.0012 nats through the measured block-to-nats bridge\,\cite{shear}. Against a product arm that is already
+level with \texttt{int8} on the mean and behind it on the p99, that is the wrong direction: it buys bytes by
+spending the margin the format was chosen for. The 16-value group is the better codec and the more
+expensive one, and it is not buildable. The group size therefore stays at 32 in the product, and the format
+is fixed: \textbf{4.5 bit per cell, one step per 32 values, a uniform grid, no codebook, no zero point, no
 calibration}. What is left open is not a format question: the per-channel offset (a property of the cache,
 not a lever on this format), the RDNA3 and APU arms (Section~\ref{sec:limits}), and the integer path
 (a kernel question, not a format one).
