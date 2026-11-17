@@ -996,6 +996,61 @@ der Mitte und am Ende.
   Unterschied ist also nicht dem 4-Bit-Codec zuzuschreiben. Er beantwortet nur „was kostet der fehlende
   Kern im Motor?".
 
+### A.20 — Das Ergebnis: `q4_0` kostet 5–7 %, `int8` und `q4u32` sind gleichauf (17.11.2026)
+
+**Die Vorbedingungen sind erfüllt, und die Route-Zeile bestätigt den statischen Befund 3 von 3:**
+
+| Arm | Läufe | Slots | Chunk | Route-Zeile im Log | freier VRAM |
+|---|---|---|---|---|---|
+| `int8` | 3 | 3950 | 6144 | keine (wie A.19) | 602 / 775 / 759 MiB (**Paging-Warnung**) |
+| `q4_0` | 3 | 3950 | 6144 | **„decode kernel (no prompt fast path on this backend)"** 3/3 | keine Warnung |
+| `q4u32` | 3 | 3950 | 6144 | „matrix-core prompt path serves the 4-bit uniform grid" 3/3 | keine Warnung |
+
+Alle neun Läufe: 3 von 3 Nadeln gefunden, 6144-Token-Chunks, 3950 Slots. **Alle 27 Anfragen liegen im
+langsamen Niveau** (40–49 s Prompt) — das schnelle Niveau trat in dieser Sitzung **überhaupt nicht** auf.
+
+**Die Prompt-Raten** (32K, tok/s, neun Anfragen je Arm):
+
+| Arm | Mittel | Median | Spannweite | je Runde (1 / 2 / 3) |
+|---|---:|---:|---|---|
+| `int8` | **680,2** | 679,5 | 672,1–685,6 (2,0 %) | 676,0 / 682,0 / 682,6 |
+| `q4u32` (Matrix-Kern) | **676,7** | 666,3 | 656,3–**749,0** | 703,9 / 662,5 / 663,9 |
+| `q4_0` (Decode-Kern) | **631,3** | 636,0 | 614,4–638,7 (3,9 %) | 629,7 / 628,3 / 636,0 |
+
+**Die drei Befunde:**
+
+1. **`int8` und `q4u32` sind nicht unterscheidbar.** Mittel 680,2 gegen 676,7 (**+0,5 %** für `int8`),
+   Median 679,5 gegen 666,3, je Runde +4,1 / −2,9 / −2,8 %. Das ist A.19 bestätigt, mit 9 statt 4
+   Anfragen je Arm: **kein Prompt-Vorsprung des einen oder anderen**. Wieder auffällig: `int8` läuft mit
+   der **Paging-Warnung** (602–775 MiB frei) und ist trotzdem nicht langsamer.
+2. **`q4_0` ist 5–7 % langsamer als `q4u32`** — Mittel **−6,7 %**, Median −4,6 %, ohne den einen
+   749,0-Ausreißer **−5,4 %**; gegen `int8` −7,2 %. Das liegt **an der 5-%-Schwelle**, nicht darüber, und
+   **weit unter** dem in der Vorregistrierung erwarteten Abstand von ≥ 15 % (Ergebnis A). Der statische
+   Grund ist trotzdem bestätigt: `q4_0` fährt den Prompt im **Decode-Kern**, die Route-Zeile sagt es in
+   allen drei Läufen. Sein Preis ist also der fehlende Prompt-Kern — und der ist bei 32K **klein**:
+   ~0,6–0,9 s je 6144-Token-Chunk.
+3. **Das schnelle Niveau kam nicht vor** (0 von 27 Anfragen; A.18/A.19: 10 von 21 q4-Anfragen). Die
+   einzige Spur ist **eine** `q4u32`-Anfrage mit 40,0 s und **749,0 tok/s** — die einzige Anfrage an der
+   Niveaugrenze. Eine Anfrage ist kein Niveau; sie ist als Streuung zu lesen und fließt in keine Aussage
+   ein. Damit bleibt **`int8` im schnellen Niveau ungemessen** (über A.19 und A.20 zusammen: 0 von 12).
+
+**Was das für die Default-Entscheidung heißt (nur die gemessenen Sätze):**
+
+* **`q4_0` bringt gegenüber `q4u32` nichts:** gleicher Speicher (144 B je Zelle und Kopf, beide
+  `block_q4_0`), **5–7 % langsamerer Prompt**, und auf HIP **kein** Matrix-Core-Prompt-Kern. Als Default
+  hat es damit keinen Vorteil, den es nicht schon über `q4u32` gäbe. (Ein Qualitätsvergleich der beiden
+  Codecs — Block-Maximum gegen Least-Squares-Fit — ist **nicht** Teil dieser Serie und wird hier nicht
+  behauptet.)
+* **`int8` bringt gegenüber `q4u32` nichts an Prompt-Zeit** (±3 %, im Rauschen) und kostet **83 % mehr KV**
+  (264 gegen 144 Byte je Zelle und Kopf). Der einzige offene Punkt bleibt das schnelle Niveau.
+* **Der Prompt-Kern ist ~5–7 % wert**, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende Pfad, nicht
+  der Unterschied zweier Kerne. Das ist die Zahl, an der sich entscheidet, ob `STRATA_KV_Q4_PROMPT=1`
+  Default werden soll: 5–7 % Prompt-Geschwindigkeit gegen den (in A.15 behobenen, aber weiterhin
+  opt-in gehaltenen) Hänger.
+* **Nicht gemessen:** `q4u32` **ohne** den Schalter, also im Decode-Kern wie `q4_0`. Der `q4_0`-Arm ist
+  dafür nur ein Stellvertreter (gleicher Kern, anderer Codec); die 631,3 tok/s sind **kein** Messwert für
+  `q4u32` ohne Schalter.
+
 
 ---
 
@@ -1526,7 +1581,8 @@ Revert ohne Verhaltensänderung. **Nicht gebaut:** der CUDA-Zweig (kein `nvcc` a
 
 **Die Reihenfolge nach der Messung (17.11., neu):** ~~H1~~ → ~~H2~~ → ~~H6~~ → ~~H5a~~ (bitgleich,
 ohne Gewinn) → ~~H7~~ (Gate rot) → ~~H4/H3~~ (−5…−6 %, Gate rot, als Opt-in behalten) → der
-**cvt-Mikrohebel** nur zusammen mit einem Bau — sonst ist die Hebel-Liste abgearbeitet. M2: 3
+**cvt-Mikrohebel** nur zusammen mit einem Bau — sonst ist die Hebel-Liste abgearbeitet. **Danach die
+Motor-Serie A.20** (`int8`, `q4_0`, `q4u32` im gleichen Niveau), erst dann die Default-Entscheidung. M2: 3
 Wiederholungen, ≥5 % zählt, und seit dem 17.11. zusätzlich: **nur das A/B-Verhältnis im selben Lauf**
 ist über Builds hinweg belastbar (der Kartenzustand verschob die Absolutzeiten um ~49 %).
 
