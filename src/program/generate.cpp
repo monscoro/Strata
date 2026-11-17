@@ -20,6 +20,7 @@
 #include "strata/core/adapt_async_default.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/gfx12_chunk.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
 #include "strata/kernels/gfx_arch.hpp"
@@ -667,7 +668,7 @@ struct Options {
     int ple_inflight = 256;   // the prompt path reads a chunk's rows at once: 64 left the SSD half idle (32K: 303 -> 189 ms)
     double ple_delay_us = 0;           ///< fault injection: every row read completes no earlier than this
     bool ple_sync_submit = false;      ///< A/B arm: submit reads on the token thread, no I/O worker
-    std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
+    std::string kv = "auto";           ///< KV storage: resolved at start (q4u32 where its prompt path is the measured one, else fp16); --kv names it
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     std::string dump_residual;
@@ -1042,7 +1043,8 @@ void usage() {
                  "  --ple-delay-us U     fault injection: each row read completes no earlier than U us\n"
                  "  --ple-sync-submit    A/B arm: submit table reads on the token thread (default: an I/O thread)\n"
                  "  --kv fp16|int8       KV storage (plan v0.3 P7): int8 codes + fp16 scale per 64 values, half the\n"
-                 "                       VRAM; default fp16 until gate G-C accepts int8\n"
+                 "                       VRAM. Without --kv the part decides: q4u32 on gfx12 (see below), fp16\n"
+                 "                       elsewhere - q4u32 there would run the prompt 2.5x slower (A.21)\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
                  "  --kv q4lm32          q4_0's blocks and rotation with Max-Lloyd's 16 levels for N(0,1) in place of\n"
@@ -1069,7 +1071,8 @@ void usage() {
                  "                       is 2.5x the decode kernel it replaces (265 against 655 tok/s at 32K),\n"
                  "                       and STRATA_KV_Q4_PROMPT=0 sends it back there. Its sibling q4u32z adds\n"
                  "                       the per-block offset (the zero point) and carries a constant per block.\n"
-                 "                       Measurement arm, not a shipping format\n"
+                 "                       This is the default on gfx12 since A.23 (its prompt path is the measured\n"
+                 "                       one there); naming it keeps it on a part that defaults away\n"
                  "  --kv q4lm8[q4lm8k]  WP-2 PROBE (measurement only, not a byte layout): the same blocks\n"
                  "                       and the same 576 B/cell, with Max-Lloyd's 8-level (3-bit) table for N(0,1)\n"
                  "                       on both tensors or on K only. Answers whether the fixed\n"
@@ -2511,6 +2514,39 @@ static bool pcie_auto_split_ok() {
            strata::kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName);
 #else
     return true;
+#endif
+}
+
+// The KV storage default (17.11.2026): the 4-bit uniform grid `q4u32` where its prompt path is the measured one, and
+// today's fp16 everywhere else.  Measured (A.20-A.22, gfx1201, 32K): q4u32 with the matrix-core prompt path is level
+// with int8 (676.7 against 680.2 tok/s) and carries 45 % of int8's bytes (144 against 264 per cell and head) - the
+// freed VRAM goes to the expert cache.  Without that path the same grid is 2.5x slower than int8 (A.21: 265 against
+// 655 tok/s), so a part that cannot serve it must not get the grid by default.  The condition is therefore exactly the
+// one `hip_wmma_usable()` uses for an unset STRATA_HIP_WMMA: gfx12 AND the gfx12 prompt defaults.  A hand-set
+// STRATA_HIP_WMMA=0 keeps fp16, because that is the "no prompt path" state; on CUDA nothing changes (mode 4 exists,
+// but it was neither built nor measured on this branch).
+[[maybe_unused]] static const char* kv_default_mode() {
+#if defined(STRATA_USE_HIP)
+    // the card the engine will run on: STRATA_PRIMARY_DEVICE names it and is honoured further down, before any context
+    // exists, so ask about that one here instead of about card 0
+    int dev = 0;
+    if (const char* pd = std::getenv("STRATA_PRIMARY_DEVICE")) {
+        const int named = std::atoi(pd);
+        int visible = 0;
+        if (named >= 0 && cudaGetDeviceCount(&visible) == cudaSuccess && named < visible) dev = named;
+        (void) cudaGetLastError();
+    }
+    cudaDeviceProp p{};
+    if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return "fp16";
+    }
+    const char* w = std::getenv("STRATA_HIP_WMMA");
+    if (w != nullptr && w[0] == '0') return "fp16";
+    return strata::kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName) && strata::core::kGfx12PromptDefaultsOn
+               ? "q4u32" : "fp16";
+#else
+    return "fp16";
 #endif
 }
 
@@ -4330,6 +4366,15 @@ int main(int argc, char** argv) {
         o.ple_inflight > 1024 || !(o.ple_delay_us >= 0)) {
         std::fprintf(stderr, "strata generate: invalid --ple-io/--ple-row-cache/--ple-inflight/--ple-delay-us\n");
         return 2;
+    }
+    if (o.kv == "auto") {   // not named by the user: the part decides (kv_default_mode carries why)
+        o.kv = kv_default_mode();
+        if (o.kv == "q4u32")
+            std::fprintf(stderr, "strata generate: KV storage: q4u32 (the default on this part: 45 %% of int8's bytes, "
+                                 "level with it at 32K; --kv int8|fp16|q4_0 names another)\n");
+        else
+            std::fprintf(stderr, "strata generate: KV storage: fp16 (the default here: --kv q4u32 rides the gfx12 "
+                                 "matrix-core prompt path, and that is off on this part; --kv names another)\n");
     }
     if (o.kv == "q4") o.kv = "q4_0";
     if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "q4lm32" && o.kv != "q4lm32s" &&
