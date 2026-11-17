@@ -1229,8 +1229,8 @@ B3-Vermerk nennt 5 → 3 Blöcke für 24 KiB).
 |---|---|---|---|---|
 | **H1** | **Vektor-Laden**: die 4/8 Byte eines Nibble-Paares mit *einer* `uint32`-Ladung holen, die Nibbles im Register auseinandernehmen | ~96 skalare Ladungen → ~12 Vektor-Ladungen je Zelle und Lane; der größte Einzelposten | **keine Zahlenänderung** (dieselben Codes), kein Layoutwechsel | Harness |
 | **H2** | **Gepacktes Staging**: die Nibbles gepackt in den shared memory (36 statt 64 B je Zelle) und **einmal** vor dem WMMA entpacken | −4.096 B LDS **und** die halbe Expansion (b) | der Zeilen-Stride (72/80 B, „banks spread") muss neu abgestimmt werden — Bankkonflikte sind messbar, nicht lesbar | Harness |
-| **H3** | **Gruppen vor dem Schreiben summieren**: die zwei Gruppen einer Welle im Register summieren, dann `S.part` schreiben | `part` **8 → 4** Slots = −6.336 B LDS | die fp32-Additionsreihenfolge ändert sich → die Prüfsumme ändert sich, die Genauigkeit nicht messbar | Harness + Qualitäts-Gate |
-| **H4** | **Skala in den Operand falten**: `K = (code−8)·step` **vor** dem WMMA in fp16 | `part` fällt 12.672 → 1.584 B (−11 KiB), die 8-fache Gruppensumme entfällt | **die K-Werte werden fp16-gerundet** (heute sind die Codes exakt, die Skala wirkt in fp32): der Fehler gegen FP64 stiege von ~1e-6 auf ~1e-4 relativ. Das ist eine **Qualitätsentscheidung**, und sie betrifft gleich gebaut auch int8 | **nein** (nicht in diesem Zweig) |
+| **H3** | **Gruppen vor dem Schreiben summieren**: die zwei Gruppen einer Welle im Register summieren, dann `S.part` schreiben | **gemessen (17.11., nur zusammen mit H4 möglich): −0,9 … −2,0 %** zusätzlich zu H4, unter der Schwelle, aber in 6 von 7 Formen mit gleichem Vorzeichen | die fp32-Additionsreihenfolge ändert sich → die Prüfsumme ändert sich; ohne H4 gar nicht möglich (verschiedene Blockskalen je Gruppe) | Harness — **erledigt, nicht eingebaut** |
+| **H4** | **Skala in den Operand falten**: `K = (code−8)·step` **vor** dem WMMA in fp16 | **gemessen (17.11.): −4,9 … −7,5 %** auf dem Attention-Kernel (`STRATA_PA_FOLD=1`), H4+H3 −5,8 … −9,4 % | **die K-Werte werden fp16-gerundet**: FP64-Abweichung 1,06e-05 → **6,22e-03**, sechs Fälle rot, `FAILURES: 6`. Deshalb nur als Opt-in | Harness + Qualitäts-Gate — **erledigt, Gate rot** |
 | **H5** | **Fenster zellproportional**: die Fensterzellen eines Chunks in eine dichte 16er-Kachel sammeln und nur diese rechnen | ~~der zweite p.v-Satz kostet 6,2–13,4 % der Kernelzeit, weil er je Chunk läuft~~ — **gemessen widerlegt (17.11.):** der zweite Satz läuft in 5 von 65 Chunks (9 von 130 Kacheln), und der Aufpreis bleibt bei halbierter Matrixarbeit gleich: er ist das **divergente Lesen des Seitenpools**, nicht der Satz selbst | ein Gather in die Kachel (Aufwand im Register); H5a ist bitgleich, H5b ändert die Bits | Harness (`window%d timing:`) — **erledigt, negativ** |
 | **H6** | **`WIN` als Template-Parameter**: die Q4-Instantiierung in `WIN = true/false` spalten, damit der Arm ohne Fenster weder `tmpw` noch den Laufzeit-Zweig trägt | unbekannt — aber die A.17-Lektion (ein **unbenutztes** 32-VGPR-Array kostete den int8-Kern den Faktor **2,16**) sagt, dass dieser Kern auf Registerdruck sehr empfindlich reagiert | keine Zahlenänderung; zwei Instantiierungen mehr (Compile-Zeit) | Harness + **M1** |
 | **H7** | **`SPLIT` aus** (`STRATA_PA_FAST=1`): halbiert die WMMA-Zahl | **gemessen (17.11.): −9,8 %** (q4u32 32768: 6,137 → 5,533 ms), aber FP64-Abweichung 1,06e-05 → **7,18e-03** und `new vs old` 0,0016 der Skala (Grenze 1e-4), `FAILURES: 9` | Genauigkeit (ein FP16-Bild statt hi/lo) | Harness + Qualitäts-Gate — **erledigt, Gate rot** |
@@ -1413,13 +1413,60 @@ FP64-Abweichung geht von 1,06e-05 auf **7,18e-03** (~Faktor 680, Ausgabenskala 7
 auf **0,0016 der Skala** (Grenze 1e-4), `FAILURES: 9`. Das ist die vorhergesagte fp16-Rundung
 (~2⁻¹⁰ nach der Akkumulation über 32 Werte). **H7 ist damit gemessen und abgelehnt**, nicht offen.
 
-**H3** bleibt der einzige Hebel für LDS (Banken abstimmen, Zahlen-Gate).
+#### C.0.2 — H4 und H3 gemessen (17.11.2026; rein experimentell, Default bleibt)
 
-**Die Reihenfolge nach der Messung (17.11., neu):** ~~H1~~ → ~~H2~~ → ~~H6~~ → ~~H5a~~ (gebaut, bitgleich,
-ohne Gewinn) → ~~H7~~ (Gate rot) → **H3** (Banken abstimmen, Zahlen-Gate) → **H4** nur mit
-Qualitätsentscheidung → **cvt-Mikrohebel** nur zusammen mit einem Bau. M2: 3 Wiederholungen, ≥5 % zählt,
-und seit dem 17.11. zusätzlich: **nur das A/B-Verhältnis im selben Lauf** ist über Builds hinweg
-belastbar (der Kartenzustand verschob die Absolutzeiten um ~49 %).
+**Vorregistriert:** drei Arme in **einem** Binary, geschaltet über `STRATA_PA_FOLD` — `0` = der Pfad des
+letzten Release, `1` = **H4** (die Block-Skala in den K-Operanden gefaltet, fp16-Produkt statt
+fp32-Multiplikation der Gruppensummen), `2` = **H4+H3** (zusätzlich ein Akkumulator über die beiden
+Gruppen der Welle). Aufruf wie in A.18 (`32768 512 3`), drei Runden, Arme **verschränkt** (0,1,2 / 0,1,2
+/ 0,1,2) wegen des Kartenzustands, int8-Arm als Kontrolle, Qualitäts-Gate wie es ist.
+
+**Warum H3 nicht allein geht:** die beiden Gruppen einer Welle sind zwei 4-Bit-Blöcke mit
+**verschiedenen** Skalen, und `Σ s_g·ksc_g ≠ (Σ s_g)·ksc`. Erst wenn die Skala im Operanden steckt
+(H4), dürfen die Gruppensummen vor der Skalierung addiert werden. H3 ist also der zweite Teil von H4,
+kein eigener Hebel.
+
+| Fall | heute (FM 0) | H4 (FM 1) | H4+H3 (FM 2) | H4 allein | H4+H3 | H3 zusätzlich |
+|---|---|---|---|---|---|---|
+| q4u32 32K/512 | 5,986 ms | 5,816 | 5,721 | **−4,9 %** | **−5,8 %** | −0,9 % |
+| q4u32 512 | 1,030 ms | 0,974 | 0,947 | **−7,5 %** | **−9,4 %** | −2,0 % |
+| Fenster 1 mit | 6,089 ms | 5,915 | 5,834 | −5,0 % | −5,6 % | −0,6 % |
+| Fenster 1 ohne | 5,446 ms | 5,286 | 5,201 | −5,1 % | −5,9 % | −0,9 % |
+| Fenster 3 mit | 2,422 ms | 2,314 | 2,265 | −6,5 % | −7,8 % | −1,4 % |
+| Fenster 3 ohne | 2,158 ms | 2,056 | 2,003 | −6,8 % | −8,5 % | −1,8 % |
+
+(Die ms-Spalten sind Mittel aus drei Läufen; die Prozentzahlen sind **gegen den int8-Kontrollarm
+desselben Laufs normiert**, weil der zwischen den Phasen driftet — Kontrolle 4,513 / 4,613 / 4,579 ms,
+also ±2 % Rauschen. Die gepaarten Runden für 32K geben −4,3 / −4,6 / −5,9 % (H4) und −5,0 / −6,1 /
+−6,3 % (H4+H3).)
+
+**Was daran zählt:**
+
+* **Der Hebel ist ~5 % groß** (H4), **H3 legt ~1–2 % drauf** — und das ist unter der 5-%-Schwelle,
+  aber in sechs von sieben Formen mit gleichem Vorzeichen, also nicht Nichts. Zusammen **−6 %** auf
+  dem Attention-Kernel. Das ist die Größe, die der LDS-/Skalen-Posten überhaupt hat.
+* **Der Preis steht dagegen:** die FP64-Abweichung geht von **1,06e-05 auf 6,22e-03** (Faktor ~590, das
+  sind 8e-4 der Ausgabenskala), `new vs old` auf **0,0012 der Skala** (Grenze 1e-4) — **sechs** Fälle
+  werden rot (alle q4u32), `FAILURES: 6`. Es ist genau die vorhergesagte fp16-Rundung des Produkts
+  (~2⁻¹¹ je Wert, über 64 Summanden).
+* **Der int8-Zweig ist unberührt:** die drei int8-`NEWHASH` sind in allen neun Läufen identisch
+  (`232d4781a2b59ccc`, `9f901d5231c4013e`, `d791e4bfb2fd064d`) — der `Q4`-Wächter sitzt richtig, die
+  verbotenen Prüfsummen-Änderungen treten nicht auf.
+* **Der Fensteraufpreis bleibt in allen Armen ~+12 %** (Fenster 1: +11,4…12,3 % / +11,7…12,0 % /
+  +12,3…12,5 %). H4/H3 fassen weder das Fetch noch den zweiten p.v-Satz an — konsistent mit C.0.1.
+
+**Entscheidung:** nicht eingebaut, aber als **Opt-in** (`STRATA_PA_FOLD=1|2`, Default `0`) im Baum
+gelassen, damit die Zahl nachvollziehbar bleibt. Der Default-Pfad ist bitgleich zum Release (FM 0 ist
+die alte Anweisungsfolge), der int8-Zweig ohnehin. **Was es kostet:** drei Instantiierungen je
+Trim/RPF-Variante (6 → 18 für die 4-Bit-Route), also Compile-Zeit — wenn das stört, ist es ein
+Revert ohne Verhaltensänderung. **Nicht gebaut:** der CUDA-Zweig (kein `nvcc` auf diesem System); die
+Änderung ist reiner Template-Code im gemeinsamen Body.
+
+**Die Reihenfolge nach der Messung (17.11., neu):** ~~H1~~ → ~~H2~~ → ~~H6~~ → ~~H5a~~ (bitgleich,
+ohne Gewinn) → ~~H7~~ (Gate rot) → ~~H4/H3~~ (−5…−6 %, Gate rot, als Opt-in behalten) → der
+**cvt-Mikrohebel** nur zusammen mit einem Bau — sonst ist die Hebel-Liste abgearbeitet. M2: 3
+Wiederholungen, ≥5 % zählt, und seit dem 17.11. zusätzlich: **nur das A/B-Verhältnis im selben Lauf**
+ist über Builds hinweg belastbar (der Kartenzustand verschob die Absolutzeiten um ~49 %).
 
 **Die Reihenfolge nach Erwartung (vor M1, überholt):** M1 → **H1** (kein Zahlenrisiko) → **H2** → **H3**
 (Qualitäts-Gate) → **H6** (nach M1 entscheiden) → **H5** → **H4**/**H7** nur mit Qualitätsentscheidung.

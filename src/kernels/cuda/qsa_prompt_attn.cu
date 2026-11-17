@@ -2015,7 +2015,7 @@ __device__ __forceinline__ uint32_t pack_i8x4(const int8_t* c) {
 // the WMMA exactly like the int8 codes (|code - 8| <= 8 is exact in fp16) and the step multiplies
 // the group's partial.  The difference to the int8 path is the group count: the step sits per 32
 // values, so the row has eight groups of 32 dims instead of four of 64, and a wave owns two of them.
-template <bool SPLIT, bool GATE, bool RPF, int TR, int NGRP = 4, bool Q4 = false>
+template <bool SPLIT, bool GATE, bool RPF, int TR, int NGRP = 4, bool Q4 = false, int FM = 0>
 __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ q, QsaAttnPools p,
                                                                    const int32_t* __restrict__ ids,
                                                                    const int32_t* __restrict__ steps, int n_kv_heads,
@@ -2027,6 +2027,12 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
     constexpr int GPW = NGRP / 4;        // the groups one wave owns (its 64 dims)
     constexpr int GRP = HD / NGRP;       // the dims per group (64 for int8, 32 for the 4-bit blocks)
     constexpr int KSTEPS = GRP / 16;     // the 16-dim steps per group
+    // H4/H3 (experiment, opt-in STRATA_PA_FOLD): FOLD puts the 4-bit block's step into the K operand (an fp16 product
+    // instead of an fp32 multiply of the group's partial sums), CHAIN additionally keeps one accumulator across the
+    // wave's GPW groups - which only works with the step folded in, because the groups carry different steps.
+    // FM 0 is today's path, bit for bit.  Both are 4-bit only: the int8 route's checksums must not move.
+    constexpr bool FOLD = FM > 0 && Q4;
+    constexpr bool CHAIN = FM > 1 && Q4;
     __shared__ SmemWT<TR ? G : 16, TR >= 2 ? 72 : WVS, NGRP> S;
     const int qi = blockIdx.x, kvh = blockIdx.y;
     const int n_head = n_kv_heads * G;
@@ -2234,9 +2240,12 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
         // q.k over this wave's 64 dims for two 16-cell tiles, times the cell's K scale for this group
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
+            // CHAIN: one accumulator over the wave's GPW groups (the step is in the operand then, so the group's
+            // partial sums may be added before the final `qdown` scaling)
+            wf8 s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll
             for (int g = 0; g < GPW; ++g) {
-                wf8 s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+                if constexpr (!CHAIN) s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll
                 for (int kk = g * KSTEPS; kk < (g + 1) * KSTEPS; ++kk) {
                     // a window cell's K comes from the exact fp16 side pool (B fragment, scale 1)
@@ -2247,13 +2256,28 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
                     } else {
                         b = i8_to_h(cd.kx[nt][kk]);
                     }
+                    if constexpr (FOLD) {
+                        // H4: the block's step in the operand.  The 4-bit pool's step is an fp16 already, so the only
+                        // new rounding is the product; a window cell's step is exactly 1.0 (no rounding at all).
+                        const _Float16 kh = (_Float16) cd.ksc[nt][g];
+                        for (int i = 0; i < PA_KL; ++i) b[i] = (_Float16) (b[i] * kh);
+                    }
                     s = wmma_f16(qh[kk], b, s);
                     if constexpr (SPLIT) s = wmma_f16(ql[kk], b, s);
                 }
+                if constexpr (!CHAIN) {
+#pragma unroll
+                    for (int i = 0; i < 8; ++i)
+                        if (!TR || PA_ROW(i, half) < G)
+                            S.part[warp * GPW + g][PA_ROW(i, half)][nt * 16 + col] =
+                                FOLD ? s[i] : s[i] * cd.ksc[nt][g];
+                }
+            }
+            if constexpr (CHAIN) {   // one slot per wave instead of GPW
 #pragma unroll
                 for (int i = 0; i < 8; ++i)
                     if (!TR || PA_ROW(i, half) < G)
-                        S.part[warp * GPW + g][PA_ROW(i, half)][nt * 16 + col] = s[i] * cd.ksc[nt][g];
+                        S.part[warp * GPW][PA_ROW(i, half)][nt * 16 + col] = s[i];
             }
         }
         __syncthreads();
@@ -2266,8 +2290,9 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
                 const int c = sub * 4 + j;
                 // past the selection, or a masked cell (non-resident page, as in the decode kernel): no weight
                 float s = 0.0f;
+                constexpr int GSTEP = CHAIN ? GPW : 1;   // H3: one slot per wave when the groups are chained
 #pragma unroll
-                for (int g = 0; g < NGRP; ++g) s += S.part[g][r][c];
+                for (int g = 0; g < NGRP; g += GSTEP) s += S.part[g][r][c];
                 x[j] = S.valid[c] ? s * qdown : -INFINITY;
                 mx = fmaxf(mx, x[j]);
             }
@@ -2411,7 +2436,7 @@ __device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ 
     __builtin_trap();
 #endif
 }
-template <bool SPLIT, bool GATE = false, bool RPF = false, int TR = 0, int NGRP = 4, bool Q4 = false>
+template <bool SPLIT, bool GATE = false, bool RPF = false, int TR = 0, int NGRP = 4, bool Q4 = false, int FM = 0>
 __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                                    const int32_t* __restrict__ ids,
                                                                    const int32_t* __restrict__ steps, int n_kv_heads,
@@ -2419,7 +2444,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                                                                    float* __restrict__ attn, int cap,
                                                                    const float* __restrict__ qf = nullptr,
                                                                    uint16_t* __restrict__ o16 = nullptr, int64_t ld16 = 0) {
-    prompt_attn_wmma_body<SPLIT, GATE, RPF, TR, NGRP, Q4>(q, p, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16);
+    prompt_attn_wmma_body<SPLIT, GATE, RPF, TR, NGRP, Q4, FM>(q, p, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16);
 }
 
 // gfx12 (RDNA4): on by default on Linux (148-amd; STRATA_HIP_WMMA=0 turns it off; Windows: opt-in with =1 until tested there).  gfx11 (RDNA3 / RDNA3.5): only on request
@@ -2491,16 +2516,28 @@ bool hip_wmma_usable(int64_t n_q, int64_t cap) {
 // the kernel's LDS and load-order variants.  The same arithmetic in the same order: the output bits are the same (the
 // checksum of hip_prompt_attn_wmma is equal across them), only the blocks resident a WGP and the load timing change.
 constexpr int PA_TRIM_DEFAULT = 2;
-template <bool SPLIT, bool GATE, int NGRP = 4, bool Q4 = false>
+template <bool SPLIT, bool GATE, int NGRP = 4, bool Q4 = false, int FM = 0>
 void pa_launch(dim3 grid, cudaStream_t st, const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                int n_kv_heads, int page_size, float scale_log2, float* attn, int cap, const float* qf, uint16_t* o16, int64_t ld16) {
     static const int trim = [] { const char* e = std::getenv("STRATA_PA_TRIM"); return e != nullptr && e[0] != '\0' ? std::atoi(e) : PA_TRIM_DEFAULT; }();
     static const bool rpf = [] { const char* e = std::getenv("STRATA_PA_RPF"); return !(e != nullptr && e[0] == '0'); }();
-#define STRATA_PA_L(R, T) prompt_attn_wmma_kernel<SPLIT, GATE, R, T, NGRP, Q4><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16)
+#define STRATA_PA_L(R, T) prompt_attn_wmma_kernel<SPLIT, GATE, R, T, NGRP, Q4, FM><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16)
     if (trim >= 2) { if (rpf) STRATA_PA_L(true, 2); else STRATA_PA_L(false, 2); }
     else if (trim == 1) { if (rpf) STRATA_PA_L(true, 1); else STRATA_PA_L(false, 1); }
     else { if (rpf) STRATA_PA_L(true, 0); else STRATA_PA_L(false, 0); }
 #undef STRATA_PA_L
+}
+// STRATA_PA_FOLD (experiment, 4-bit only; 0 off = the release path): 1 folds the block step into the K operand (H4),
+// 2 also chains the wave's groups into one accumulator (H3).  Off for the int8 route, whose checksums must not move.
+template <bool SPLIT, bool GATE, int NGRP = 4, bool Q4 = false>
+void pa_launch_fm(dim3 grid, cudaStream_t st, const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                  int n_kv_heads, int page_size, float scale_log2, float* attn, int cap, const float* qf, uint16_t* o16, int64_t ld16) {
+    static const int vm = [] { const char* e = std::getenv("STRATA_PA_FOLD"); return e != nullptr && e[0] != '\0' ? std::atoi(e) : 0; }();
+    if constexpr (Q4) {
+        if (vm == 1) return pa_launch<SPLIT, GATE, NGRP, Q4, 1>(grid, st, q, pools, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16);
+        if (vm == 2) return pa_launch<SPLIT, GATE, NGRP, Q4, 2>(grid, st, q, pools, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16);
+    }
+    pa_launch<SPLIT, GATE, NGRP, Q4, 0>(grid, st, q, pools, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16);
 }
 
 template <int NGRP = 4, bool Q4 = false>
@@ -2565,13 +2602,13 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
             const float* qfq = gate_qf + (size_t) q0 * s.n_head * 2 * HD;
             uint16_t* o16q = gate_o16 + (size_t) q0 * gate_ld;
             if (fast && n_q >= min_t)
-                pa_launch<false, true, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
+                pa_launch_fm<false, true, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
             else
-                pa_launch<true, true, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
+                pa_launch_fm<true, true, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
         } else if (fast && n_q >= min_t)
-            pa_launch<false, false, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap, nullptr, nullptr, 0);
+            pa_launch_fm<false, false, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap, nullptr, nullptr, 0);
         else
-            pa_launch<true, false, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap, nullptr, nullptr, 0);
+            pa_launch_fm<true, false, NGRP, Q4>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap, nullptr, nullptr, 0);
     }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
