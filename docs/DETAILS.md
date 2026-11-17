@@ -241,6 +241,16 @@ reported and, for files in your own folder, never deleted. Without `uvx`, `pip i
 `STRATA_KV_HOST_REGISTER=1` forces the KV host copy to be pinned with `cudaHostRegister` (the order WSL2 uses
 automatically); `0` forces `cudaHostAlloc` first.
 
+**Who chooses the format, in short.** The engine of this tree (`0.1.59.1-q4u32`) decides: without `--kv` it
+takes `q4u32` on gfx12 (RDNA4), where the 4-bit prompt path was measured (level with 8-bit: 664,5 against
+669,0 tok/s at 32K, and 45 % of its bytes, which the expert cache gets: **+18,7 %** slots), and 16-bit
+everywhere else. The Terminal writes the format itself on every other card and on every engine that is not a
+q4u32 build, so those starts stay byte-identical to the last release; `STRATA_HIP_WMMA=0` keeps 16-bit
+everywhere (that is the state without the prompt path, where the 4-bit pool is 2,5x slower). A format the
+person names is always written. **An update never switches the variant of Strata that is installed** — the
+manifest carries it (`"flavor"`), and the updater keeps a `q4u32` engine when the feed has an upstream one.
+Measurements: `bench/results/2026-11-14-q4u32-fastpath/README.md` (A.21–A.23).
+
 ### Low-RAM modes (chosen by setup)
 
 Normally all of a model's experts are copied into RAM (23-50 GB, pinned) and the GPU holds a copy of the most-used ones.
@@ -1398,8 +1408,9 @@ by the engine (exit 2, before anything loads). To stream instead, drop the windo
 
 Measured on the author's PC (Ryzen 9 3900XT, 64 GB DDR4-3000, RX 9060 XT 16 GB, Windows, ROCm 7.1,
 Qwen3.8-Flash-Next, 128K context, `--prefill auto`): 5.29 bit/cell, 1,016 MiB of KV against 1,584 MiB
-for int8. The default path (`--kv int8`, no window) is byte-identical to the last release (dump-logits
-SHA `A014F504...BA052`).
+for int8. The int8 path without the window is byte-identical to the last release (dump-logits
+SHA `A014F504...BA052`). On gfx12 the engine of this tree picks `q4u32` instead (see
+[Memory modes](#memory-modes)); every other card and every upstream engine keeps 8-bit.
 
 **4-bit Lloyd KV with the exact-cell window (opt-in):** setup's third KV choice (offered at 32K and more; below the
 ~28K break-even the ring costs more than the 4-bit base saves) writes `--kv q4lm8v` and the engine env

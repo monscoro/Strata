@@ -6,7 +6,9 @@ This page is built by `tools/capability_table.py` from [docs/data/capabilities.j
 - **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed.
 - **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.
 
-App and Terminal 0.2.13, Control and engines 0.1.59. App, Control and engine versions differ on purpose.
+App and Terminal 0.2.13, Control 0.1.59.1, engines 0.1.59.1-q4u32 in this tree (the published feed carries 0.1.59).
+App, Control and engine versions differ on purpose; the engine's suffix names the variant of Strata it is
+(this tree's engine adds the measured `q4u32` KV default).
 
 ## At a glance
 

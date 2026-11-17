@@ -460,7 +460,7 @@ The engine prints one line at start-up that names what it set.
 
 | Switch | What it does |
 | --- | --- |
-| `STRATA_HIP_WMMA=1` | Prompt attention on the matrix cores (needs `--kv int8`) |
+| `STRATA_HIP_WMMA=1` | Prompt attention on the matrix cores. It reads the KV pool in the form it has: 8-bit, 16-bit or the 4-bit grid `q4u32` (the 4-bit path needs this switch - without it the 4-bit pool runs on the decode kernel, which is 2.5x slower) |
 | `STRATA_PF_GEMM=1` | The prompt's FP16 projections on the 128 x 256 WMMA GEMM |
 | `STRATA_PA_FAST=1` | Prompt attention with single FP16 q and p |
 | `STRATA_SELECT_WMMA=1` | The block scorer on the matrix cores |
