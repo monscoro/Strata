@@ -1313,6 +1313,83 @@ folgt (`strata_control/kv_default.py`, `setup.py:11177`).
 **Stand in dieser Umgebung: offen** (kein Strix Halo, kein 780M hier). Alles APU-Spezifische in
 diesem Abschnitt ist **statische Analyse** — siehe `docs/research/KV_Q4_MATRIX_PATH_RDNA4.md` §9a.
 
+### A.26 — vorregistriert: die Skalierungsachse (per-Token-Gruppe gegen per-Kanal) (17.11.2026, vor dem ersten Lauf)
+
+**Die Frage.** Unsere `q4u32`-Geometrie legt **eine Skala je 32 Werte entlang head_dim, je Token** (eine
+„per-Token-Gruppe"): 4 Bit je Wert plus 0,5 Bit für die Skala = **4,5 bit/Wert**. Die Arbeit sagt das
+andere: **K gehört per-Channel, V per-Token** (KIVI; zolotukhin.ai, 14.08.2026: unter 8 Bit bricht die
+Qualität ein, und die Outlier-Kanäle vergiften ihre Nachbarn in der Gruppe). Der Vorschlag misst das auf
+**unseren echten Zellen** — ohne Engine- und ohne Kernel-Änderung.
+
+**Die Arme** (Zellen-Ebene, im rotierten Raum, in dem unser Format lebt; dieselbe Metrik wie der
+Shear-Arm: MSE je Wert, in dB gegen den Anker):
+
+| Arm | Skala | Bit je Wert |
+|---|---|---:|
+| `q4u32` (Anker) | je Token, je 32 Werte entlang head_dim (Schritt je Block gefittet) | 4,5 |
+| `per-kanal` | je (Layer, Kopf, Kanal) **über alle Token** — die Tabelle ist token-unabhängig und liegt in der Modelldatei (1.024 fp16 je Layer und Seite) | 4,0 + ~0 |
+| `hybrid` (KIVI) | K per-Kanal, V je Token-Gruppe | wie oben, je Seite |
+
+**Kriterien, vorher festgelegt:**
+
+1. **K:** der per-Kanal-Arm muss den Anker um **≥ 1,0 dB** schlagen. Sonst bleibt die per-Token-Gruppe
+   (kein Kernel-Umbau, der Fast Path bleibt wie er ist).
+2. **V:** per-Kanal-V wird **berichtet**, nicht angestrebt (KIVI sagt: V per-Token). Ein Gewinn dort ist
+   eine Extra-Information.
+3. **Struktur (Rechnung, kein Messwert):** eine Skala je Kanal lässt sich **nicht** je 32-Wert-Block
+   anwenden — sie müsste auf den **Akkumulator** (die int8-Route), und die kostet dort Arbeit **je Ausgabe**
+   statt je Eingabewert (Faktor 16 bei einem 16-Zeilen-Tile; §3 des Research-Dokuments). Ein KIVI-Gewinn ist
+   also **kein** Format-Gewinn, sondern der Preis für den int8-Umstieg.
+4. **Kill-Regel:** < 1,0 dB auf K ⇒ die Frage ist mit „nein" beantwortet; die per-Token-Gruppe bleibt, und
+   das Thema wird nicht wieder aufgemacht (außer es taucht später als Nebenbefund auf).
+
+**Die Messung:** offline auf dem Zellen-Dump des Centering-Projekts (`cells-cwe4k.bin`, die Zellen des
+cwe-4k-Korpus, 12 QSA-Layer — dieselbe Datei, auf der der Offset-Arm gemessen wurde). Zusätzlich wird
+berichtet, **wie viele Koordinaten** im Anker die Skala bestimmen (die „Outlier-Kanäle"): das erklärt,
+**woher** ein Gewinn käme.
+
+### A.26 — Das Ergebnis: die Skalierungsachse ist keine (17.11.2026)
+
+**Die Messung** (offline, `tools/kv_scale_axis.py`, auf dem Zellen-Dump des Centering-Projekts: 768 Records,
+**392.952 Token**, **201.191.424 Werte** je Seite, alle **12 QSA-Layer**; MSE je Wert, dB gegen den Anker):
+
+| Arm | MSE K | dB K | MSE V | dB V |
+|---|---:|---:|---:|---:|
+| `q4u32` (Anker) | 1,493706e-02 | 0,000 | 2,461929e-03 | 0,000 |
+| `per-kanal` | 1,997048e-02 | **+1,261** | 2,696579e-03 | **+0,395** |
+| `hybrid` (KIVI: K per-Kanal, V je Token-Gruppe) | 1,997048e-02 | **+1,261** | 2,461929e-03 | 0,000 |
+
+**Das Ergebnis ist das Gegenteil eines Gewinns: die per-Kanal-Skala ist schlechter.** Auf K ist sie in
+**12 von 12 Layern** schlechter (+0,715 bis +1,646 dB, Median +1,29 dB); auf V in 10 von 12 (zwei Layer sind
+um ~1 dB besser — aber V per-Kanal ist **kein** Ziel, KIVI sagt: V per-Token). Der Hybrid, also KIVIs
+Rezept, erbt den K-Verlust ungefiltert.
+
+**Warum — und das ist der eigentliche Befund.** Die Frage, wer im Anker die Skala setzt, beantwortet sie:
+die besten **5 von 256** Koordinaten setzen nur **6,3 … 13,6 %** der Blöcke (zwischen den Layern), alle
+übrigen sind unauffällig. **Es gibt keine Outlier-Kanäle**, die ihre Nachbarn in der Gruppe vergiften
+könnten. Nach der Rotation ist der dynamische Bereich **je Token** verteilt (jede Zeile hat ihre eigene
+Lage), und genau das ist unsere Geometrie: eine Skala je 32 Werte entlang head_dim, **je Token**. Die
+per-Kanal-Skala muss dagegen den Extremwert über **alle** Token einer Koordinate decken — sie zahlt also
+für das Schlimmste und ist für den typischen Token zu grob.
+
+**Das Kriterium (K ≥ 1,0 dB Gewinn) ist nicht erfüllt, sondern umgekehrt: der Kill greift.** Die
+per-Token-Gruppe bleibt, der Fast Path bleibt wie er ist (kein Kernel-Umbau), und das Thema wird nicht
+wieder aufgemacht. Der Preis der Alternative wäre doppelt: sie ist **schlechter** (oben) **und** sie
+lässt sich im Fast Path nicht anwenden (eine Skala je Kanal gehört auf den Akkumulator — die int8-Route,
+Arbeit je Ausgabe statt je Eingabewert, Faktor 16 bei einem 16-Zeilen-Tile, §3 des Research-Dokuments).
+
+**Was das für die Literatur bedeutet (Quelle, ausgewertet in `docs/research/KV_Q4_MATRIX_PATH_RDNA4.md` §8):**
+die Warnung „unter 8 Bit bricht die Qualität ein, K gehört per-Channel" (zolotukhin.ai, 14.08.2026, nach
+KIVI) **gilt für ein Format ohne Hadamard-Rotation**. In unserem Format (Rotation vor der Quantisierung)
+ist die Achse per-Channel **geschlossen** — zweimal, zweimal gemessen: die S2-Sonde hatte die
+per-Kanal-Skala **vor** der Rotation gekillt (die Vor-Rotation-Kanäle sind nicht der schwerere Schwanz),
+und A.26 schließt sie **nach** der Rotation auf unseren Blöcken. Der überlebende Teil derselben Achse
+ist der **per-Kanal-Offset** (1,70 dB K / 4,63 dB V), den das Paper bereits als Produktmerkmal führt.
+
+**Die Werkzeug-Konvention:** `tools/kv_scale_axis.py` liest den Dump des Centering-Projekts, spiegelt die
+Quantisierung des Motors (`tools/kv_codec_mse.py`) und misst die Achse ohne Engine- und ohne
+Kernel-Änderung. Rohdaten: `a26-scale-axis.json` (im Bench-Ordner).
+
 ### Korrektur zu A.20
 
 A.20 schließt mit „Der Prompt-Kern ist ~5–7 % wert, nicht 2,3× — der Faktor aus A.1 war der ganz fehlende
