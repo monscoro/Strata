@@ -934,6 +934,68 @@ PCIe-/Experten-Nachschub vom Host, die WDDM-Seitenwechsel, der Takt. Keiner ist 
 dort langsamer wäre als `q4u32` (868,0 tok/s). Das ist die einzige Zahl, die die alte Behauptung noch
 stützen oder widerlegen könnte; sie ist **nicht** gemessen.
 
+### A.20 — vorregistriert: die verschobenen Vergleiche `q4_0` und `int8` (17.11.2026, vor dem ersten Lauf)
+
+**Warum dieser Lauf.** A.19 hat den Expert-Cache als Erklärung ausgeschlossen und den Satz geschärft: im
+langsamen Niveau sind `q4u32` und `int8` nicht unterscheidbar (661,8 gegen 664,5 tok/s), und `q4u32` ist
+der int8-Ersatz **wegen des KV-Speichers**, nicht wegen der Prompt-Zeit. Zwei Arme dieser Reihe fehlen
+aber noch, und die Default-Entscheidung (KV-Typ) hängt an ihnen:
+
+1. **`q4_0` im Motor** — `q4_0` steht in der Config-Liste, ist in der Motor-Serie A.18/A.19 aber nie
+   gelaufen. Es ist **derselbe Speicher** wie `q4u32` (beide `block_q4_0`: 18 Byte je 32 Werte = 144 B je
+   Zelle und Kopf), aber ein anderer Codec: `q4_0` schreibt den Block-Maximalwert als Schritt, `q4u32`
+   den Least-Squares-Fit nach der Hadamard-Rotation.
+2. **`int8` im schnellen Niveau** — A.19 hat es in 0 von 9 Anfragen erreicht; die Frage „ist `int8` dort
+   langsamer als `q4u32`?" ist offen.
+
+**Statischer Befund vor dem Lauf (Code gelesen, nicht gemessen):** Auf HIP nimmt **nur das uniforme
+Gitter** den Matrix-Core-Prompt-Pfad (`q4u_wmma_ok()` verlangt `q4_uniform_ls(pools.q4_mode)`,
+`qsa_prompt_attn.cu:2711`). Für `q4_0` fällt die Prompt-Attention auf den Decode-Kernel zurück, und der
+Code sagt das selbst: „the q4 arm runs the prefill in the decode kernel (no prompt fast path on this
+backend)" (`:2819-2820`). **Die Erwartung daraus:** `q4_0` ist im Prompt deutlich langsamer als `q4u32`
+und `int8` — nicht wegen des Codecs, sondern weil ihm der Kern fehlt. Liegt `q4_0` trotzdem gleichauf, ist
+diese Aussage falsch, und die Route-Zeile des Laufs muss zeigen, warum.
+
+**Arme** (drei Configs, je **drei** Starts à drei Nadeln 10/50/90 %, 32K, 30 s zwischen den Starts,
+dieser Build):
+
+| Arm | KV | Config | Cache | erwartete Slots | Route (erwartet) |
+|---|---|---|---|---|---|
+| `int8` | int8 | `needle-fastpath-int8-c2967.json` | `--expert-cache 2967` | 3950 | int8-Matrix-Pfad (keine Route-Zeile, wie A.19) |
+| `q4_0` | q4_0 | `needle-fastpath-q4_0-c2967.json` (neu) | `--expert-cache 2967` | 3950 | **Decode-Kernel** (statisch) |
+| `q4u32` | q4u32 | `needle-fastpath-q4u32-c2967.json` | `--expert-cache 2967` | 3950 | 4-Bit-Gitter, Matrix-Core |
+
+Alle drei mit demselben Cache-Budget, damit die Slotzahl (3950) gleich ist. Die 4-Bit-Arme laufen mit
+`STRATA_KV_Q4_PROMPT=1` (ohne das läuft auch `q4u32` im Decode-Kernel), `q4_0` mit demselben Envs.
+
+**Reihenfolge (verschränkt, kein Arm immer zuerst):** Runde 1 `int8`, `q4_0`, `q4u32`; Runde 2
+`q4u32`, `q4_0`, `int8`; Runde 3 `int8`, `q4_0`, `q4u32`. Damit hat jeder Arm je einen Start am Anfang, in
+der Mitte und am Ende.
+
+**Kriterien, vorher festgelegt:**
+
+* Je Anfrage das Niveau aus dem Log (`reading the prompt: … N s so far`, letzte Zeile): **schnell < 40 s**,
+  **langsam ≥ 40 s**. Verglichen wird nur **innerhalb** eines Niveaus; Anfragen verschiedenen Niveaus
+  werden nicht verglichen.
+* Ein Lauf zählt nur mit **3950 Slots ±1 %**, **Chunk 6144** und — für `q4u32` — der Route-Zeile „the
+  matrix-core prompt path serves the 4-bit uniform grid". Für `q4_0` wird die Zeile „… decode kernel (no
+  prompt fast path on this backend)" **erwartet**; fehlt sie und ist `q4_0` schnell, ist die Messung
+  ungültig — dann lief ein anderer Pfad als angenommen.
+* **Ergebnis A (erwartet):** `q4_0` liegt im Prompt ≥ 15 % über `q4u32`/`int8`, und `q4u32` liegt bei
+  `int8` (±5 %). → `q4u32` bleibt der Kandidat, `q4_0` scheidet als Default aus, solange es keinen
+  Prompt-Kern hat.
+* **Ergebnis B (überraschend):** `q4_0` liegt innerhalb 5 % von `q4u32`. Dann trägt der Prompt-Kern bei 32K
+  nichts, und die Entscheidung fällt über Qualität und Speicher; die Route-Zeile muss dann erklären, warum.
+* **Ergebnis C (nicht auflösbar):** in keinem Niveau kommen zwei Arme zusammen vor, oder `q4_0` läuft in
+  ein anderes Niveau als die anderen. Dann wird das berichtet; **kein** weiterer Start derselben Bauart.
+* **`int8` im schnellen Niveau:** tritt es wieder nicht auf, bleibt die Frage offen und wird als offen
+  berichtet — **nicht** durch zusätzliche Starts erzwungen, und keine Aussage über `int8` im schnellen
+  Niveau.
+* **Kein Decode-Vergleich** (die Spekulationsannahme ist nicht gleich; A.18).
+* **Was dieser Lauf nicht kann:** den Codec von der Route trennen — `q4_0` hat den Prompt-Kern nicht, ein
+  Unterschied ist also nicht dem 4-Bit-Codec zuzuschreiben. Er beantwortet nur „was kostet der fehlende
+  Kern im Motor?".
+
 
 ---
 
