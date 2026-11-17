@@ -386,7 +386,57 @@ entscheidet je Karte (die Logik aus A.23). Auf den älteren dGPUs (gfx1100/1101/
 von **A.24**; auf den APU-Karten (gfx1103/gfx1150/gfx1151) der Fall von **A.25**. Beide brauchen eine
 Messung auf der jeweiligen Karte, sonst bleibt es bei statischer Analyse.
 
-## 10. Was das für die Entscheidung heißt
+## 9b. Rezept: was für gfx11 (und die APUs) noch anzupassen ist
+
+**Kurzfassung: am Kernel ist nichts zu tun. Es sind drei Schalter, die in dieser Reihenfolge fallen
+müssen — und jeder ist eine Default-Änderung, also messpflichtig.**
+
+| # | Schalter | Wo | Art | Was fehlt |
+|---|---|---|---|---|
+| **S1** | **WMMA auf gfx11-dGPUs** (7900 XTX, 7800 XT, 7600 XT) | `src/kernels/cuda/qsa_prompt_attn.cu:2503–2513` (`hip_wmma_usable`, unset-Fall `arch == 2`), `:2497–2502` (`hip_wmma_auto_pick`: `if (arch != 2) return false;`), `src/core/arch_defaults.cpp:151–193` (die iGPU-Tabelle) | Default-Änderung | Auf gfx11-dGPUs ist WMMA **aus**, solange niemand `STRATA_HIP_WMMA=1` setzt; die iGPU-Tabelle deckt nur **integrierte** Karten (`arch_defaults.cpp:153`). `=auto` ist auf gfx11 wirkungslos (Zeile 2498), und die Schwelle (64 Queries) ist eine **gfx1201**-Messung. |
+| **S2** | **Der 4-Bit-Pool auf gfx11** | `src/program/generate.cpp:2547` (`kv_default_mode`), `strata_control/kv_default.py` (Arch-Liste), `setup.py:11175` (`_gfx12`) | Default-Änderung | Der Pool läuft nur über den Matrix-Kern. **Ohne S1 ist er auf gfx11 der langsame Pfad** (auf gfx12 2,5× langsamer, A.21) — der 4-Bit-Default darf also **erst** nach S1 kommen. |
+| **S3** | **Der KV-Default auf gfx11** | dieselben drei Stellen | Default-Änderung | Der Motor darf dort selbst wählen; das Terminal darf das Format **nicht** festnageln. |
+
+**Was **nicht** angepasst werden muss (das ist die gute Nachricht):**
+
+* **Der WMMA-Kern** hat die gfx11-Variante schon (`qsa_prompt_attn.cu:1897–1916`, `:1941–1950`), der
+  4-Bit-Pfad ist arch-generisch, die Nibble-Expansion passt auf gfx11 statisch (16 teilt 32).
+* **Der Build**: `STRATA_PA_GFX11` entsteht aus den `__gfx11xx__`-Makros; die Windows-rdna3-Pakete
+  (gfx1100/1101/1102/1151) gibt es schon (`docs/AMD_HIP.md:57–63`).
+* **Der Paritätstest**: `hip_prompt_attn_wmma` akzeptiert gfx11 und fährt den 4-Bit-Fall
+  (`src/kernels/qsa_prompt_attn_parity.cpp:466–469`, `:487`) — **ein Lauf** auf der Zielkarte liefert
+  Parität *und* Timing.
+
+**Die Regel, die man beim Umbau einhalten muss (sonst wird es still falsch):** Die Bedingung im
+Motor muss **genau** die Bedingung sein, unter der der Matrix-Kern wirklich läuft — also
+`hip_wmma_usable()`. Deren drei Fälle (`:2503–2513`): `=0` → aus; `=1` → an (das ist auch der Weg,
+über den die iGPU-Defaults den gfx1151/gfx1103 einschalten); `=auto` → nur gfx12 heute. Der
+`unset`-Fall ist der gfx12-Default (Zeile 2512). Ein `kv_default_mode()`, das die Karte prüft, aber
+nicht die Env, würde auf einem `STRATA_HIP_WMMA=0` den 4-Bit-Pool wählen — **genau das, was der
+gemessene Aus-Schalter in A.21 zeigt** (264 gegen 663 tok/s).
+
+**Die APUs (gfx1103/gfx1150/gfx1151) brauchen zusätzlich drei Dinge, die auf einer dGPU nicht
+vorkommen:**
+
+1. **Die Arena ändert sich mit.** Auf der Strix-Box sind **24.576 Slots** gemessen, weil die Arena
+   *nicht* beim Treiber registriert wird (`arch_defaults.cpp:143–147`; mit Registrierung: 0 Slots und
+   der Start bricht ab). Diese Zahl ist mit dem bisherigen KV-Maß gemessen — ein kleinerer KV
+   vergrößert die Arena und damit den Slot-Zähler. **Neu messen**, nicht hochrechnen.
+2. **Ab 64K streamt der KV** (`setup_config.py:329–330`: `--kv-resident 32768`). Dann spart 4 Bit
+   **RAM** (13,7 → 7,5 KB je Token, `setup_config.py:299`) und nur den residenten Fensterteil — der
+   Slot-Gewinn schrumpft. Zwei Messungen: unter 64K (ohne Streaming) und über 64K (mit Streaming).
+3. **Die APU-Defaults sind eigene, gemessene Schalter** (`PF_FUSED`, `PF_F16`, `PF_DM16`,
+   `SELECT_WMMA`, ein eigener Prompt-Chunk 4096 statt 6144, `generate.cpp:3911–3926`). Ihre
+   Kombination mit dem 4-Bit-Pool ist **ungemessen** — dieselbe Art Wechselwirkung wie Register und
+   Occupancy in A.17.
+
+**Und die Reihenfolge, in der gemessen wird:** erst der Paritätslauf (der billigste, er beweist, dass
+der 4-Bit-Pfad auf der Karte rechnet), dann der Nadel-Lauf mit und ohne Matrix-Kern, dann das
+**Logit-Gate** (KL ≤ 0,005, Top-p ≥ 98 %), dann die Speicher- und Slotzahlen, zuletzt der
+Default-Wechsel. Vorregistriert als **A.24** (dGPU) und **A.25** (APU) im
+`bench/results/2026-11-14-q4u32-fastpath/README.md`.
+
+
 
 1. **Die Architekturentscheidung hält.** Der 4-Bit-Pool im Matrix-Kern ist der unbesetzte Platz
    (§8), und die eigene Messung sagt: kostet nichts gegen int8 (−1,8 %, A.22) und spart den
