@@ -4297,7 +4297,7 @@ GFX1103_SWITCHES = {
     "STRATA_QFUSE": "1", "STRATA_PLE_BATCH": "1", "STRATA_SH_STREAM": "1",
 }
 # The same set for a gfx1150 install (Radeon 890M / 880M): less STRATA_HCD_EXACT as well, because a gfx1150 table picks other
-# solutions than the gfx1151 one.  The Radeon 890M report (docs/AMD_HIP.md; bench/results/2026-10-07-community-gfx1150) measured the
+# solutions than the gfx1151 one.  The Radeon 890M report (docs/AMD_HIP.md; docs/bench-results/2026-10-07-community-gfx1150) measured the
 # same greedy answers with all 17 on and with all 17 off, decode +2% and prompts +3-6%.  The engine's arch defaults are not used
 # for gfx1150 (src/core/arch_defaults_test.cpp asserts gfx1150 stays empty), so this keeps the default path byte-identical.
 GFX1150_SWITCHES = dict(GFX1103_SWITCHES)

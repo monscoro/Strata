@@ -6,7 +6,7 @@
 // over all 256 dimensions, which is what makes 4 bits usable. The query is rotated the same way, so
 // <Hq, Hk> = <q, k> and the scores are unchanged, and the attention output (a mix of rotated values) is rotated
 // back with H (self-inverse). What is lossy is the 4-bit rounding itself: measured, not assumed, in
-// bench/results/2026-09-27-kv-q4.
+// docs/bench-results/2026-09-27-kv-q4.
 //
 // With KV streaming (--kv-resident) the codes live in the host copy and the resident slots like INT8's (KvHostPools
 // k_q4/v_q4, the same block granule), so both options combine.
@@ -97,7 +97,7 @@ enum class Q4Mode : int {
     // rows carry the cell they hold, so a row a rewind or resume left stale is read quantized, never as the
     // wrong cell - this is what makes the pool independent of the context length.
     kLloydWin = 6,  ///< `--kv q4lm32w`: kLloyd's blocks with an exact fp16 window (window arm)
-    // The shear (bench/results/2026-11-11-shear-codec/): a UNIFORM grid with a per-block offset.
+    // The shear (docs/bench-results/2026-11-11-shear-codec/): a UNIFORM grid with a per-block offset.
     // The reconstruction is v = s * (code - 8) + c, with c = o + 8*s and the grid [o, o + 15*s] in
     // the code's own units (code 0 is the grid's left end).  The offset is a per-block zero point:
     // it corrects the position of the grid against the block's own distribution, not a vector.
@@ -135,7 +135,7 @@ inline uint64_t kv_q4_bytes_per_cell(const QsaShapes& s, Q4Mode m) {
 }
 
 /// How many least-squares passes the shear's writer runs.  This is a DIAL, not a constant: the
-/// price of each pass is measured (bench/results/2026-11-11-shear-codec/README.md, "der Preis des
+/// price of each pass is measured (docs/bench-results/2026-11-11-shear-codec/README.md, "der Preis des
 /// Fits").  Six passes are the reference (they define the effectiveness gate G1: the engine must
 /// reproduce the harness's block MSE exactly); two passes are the default, because the price of
 /// giving up four passes (0.136 dB of block error, about 0.0006 nats end to end) sits below the
@@ -188,7 +188,7 @@ __device__ __forceinline__ const int8_t* q4l_map_v(Q4Mode m) { return q4_l8_v(m)
 void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream);
 inline void fwht256_inplace_cuda(float* data, int64_t n_rows, void* stream) { fwht256_cuda(data, data, n_rows, stream); }
 
-/// The rotation of the KV rows **with the centering** (bench/results/2026-11-10-centering/): the
+/// The rotation of the KV rows **with the centering** (docs/bench-results/2026-11-10-centering/): the
 /// per-(KV head, channel) offset is subtracted before the transform, in the channel space, so the
 /// quantizer's scale (a maximum statistic) sees the signal without its fixed part.  The rows of the
 /// buffer are (position, KV head, channel), so the head of a row is (row / 256) % n_heads.

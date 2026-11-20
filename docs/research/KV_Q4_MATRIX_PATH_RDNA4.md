@@ -1,7 +1,7 @@
 # Der Matrix-Pfad für `q4u32` auf RDNA4: was die Hardware kann, was die Praxis tut, was uns trennt
 
 Stand 2026-11-14, fortgeschrieben 2026-11-17 (§7 Laufzeitstand, §8 Literatur-Update, §9 die gfx11-Familie).
-Gehört zu `bench/results/2026-11-14-q4u32-fastpath/README.md` (Serie #1, Teil B).
+Gehört zu `docs/bench-results/2026-11-14-q4u32-fastpath/README.md` (Serie #1, Teil B).
 **Das Paper zum Produktpfad:** `docs/paper/KV-q4u32-matrix-core.pdf` (q4u32: A 4-Bit KV Cache the Matrix Core
 Can Read) — es trägt die Messungen A.16–A.26 und die Ablation in der Form, in der sie veröffentlicht
 werden; diese Notiz bleibt der Arbeitsstand mit den offenen Armen (A.24/A.25).
@@ -152,7 +152,7 @@ herauszufinden (eine Q-Quantisierung, ein Mapping-Probe, eine A/B-Messung), und 
 - zolotukhin.ai, 12.07.2026: „int8 WMMA doubles RDNA4's matrix rate, and Q4_K's block scales take half
   of it back" (1,20× / 1,61×, Issue-Port-Teilen)
 - AMD, „Integer dot product builtins" (Verfügbarkeit von `sudot4`/`sdot4` je Architektur)
-- Eigene Messungen: A1 und B2, `bench/results/2026-11-14-q4u32-fastpath/README.md)
+- Eigene Messungen: A1 und B2, `docs/bench-results/2026-11-14-q4u32-fastpath/README.md)
 
 **Quellen des Updates vom 17.11.2026 (§8, §9):**
 
@@ -181,13 +181,13 @@ herauszufinden (eine Q-Quantisierung, ein Mapping-Probe, eine A/B-Messung), und 
 - LLVM PR #164036, Okt. 2026: „Fix GFX11 WMMA intrinsic lowering regression" (vor dem Fix skalar, ~100 GFLOPS;
   nach dem Fix 10–16×)
 - ROCm 10.1.0 (05.10.2026), rocWMMA 2.2.1 — rocm.docs.amd.com/en/latest/release/versions.html
-- Eigene Messungen: A.16–A.23, `bench/results/2026-11-14-q4u32-fastpath/README.md`; 780M-Report
+- Eigene Messungen: A.16–A.23, `docs/bench-results/2026-11-14-q4u32-fastpath/README.md`; 780M-Report
   `docs/RADEON_780M.md:82–105`
 
 ## 7. Laufzeitstand (17.11.2026): aus dem Hänger ist ein Default geworden
 
 **Messung** (Windows, gfx1201, dieser Build; alle Zahlen aus
-`bench/results/2026-11-14-q4u32-fastpath/README.md`):
+`docs/bench-results/2026-11-14-q4u32-fastpath/README.md`):
 
 | Arm | Ergebnis |
 |---|---|
@@ -437,7 +437,7 @@ vorkommen:**
 der 4-Bit-Pfad auf der Karte rechnet), dann der Nadel-Lauf mit und ohne Matrix-Kern, dann das
 **Logit-Gate** (KL ≤ 0,005, Top-p ≥ 98 %), dann die Speicher- und Slotzahlen, zuletzt der
 Default-Wechsel. Vorregistriert als **A.24** (dGPU) und **A.25** (APU) im
-`bench/results/2026-11-14-q4u32-fastpath/README.md`.
+`docs/bench-results/2026-11-14-q4u32-fastpath/README.md`.
 
 
 
@@ -452,7 +452,7 @@ Default-Wechsel. Vorregistriert als **A.24** (dGPU) und **A.25** (APU) im
 3. **Die gfx11-Erweiterung ist leicht und rückwärtskompatibel** — der Code ist da, es fehlen die
    Voreinstellung und `=auto`. Sie ist aber eine **Default-Änderung** und damit nach
    `CONTRIBUTING.md` nur mit Messung zulässig. **Vorregistriert als A.24** (siehe
-   `bench/results/2026-11-14-q4u32-fastpath/README.md`): ein Paritätslauf auf einer gfx11-Karte
+   `docs/bench-results/2026-11-14-q4u32-fastpath/README.md`): ein Paritätslauf auf einer gfx11-Karte
    (`hip_prompt_attn_wmma`, der 4-Bit-Fall), dann ein Nadel-Lauf mit und ohne Matrix-Kern. **Ohne eine
    gfx11-Karte hier ist das offen, nicht erledigt.**
 4. **`iu4`-WMMA ist der interessanteste neue Hebel** (16 Zyklen auf gfx11 und gfx12 statt 32 für

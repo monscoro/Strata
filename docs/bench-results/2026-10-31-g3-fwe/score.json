@@ -1,0 +1,1261 @@
+{
+ "runs": {
+  "fp16": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\fp16.json",
+    "kv": "fp16",
+    "env": [],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.95,
+   "mean_first10": 0.925,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "atiyuw"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "clldqg"
+     ],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 130,
+     "six": 21,
+     "distinct6": 13,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 8,
+     "recall_first10": 0.8,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s04": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "hlczmi"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 100,
+     "six": 24,
+     "distinct6": 23,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s07": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    }
+   }
+  },
+  "int8": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\int8-a.json",
+    "kv": "int8",
+    "env": [],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.9375,
+   "mean_first10": 0.9375,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "atiyuw"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "clldqg"
+     ],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 105,
+     "six": 16,
+     "distinct6": 15,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s04": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "hlczmi"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 100,
+     "six": 23,
+     "distinct6": 22,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s07": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "lnnjgo"
+     ],
+     "generated": 41,
+     "stopped": "eos"
+    }
+   }
+  },
+  "q4lm32w": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\q4lm32w.json",
+    "kv": "q4lm32",
+    "env": [
+     "STRATA_KV_WINDOW=1",
+     "STRATA_KV_WINDOW_S=256",
+     "STRATA_KV_WINDOW_R=64"
+    ],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.9625,
+   "mean_first10": 0.9625,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "clldqg"
+     ],
+     "generated": 43,
+     "stopped": "eos"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 111,
+     "six": 15,
+     "distinct6": 14,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s04": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "hlczmi"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 100,
+     "six": 24,
+     "distinct6": 23,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s07": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    }
+   }
+  },
+  "s320r0": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\s320r0.json",
+    "kv": "q4lm32",
+    "env": [
+     "STRATA_KV_WINDOW=1",
+     "STRATA_KV_WINDOW_S=320",
+     "STRATA_KV_WINDOW_R=0"
+    ],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.95,
+   "mean_first10": 0.95,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "atiyuw"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "clldqg"
+     ],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 111,
+     "six": 15,
+     "distinct6": 14,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s04": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "hlczmi"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s07": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    }
+   }
+  },
+  "q4lm32": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\q4lm32.json",
+    "kv": "q4lm32",
+    "env": [],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.9375,
+   "mean_first10": 0.9375,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "atiyuw"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "clldqg"
+     ],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "vszdcd"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s04": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "hlczmi"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 106,
+     "six": 22,
+     "distinct6": 21,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s07": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    }
+   }
+  },
+  "q4lm8v": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\q4lm8v.json",
+    "kv": "q4lm8v",
+    "env": [],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.875,
+   "mean_first10": 0.875,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "atiyuw"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "clldqg"
+     ],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "vszdcd"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s04": {
+     "words": 12,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "hlczmi"
+     ],
+     "generated": 37,
+     "stopped": "eos"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 150,
+     "six": 14,
+     "distinct6": 9,
+     "hits": 6,
+     "recall": 0.6,
+     "hits10": 6,
+     "recall_first10": 0.6,
+     "missing": [
+      "xlsvug",
+      "nswnkk",
+      "sqoycz",
+      "xivbuo"
+     ],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s07": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "lnnjgo"
+     ],
+     "generated": 41,
+     "stopped": "eos"
+    }
+   }
+  },
+  "q4lm8k": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\q4lm8k.json",
+    "kv": "q4lm8k",
+    "env": [],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.95,
+   "mean_first10": 0.9,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "eywzvw"
+     ],
+     "generated": 45,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 114,
+     "six": 15,
+     "distinct6": 14,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "vszdcd"
+     ],
+     "generated": 46,
+     "stopped": "eos"
+    },
+    "s04": {
+     "words": 114,
+     "six": 20,
+     "distinct6": 17,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 8,
+     "recall_first10": 0.8,
+     "missing": [
+      "vvbqcn"
+     ],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 110,
+     "six": 23,
+     "distinct6": 22,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 8,
+     "recall_first10": 0.8,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s07": {
+     "words": 112,
+     "six": 15,
+     "distinct6": 14,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    }
+   }
+  },
+  "q4lm8": {
+   "meta": {
+    "path": "C:\\Users\\krone\\git\\Strata-data\\bench\\2026-10-31-g3\\q4lm8.json",
+    "kv": "q4lm8",
+    "env": [],
+    "new": 256,
+    "short_read": 64,
+    "drop_spec": false
+   },
+   "mean": 0.95,
+   "mean_first10": 0.9375,
+   "per_segment": {
+    "s00": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "eywzvw"
+     ],
+     "generated": 45,
+     "stopped": "eos"
+    },
+    "s01": {
+     "words": 12,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "clldqg"
+     ],
+     "generated": 33,
+     "stopped": "eos"
+    },
+    "s02": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 42,
+     "stopped": "eos"
+    },
+    "s03": {
+     "words": 116,
+     "six": 13,
+     "distinct6": 12,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s04": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "hlczmi"
+     ],
+     "generated": 37,
+     "stopped": "eos"
+    },
+    "s05": {
+     "words": 11,
+     "six": 10,
+     "distinct6": 10,
+     "hits": 9,
+     "recall": 0.9,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [
+      "bkacgz"
+     ],
+     "generated": 44,
+     "stopped": "eos"
+    },
+    "s06": {
+     "words": 97,
+     "six": 24,
+     "distinct6": 24,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 10,
+     "recall_first10": 1.0,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    },
+    "s07": {
+     "words": 61,
+     "six": 20,
+     "distinct6": 20,
+     "hits": 10,
+     "recall": 1.0,
+     "hits10": 9,
+     "recall_first10": 0.9,
+     "missing": [],
+     "generated": 256,
+     "stopped": "budget"
+    }
+   }
+  }
+ },
+ "paired": {
+  "int8": {
+   "fp16": {
+    "recall": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 0,
+     "a_better": 1
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": -0.012499999999999997,
+     "sd": 0.08345229603962799,
+     "sem": 0.029504842217604105,
+     "bound": 0.05591167600235978,
+     "a_worse": 1,
+     "a_better": 1
+    }
+   },
+   "q4lm32w": {
+    "recall": {
+     "n": 8,
+     "mean": 0.024999999999999994,
+     "sd": 0.04629100498862756,
+     "sem": 0.01636634176769942,
+     "bound": 0.031014217649790402,
+     "a_worse": 0,
+     "a_better": 2
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.024999999999999994,
+     "sd": 0.04629100498862756,
+     "sem": 0.01636634176769942,
+     "bound": 0.031014217649790402,
+     "a_worse": 0,
+     "a_better": 2
+    }
+   },
+   "s320r0": {
+    "recall": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 0,
+     "a_better": 1
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 0,
+     "a_better": 1
+    }
+   },
+   "q4lm32": {
+    "recall": {
+     "n": 8,
+     "mean": 0.0,
+     "sd": 0.053452248382484864,
+     "sem": 0.018898223650461357,
+     "bound": 0.03581213381762427,
+     "a_worse": 1,
+     "a_better": 1
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.0,
+     "sd": 0.053452248382484864,
+     "sem": 0.018898223650461357,
+     "bound": 0.03581213381762427,
+     "a_worse": 1,
+     "a_better": 1
+    }
+   },
+   "q4lm8v": {
+    "recall": {
+     "n": 8,
+     "mean": -0.0625,
+     "sd": 0.1407885953173359,
+     "sem": 0.049776285231308406,
+     "bound": 0.09432606051332944,
+     "a_worse": 2,
+     "a_better": 0
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": -0.0625,
+     "sd": 0.1407885953173359,
+     "sem": 0.049776285231308406,
+     "bound": 0.09432606051332944,
+     "a_worse": 2,
+     "a_better": 0
+    }
+   },
+   "q4lm8k": {
+    "recall": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.06408699444616556,
+     "sem": 0.022658174179374137,
+     "bound": 0.04293724006991399,
+     "a_worse": 1,
+     "a_better": 2
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": -0.03749999999999999,
+     "sd": 0.09161253813129042,
+     "sem": 0.0323899234771733,
+     "bound": 0.06137890498924341,
+     "a_worse": 3,
+     "a_better": 1
+    }
+   },
+   "q4lm8": {
+    "recall": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 0,
+     "a_better": 1
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.0,
+     "sd": 0.0,
+     "sem": 0.0,
+     "bound": 0.0,
+     "a_worse": 0,
+     "a_better": 0
+    }
+   }
+  },
+  "fp16": {
+   "int8": {
+    "recall": {
+     "n": 8,
+     "mean": -0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 1,
+     "a_better": 0
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.08345229603962799,
+     "sem": 0.029504842217604105,
+     "bound": 0.05591167600235978,
+     "a_worse": 1,
+     "a_better": 1
+    }
+   },
+   "q4lm32w": {
+    "recall": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 0,
+     "a_better": 1
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.03749999999999999,
+     "sd": 0.07440238091428449,
+     "sem": 0.026305214040457558,
+     "bound": 0.049848380606667075,
+     "a_worse": 0,
+     "a_better": 2
+    }
+   },
+   "s320r0": {
+    "recall": {
+     "n": 8,
+     "mean": 0.0,
+     "sd": 0.0,
+     "sem": 0.0,
+     "bound": 0.0,
+     "a_worse": 0,
+     "a_better": 0
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.024999999999999994,
+     "sd": 0.07071067811865474,
+     "sem": 0.024999999999999994,
+     "bound": 0.04737499999999999,
+     "a_worse": 0,
+     "a_better": 1
+    }
+   },
+   "q4lm32": {
+    "recall": {
+     "n": 8,
+     "mean": -0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 1,
+     "a_better": 0
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.03535533905932737,
+     "sem": 0.012499999999999997,
+     "bound": 0.023687499999999993,
+     "a_worse": 0,
+     "a_better": 1
+    }
+   },
+   "q4lm8v": {
+    "recall": {
+     "n": 8,
+     "mean": -0.075,
+     "sd": 0.13887301496588272,
+     "sem": 0.04909902530309829,
+     "bound": 0.09304265294937125,
+     "a_worse": 3,
+     "a_better": 0
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": -0.05,
+     "sd": 0.15118578920369088,
+     "sem": 0.05345224838248487,
+     "bound": 0.10129201068480884,
+     "a_worse": 2,
+     "a_better": 1
+    }
+   },
+   "q4lm8k": {
+    "recall": {
+     "n": 8,
+     "mean": 0.0,
+     "sd": 0.053452248382484864,
+     "sem": 0.018898223650461357,
+     "bound": 0.03581213381762427,
+     "a_worse": 1,
+     "a_better": 1
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": -0.024999999999999994,
+     "sd": 0.08864052604279181,
+     "sem": 0.03133915852640042,
+     "bound": 0.0593877054075288,
+     "a_worse": 2,
+     "a_better": 1
+    }
+   },
+   "q4lm8": {
+    "recall": {
+     "n": 8,
+     "mean": 0.0,
+     "sd": 0.0,
+     "sem": 0.0,
+     "bound": 0.0,
+     "a_worse": 0,
+     "a_better": 0
+    },
+    "recall_first10": {
+     "n": 8,
+     "mean": 0.012499999999999997,
+     "sd": 0.08345229603962799,
+     "sem": 0.029504842217604105,
+     "bound": 0.05591167600235978,
+     "a_worse": 1,
+     "a_better": 1
+    }
+   }
+  }
+ },
+ "verdict": {
+  "anchor": "fp16",
+  "anchor_mean": 0.95,
+  "anchor_hits_of_10": 9.5,
+  "verdict": "saturated",
+  "saturated_at": 9.5,
+  "floor_at": 2.5
+ }
+}

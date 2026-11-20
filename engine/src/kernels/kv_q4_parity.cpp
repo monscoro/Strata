@@ -87,7 +87,7 @@ void quantize_block_q4_0_host(const float* x, k::block_q4_0& blk) {
     }
 }
 
-// The shear's host reference (bench/results/2026-11-11-shear-codec/): the uniform grid with a
+// The shear's host reference (docs/bench-results/2026-11-11-shear-codec/): the uniform grid with a
 // per-block offset, i.e. the rule the device writes (kv_q4.cu's q4u_group) and the harness models
 // (tools/kv_affine_price.py).  The grid covers the block (o = min, s = (max-min)/15) and then
 // `passes` rounds of "assign the codes, solve the centred least squares for (o, s)".  The sums run
@@ -393,7 +393,7 @@ int main() {
 
     // -------------------------------------------------------------
     // Test 5: the shear -- the uniform grid with a per-block offset
-    //   (bench/results/2026-11-11-shear-codec/).  The writer's blocks bitwise against the host
+    //   (docs/bench-results/2026-11-11-shear-codec/).  The writer's blocks bitwise against the host
     //   reference (the same rule and the same summation order), the gather's reconstruction, and the
     //   block MSE the effectiveness gate names.
     // -------------------------------------------------------------

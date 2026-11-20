@@ -1055,22 +1055,22 @@ J.~K{\"u}bler, E.~Kurti{\'c}, et al.\ (vLLM team), \emph{The State of FP8 KV-Cac
 Strata, \texttt{docs/DETAILS.md}: KV-cache quantization section (byte model, KL measurements, window 256/64 at 128K on both 128K texts). In-repo.
 
 \bibitem{strata-bias}
-Strata, \texttt{tools/kv\_bias\_origin.py}, \texttt{tools/kv\_int8\_drift.py} (with \texttt{bench/results/2026-11-10-centering/}): the numerical study of the per-channel bias of a rotated cache --- the bias is the data's and not the transform's (the un-rotated dump mean reproduces the probe's channel-space mean at a ratio of 1.000 in every layer and every head, the round trip $H(H(y))-y$ is exactly zero), and the reference codec carries no drift of its own (the int8 KV codec's channel-mean drift is $1.2\cdot10^{-4}$ sd against the data's own $0.2673$ sd; its clamp fires in none of 402 million values). In-repo, reproducible.
+Strata, \texttt{tools/kv\_bias\_origin.py}, \texttt{tools/kv\_int8\_drift.py} (with \texttt{docs/bench-results/2026-11-10-centering/}): the numerical study of the per-channel bias of a rotated cache --- the bias is the data's and not the transform's (the un-rotated dump mean reproduces the probe's channel-space mean at a ratio of 1.000 in every layer and every head, the round trip $H(H(y))-y$ is exactly zero), and the reference codec carries no drift of its own (the int8 KV codec's channel-mean drift is $1.2\cdot10^{-4}$ sd against the data's own $0.2673$ sd; its clamp fires in none of 402 million values). In-repo, reproducible.
 
 \bibitem{strata-codec}
-Strata, \texttt{tools/kv\_codec\_mse.py}, \texttt{tools/kv\_center\_attrib.py} (with \texttt{bench/results/2026-11-10-merge-reeval/}): the block-level codec comparison on the engine's own cells, split by layer and by side, with the two centering modes named (the offsets the engine uses, and the naive one whose number the campaign's first reading rests on). In-repo, reproducible.
+Strata, \texttt{tools/kv\_codec\_mse.py}, \texttt{tools/kv\_center\_attrib.py} (with \texttt{docs/bench-results/2026-11-10-merge-reeval/}): the block-level codec comparison on the engine's own cells, split by layer and by side, with the two centering modes named (the offsets the engine uses, and the naive one whose number the campaign's first reading rests on). In-repo, reproducible.
 
 \bibitem{strata-quants}
 Strata, \texttt{docs/QUANTS.md}: quant-quality yardsticks (mean KL, KL p99, top-1, perplexity) for the weight-quantization experiment; the cwe KL protocol is documented in the research-branch harness. In-repo.
 
 \bibitem{strata-kv4}
-Strata, \texttt{bench/results/2026-09-27-kv-q4}: Q4\_0 KV vs fp16/int8 document perplexity at 1K/8K (Q2\_0). In-repo.
+Strata, \texttt{docs/bench-results/2026-09-27-kv-q4}: Q4\_0 KV vs fp16/int8 document perplexity at 1K/8K (Q2\_0). In-repo.
 
 \bibitem{strata-wp}
 Strata, \texttt{docs/KV\_QUANT\_WORKPACKAGE.md} (branch \texttt{KV\_QUANT\_research}): workpackage report, window history \S7.12--\S7.21, K-versus-V falsification, crossover withdrawal. In-repo.
 
 \bibitem{strata-needle24}
-Strata, \texttt{bench/results/2026-10-24-needle-window}: same-day needle pair, engine 0.1.47, \texttt{int8} against the 256/64 window, 6/6 and 6/6. In-repo.
+Strata, \texttt{docs/bench-results/2026-10-24-needle-window}: same-day needle pair, engine 0.1.47, \texttt{int8} against the 256/64 window, 6/6 and 6/6. In-repo.
 
 \end{thebibliography}
 

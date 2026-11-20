@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build the centering offset table from the engine's cell dump (bench/results/2026-11-10-centering/).
+"""Build the centering offset table from the engine's cell dump (docs/bench-results/2026-11-10-centering/).
 
 The dump (STRATA_KV_Q4_DUMP) holds the rotated K/V rows of the batched prompt path.  The centering
 subtracts the per-(KV head, channel) offset **before** the rotation, so the table wants the offset in

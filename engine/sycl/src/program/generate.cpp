@@ -802,7 +802,7 @@ void usage() {
                  "  --kv fp16|int8       KV storage (plan v0.3 P7): int8 codes + fp16 scale per 64 values, half the\n"
                  "                       VRAM; default fp16 until gate G-C accepts int8\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
-                 "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "                       slightly lower precision (see docs/bench-results/2026-09-27-kv-q4)\n"
                  "  --kv q4lm32          q4_0's blocks and rotation with Max-Lloyd's 16 levels for N(0,1) in place of\n"
                  "                       ggml's uniform grid (kv_q4.hpp): the same 576 B/cell, lower 4-bit error\n"
                  "  --kv q4lm32s         the same levels with each block's own least-squares scale instead of\n"
@@ -3792,7 +3792,7 @@ int main(int argc, char **argv) try {
     std::vector<std::pair<int32_t, int32_t>> profile_loaded;
     if (!o.expert_profile_save.empty()) profile_loaded = profile;
     // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
-    // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
+    // the 5080 + 3090 rig (docs/bench-results/2026-09-29-layer-split):
     //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a
     //     3090: the per-layer round trip and kernels, not the bytes - both cards have ~950 GB/s);
     //   - an expert no cache holds costs ~190 ms per unit of routed mass: the CPU pool in decode and the PCIe stream
@@ -5157,12 +5157,12 @@ int main(int argc, char **argv) try {
         // token 0). That fault was fixed long since (native_expert_parity, expert_parity, the grouped kernels'
         // tests), and the warning outlived it (issue #23). What remains is rounding: a GPU expert and the CPU's
         // compute the same quantized expert with different float order, so a near-tie can flip. Measured teacher-
-        // forced on 2,557 tokens (bench/results/2026-09-27-cache-parity): 95-98% same top-1, and perplexity equal
+        // forced on 2,557 tokens (docs/bench-results/2026-09-27-cache-parity): 95-98% same top-1, and perplexity equal
         // (on - off = -0.005 +- 0.005 nats). Neither output is more correct than the other.
         std::fprintf(stderr,
                      "strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,\n"
                      "                 so a reply can differ slightly from a run without the cache (same quality:\n"
-                     "                 bench/results/2026-09-27-cache-parity).\n");
+                     "                 docs/bench-results/2026-09-27-cache-parity).\n");
         if (o.expert_cache_per_layer) {
             int64_t lo = 0, hi = 0;
             xcache.layer_slot_range(0, lo, hi);

@@ -168,7 +168,7 @@ __device__ __forceinline__ uint16_t q4l_group(float x, uint8_t& byte) {
 }
 
 // The shear: a UNIFORM grid with a per-block offset (the "zero point"), see
-// bench/results/2026-11-11-shear-codec/.  The grid is [o, o + 15*s] in the code's own units (code 0
+// docs/bench-results/2026-11-11-shear-codec/.  The grid is [o, o + 15*s] in the code's own units (code 0
 // is its left end) and the reconstruction is v = s*(code - 8) + c with c = o + 8*s, so the reader
 // adds ONE constant per block -- the offset corrects the grid's position against the block's own
 // distribution, not a vector.
@@ -496,7 +496,7 @@ void add_center_offsets_cuda(float* data, int64_t n_rows, int n_q_heads, int g, 
     check("add_center_offsets launch");
 }
 
-// The centering (bench/results/2026-11-10-centering/): the per-(KV head, channel) offset of the K
+// The centering (docs/bench-results/2026-11-10-centering/): the per-(KV head, channel) offset of the K
 // (or V) rows is subtracted BEFORE the rotation, in the channel space, so the quantizer's scale
 // (a maximum statistic) sees the signal without its fixed part.  The rows of the buffer are
 // (position, KV head, channel), so the head of a row is (row / N) % n_heads.

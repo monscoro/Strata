@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Der gespeicherte Offset: was bringt der Restfehler-Offset bei **festen** Codes und **fester** Skala?
 
-Registrierung: bench/results/2026-11-13-kv-offset-tail/README.md (H0-a/b/c/d).
+Registrierung: docs/bench-results/2026-11-13-kv-offset-tail/README.md (H0-a/b/c/d).
 
 Fuer jeden Block (32 Werte entlang der Kopfdimension, wie im Kernel) wird die Rekonstruktion
 gebaut, dann der mittlere Restfehler

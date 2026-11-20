@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""The codec decision measurement of the centering mini-project (bench/results/2026-11-10-centering/).
+"""The codec decision measurement of the centering mini-project (docs/bench-results/2026-11-10-centering/).
 
 Reads the real cells the engine dumped (STRATA_KV_Q4_DUMP: the rotated K/V rows of the batched
 prompt path) and the per-channel moments of the S2 probe (the per-channel means before the

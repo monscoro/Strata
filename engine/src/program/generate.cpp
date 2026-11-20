@@ -1214,7 +1214,7 @@ void usage() {
                  "                       VRAM. Without --kv the part decides: above 8K of context q4u32 on gfx12 (see below), fp16\n"
                  "                       elsewhere and up to 8K anywhere - q4u32 there would run the prompt 2.5x slower (A.21)\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
-                 "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "                       slightly lower precision (see docs/bench-results/2026-09-27-kv-q4)\n"
                  "  --kv q4lm32          q4_0's blocks and rotation with Max-Lloyd's 16 levels for N(0,1) in place of\n"
                  "                       ggml's uniform grid (kv_q4.hpp): the same 576 B/cell, lower 4-bit error\n"
                  "  --kv q4lm32s         the same levels with each block's own least-squares scale instead of\n"
@@ -1234,7 +1234,7 @@ void usage() {
                  "                       less precise than int8\n"
                  "  --kv q4u32            4-bit UNIFORM grid after the same Hadamard rotation, with the step\n"
                  "                       fitted per 32-value block instead of taken from the block maximum: the\n"
-                 "                       affine sibling of the Lloyd table (bench/results/2026-11-11-shear-codec/).\n"
+                 "                       affine sibling of the Lloyd table (docs/bench-results/2026-11-11-shear-codec/).\n"
                  "                       Like q4_0 it is affine, so it rides the prompt fast path; on RDNA4 that\n"
                  "                       is 2.5x the decode kernel it replaces (265 against 655 tok/s at 32K),\n"
                  "                       and STRATA_KV_Q4_PROMPT=0 sends it back there. Its sibling q4u32z adds\n"
@@ -4949,7 +4949,7 @@ int main(int argc, char** argv) {
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
     strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
-    // STRATA_KV_CENTER=<file>: the centering offsets (bench/results/2026-11-10-centering/). The file holds,
+    // STRATA_KV_CENTER=<file>: the centering offsets (docs/bench-results/2026-11-10-centering/). The file holds,
     // per model layer, the per-(KV head, channel) offsets of the K and of the V rows; they are subtracted
     // before the rotation, so the quantizer's scale (a maximum statistic) sees the signal without its fixed
     // part. Measured: the bias cost 1.9 to 2.6 dB of block MSE. Opt-in: without the file every path stays
@@ -6771,7 +6771,7 @@ int main(int argc, char** argv) {
     std::vector<std::pair<int32_t, int32_t>> profile_loaded;
     if (!o.expert_profile_save.empty()) profile_loaded = profile;
     // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
-    // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
+    // the 5080 + 3090 rig (docs/bench-results/2026-09-29-layer-split):
     //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a
     //     3090: the per-layer round trip and kernels, not the bytes - both cards have ~950 GB/s);
     //   - an expert no cache holds costs ~190 ms per unit of routed mass: the CPU pool in decode and the PCIe stream
@@ -9503,12 +9503,12 @@ int main(int argc, char** argv) {
         // token 0). That fault was fixed long since (native_expert_parity, expert_parity, the grouped kernels'
         // tests), and the warning outlived it (issue #23). What remains is rounding: a GPU expert and the CPU's
         // compute the same quantized expert with different float order, so a near-tie can flip. Measured teacher-
-        // forced on 2,557 tokens (bench/results/2026-09-27-cache-parity): 95-98% same top-1, and perplexity equal
+        // forced on 2,557 tokens (docs/bench-results/2026-09-27-cache-parity): 95-98% same top-1, and perplexity equal
         // (on - off = -0.005 +- 0.005 nats). Neither output is more correct than the other.
         std::fprintf(stderr,
                      "strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,\n"
                      "                 so a reply can differ slightly from a run without the cache (same quality:\n"
-                     "                 bench/results/2026-09-27-cache-parity).\n");
+                     "                 docs/bench-results/2026-09-27-cache-parity).\n");
         if (o.expert_cache_per_layer) {
             int64_t lo = 0, hi = 0;
             xcache.layer_slot_range(0, lo, hi);

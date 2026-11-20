@@ -271,7 +271,7 @@ format itself (int8 above 8K, fp16 up to 8K), so those starts stay byte-identica
 everywhere (that is the state without the prompt path, where the 4-bit pool is 2,5x slower). A format the
 person names is always written. **An update never switches the variant of Strata that is installed** — the
 manifest carries it (`"flavor"`), and the updater keeps a `q4u32` engine when the feed has an upstream one.
-Measurements: `bench/results/2026-11-14-q4u32-fastpath/README.md` (A.21–A.23, A.28).
+Measurements: `docs/bench-results/2026-11-14-q4u32-fastpath/README.md` (A.21–A.23, A.28).
 
 ### Low-RAM modes (chosen by setup)
 

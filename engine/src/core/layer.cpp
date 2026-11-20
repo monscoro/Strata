@@ -272,7 +272,7 @@ uint64_t qsa_win_bytes(const strata::kernels::QsaShapes& s) {
 void qsa_set_kv_int8(bool enabled) { g_kv_int8 = enabled; }
 void qsa_set_kv_int8_rotate(bool enabled) { g_kv_int8_rot = enabled; }
 bool qsa_kv_int8() { return g_kv_int8; }
-// ---- The centering (bench/results/2026-11-10-centering/) ----
+// ---- The centering (docs/bench-results/2026-11-10-centering/) ----
 // The per-(KV head, channel) offsets of the K and of the V rows, subtracted before the rotation.
 // K and V have their own table (measured: their offsets differ), and every head its own (the S2
 // probe merges the heads and measures K only - see the mini-project). The tables live on the device:

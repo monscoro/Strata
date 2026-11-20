@@ -3801,7 +3801,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         // A diagnostic (“instrumented”) cudaGraphLaunch may block until device work completes, and this graph
         // waits for the host's doorbells (flag / flagA / flagB).  Launched from the serving thread, that is a
         // deadlock: the host waits for the launch to return while the GPU waits for the doorbell the host would
-        // publish next.  Measured on the Windows HIP build (bench/results/2026-11-14-q4u32-fastpath, A.14): the
+        // publish next.  Measured on the Windows HIP build (docs/bench-results/2026-11-14-q4u32-fastpath, A.14): the
         // launch call sat 62.9 s with the GPU on "rang 1" and A/B still 0.
         // Default: the helper thread on the Windows HIP build (where that blocking submit was measured), the
         // in-line launch everywhere else (unchanged).  STRATA_VERIFY_ASYNC_LAUNCH=0 keeps the in-line launch as
@@ -4352,7 +4352,7 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
                      without);
         // STRATA_LOGPOS_TOPK=K: the K most likely tokens and their log-probabilities too (`id:logprob`), for a
         // top-k comparison with another engine on the same tokens (docs/UNSLOTH_Q4.md).  4096 is the ceiling: a
-        // full-support KL needs the reference's top-4096 (bench/results/2026-10-28-g2-full-vocab).
+        // full-support KL needs the reference's top-4096 (docs/bench-results/2026-10-28-g2-full-vocab).
         static const int topk = [] {
             const char* v = std::getenv("STRATA_LOGPOS_TOPK");
             return v != nullptr ? std::max(0, std::min(4096, std::atoi(v))) : 0;

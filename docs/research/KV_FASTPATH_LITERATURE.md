@@ -328,7 +328,7 @@ Vektor, der über alle Blöcke gleich ist; der Blockanteil schwankt von Block zu
 
 Die Zeile „Nullpunkt 1,16 dB" beschreibt den **Shear** (Codes **und** Schritt **und** Offset
 gemeinsam neu gefittet). Die zerlegende Messung steht in
-`bench/results/2026-11-13-kv-offset-tail/` (nicht in diesem PR enthalten; 12.574.464 Blöcke, dieselben Zellen):
+`docs/bench-results/2026-11-13-kv-offset-tail/` (12.574.464 Blöcke, dieselben Zellen):
 
 * Der **reine Restfehler-Offset** bei **festen** Codes und fester Skala
   (`a = mean(x − s·c)`, `r' = r + a`) holt **3,16 %** der Block-MSE zurück — **12,4 %** des
@@ -371,7 +371,7 @@ und deshalb kann die Frage „welche Center-Korrektur?" nicht ohne die Frage „
 
 ### 4a. Unsere eigene Messung (der Kern)
 
-`bench/results/2026-11-08-wmma-int8/` (`int8`, 4k/16k-Prompts, Commit `c7be7d4b7`; Rohdaten, außerhalb des
+`docs/bench-results/2026-11-08-wmma-int8/` (`int8`, 4k/16k-Prompts, Commit `c7be7d4b7`; Rohdaten, außerhalb des
 Repos gehalten),
 `STRATA_HIP_WMMA=1` gegen aus:
 
@@ -395,9 +395,9 @@ unser Preis liegt, liefert der Schalter nachweislich nichts. **Der Fast-Path ist
 
 | Bericht | Karte | WMMA | Was er zeigt |
 |---|---|---|---|
-| `bench/results/2026-10-10-community-rx-9060-xt/` (**unser**) | RX 9060 XT, gfx1200, **Windows**, Ryzen 7 9800X3D | **an** (`STRATA_HIP_WMMA=1`) | Prompt-Rate skaliert mit dem Prefill-Chunk: 346,3 (2.048) → 593,3 (4.096) → **879,4 tok/s** (8.192); Decode flach 52,7–57,9. **Kein WMMA-A/B im Bericht** — der Schalter gehört zur Baseline. |
-| `bench/results/2026-10-03-community-r9700-windows/` | R9700, gfx1201, Windows | (der Bericht verweist auf den AMD-Bericht #499 / RX 9070 XT, Prompts bis 31.059 Token) | der Windows-Fall von RDNA4 ist community-validiert |
-| `bench/results/2026-10-08-community-r9700-linux/` | R9700, gfx1201, **Linux** | **aus** (`STRATA_HIP_WMMA=0`), dafür `STRATA_PREFILL_MMQ=1` (der **Prompt-GEMM**-Pfad, nicht die Attention) | **die Community-Praxis auf RDNA4-Desktop dreht den Matrix-Core-Attention-Pfad nicht an** |
+| `docs/bench-results/2026-10-10-community-rx-9060-xt/` (**unser**) | RX 9060 XT, gfx1200, **Windows**, Ryzen 7 9800X3D | **an** (`STRATA_HIP_WMMA=1`) | Prompt-Rate skaliert mit dem Prefill-Chunk: 346,3 (2.048) → 593,3 (4.096) → **879,4 tok/s** (8.192); Decode flach 52,7–57,9. **Kein WMMA-A/B im Bericht** — der Schalter gehört zur Baseline. |
+| `docs/bench-results/2026-10-03-community-r9700-windows/` | R9700, gfx1201, Windows | (der Bericht verweist auf den AMD-Bericht #499 / RX 9070 XT, Prompts bis 31.059 Token) | der Windows-Fall von RDNA4 ist community-validiert |
+| `docs/bench-results/2026-10-08-community-r9700-linux/` | R9700, gfx1201, **Linux** | **aus** (`STRATA_HIP_WMMA=0`), dafür `STRATA_PREFILL_MMQ=1` (der **Prompt-GEMM**-Pfad, nicht die Attention) | **die Community-Praxis auf RDNA4-Desktop dreht den Matrix-Core-Attention-Pfad nicht an** |
 | PR **#5535** | RX 7900 XTX, gfx1100 (RDNA3) | int8-WMMA-Tier | −32,1 % **Kernel**-Zeit, aber **kein End-to-end-Gewinn** (0,995, CI [0,994; 1,004]) → dieselbe Aussage wie bei uns; und: „RDNA4 ships the same instruction family and already defaults to the f16 WMMA prompt path — the layout re-proof on an RDNA4 card is one probe run" |
 | PR **#5725** | gfx1152 iGPU | WMMA-Pfad freigeschaltet | **32K-Prefill 79-80 → 194-201 tok/s (2,4×)**, 4K 84-86 → 97-101 (1,17×), 131K 179,9. Das Rezept: **zwei Hälften, beide nötig** — compile-time der Arch-String in die WMMA-/dp4a-Device-Guards (9 Dateien), runtime in die **zwei** Host-Gates (`gfx_arch_is_gfx11_wmma()`, `igpu_prompt_defaults_arch()`) |
 
@@ -440,6 +440,6 @@ Non-Uniform Quantization*, EMNLP 2026 · D'Alberto et al., arXiv:2607.09683 (uns
 uniform → **affin** → der Fast-Path kommt dort gratis; die „Great Inversion" sagt, dass das uniforme
 FP4-Gitter das Flatten weniger belohnt → **Codec- und Rotationswahl hängen aneinander**) · OffQ
 arXiv:2606.07116 (Nullpunkt) · KIVI (asymmetrisch per Kanal) · die Community-Berichte
-`bench/results/2026-10-10-community-rx-9060-xt/`, `.-2026-10-03-community-r9700-windows/`,
+`docs/bench-results/2026-10-10-community-rx-9060-xt/`, `.-2026-10-03-community-r9700-windows/`,
 `.-2026-10-08-community-r9700-linux/` · Upstream-PRs **#5535** und **#5725** · unsere eigene
-WMMA-A/B-Messung `bench/results/2026-11-08-wmma-int8/` (Rohdaten, außerhalb des Repos gehalten).
+WMMA-A/B-Messung `docs/bench-results/2026-11-08-wmma-int8/` (Rohdaten, außerhalb des Repos gehalten).

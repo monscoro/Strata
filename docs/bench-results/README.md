@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2188 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 168 folders and 3 loose files, 2241 files in all.
 
 
 ## 2026-09
@@ -158,11 +158,36 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-10-12-p40-sm61-kernels](2026-10-12-p40-sm61-kernels/) | Tesla P40 (sm_61): wide dequantization, the dense GEMMs as cublasSgemm (opt-in), expert mode 8 and a matvec table (2026-10-12) | 16 |
 | [2026-10-20-0.2.1-bench](2026-10-20-0.2.1-bench/) | First real strata bench run on the released 0.2.1 (terminal 0.2.1, engine 0.1.46 cuda12 Linux packages) | 43 |
 | [2026-10-20-0.2.1-idle-gpu](2026-10-20-0.2.1-idle-gpu/) | The idle GPUs (proposal 2507-0): what the existing switches do on NVIDIA | 15 |
+| [2026-10-24-needle-window](2026-10-24-needle-window/) | 2026-10-24: needle recall, int8 against the production window | 8 |
+| [2026-10-25-e4-error-shape](2026-10-25-e4-error-shape/) | E4 — ist der Restfehler dünn oder dicht? | 1 |
+| [2026-10-25-s0-kl-support](2026-10-25-s0-kl-support/) | 2026-10-25: S0 — is the yardstick stable under a second KL support? | 5 |
+| [2026-10-25-s1-selstats](2026-10-25-s1-selstats/) | S1 — wo landet die Indexer-Selektion? | 1 |
+| [2026-10-25-tag-quality](2026-10-25-tag-quality/) | Tag-Read — Datenerhebung, nicht ausgewertet | 1 |
+| [2026-10-27-s2-channels](2026-10-27-s2-channels/) | S2 – trägt die Kanalachse vor der Rotation? | 1 |
+| [2026-10-27-s3-level-split](2026-10-27-s3-level-split/) | S3(a) – Level-Tabelle, Skala und Fenster bei gleichen Bytes | 1 |
+| [2026-10-28-decode-probe](2026-10-28-decode-probe/) | Decode-Sonde: was der Ring beim Decode wirklich liest | 1 |
+| [2026-10-28-g1-features](2026-10-28-g1-features/) | G1: neun Merkmale gegen drei Kalibrierungspaare | 1 |
+| [2026-10-28-g2-full-vocab](2026-10-28-g2-full-vocab/) | G2: ist die trunkierte KL die KL? | 4 |
+| [2026-10-28-ring-geometry](2026-10-28-ring-geometry/) | Ring-Geometrie bei gleichen Bytes – Sinks gegen recent | 1 |
+| [2026-10-31-g3-fwe](2026-10-31-g3-fwe/) | G3: unterscheiden sich die Arme funktional? | 5 |
 
 ## 2026-11
 
 | Folder | What | Files |
 | --- | --- | ---: |
+| [2026-11-01-b4-byte-model](2026-11-01-b4-byte-model/) | B4 — das Byte-Modell neu gerechnet, und der Prototyp statisch bewertet | 1 |
+| [2026-11-01-decode-4k](2026-11-01-decode-4k/) | Decode bei 4K: der Kandidat am echten Kontext | 1 |
+| [2026-11-01-e1-128k](2026-11-01-e1-128k/) | E1 am 128K-Punkt: wo sitzt die Indexer-Selektion, wenn der Ring klein gegen den Kontext ist? | 1 |
+| [2026-11-03-256k](2026-11-03-256k/) | 256K: trägt die Tag-Lesung am oberen Rand des Einsatzbereichs? | 1 |
+| [2026-11-03-deploy-range](2026-11-03-deploy-range/) | Einsatzbereich 32K und 64K: trägt die Tag-Lesung dort, wo das Produkt läuft? | 1 |
+| [2026-11-03-repeat-control](2026-11-03-repeat-control/) | Wiederholungs-Kontrolle bei 64K: ist der 128K-Nullpunkt ein Längen- oder ein Wiederholungsartefakt? | 1 |
+| [2026-11-03-tag-arm](2026-11-03-tag-arm/) | T1/T2/T3 — der Tag-Arm: Lesepolitik am 4K-Decode-Punkt und teacher-forced am 128K-Punkt | 1 |
+| [2026-11-10-centering](2026-11-10-centering/) | Miniprojekt „Centering": die systematischen Momente vor der Rotation entfernen | 3 |
+| [2026-11-10-merge-reeval](2026-11-10-merge-reeval/) | A/B/C/D — Re-Evaluation nach dem Upstream-Merge: Kontrollexperiment, Re-Baseline, Speed, Docs | 5 |
+| [2026-11-11-shear-codec](2026-11-11-shear-codec/) | Der gescherte Codec: der End-to-End-Arm (vorregistriert) | 2 |
+| [2026-11-13-kv-offset-tail](2026-11-13-kv-offset-tail/) | Der gespeicherte Offset, der billige Writer und die schweren Positionen (Vorregistrierung, 2026-11-13) | 2 |
+| [2026-11-13-ultraquant-scale](2026-11-13-ultraquant-scale/) | UltraQuants Skalenmechanismus, auf unserem Gitter nachgemessen (2026-11-13) | 1 |
+| [2026-11-14-q4u32-fastpath](2026-11-14-q4u32-fastpath/) | q4u32 als int8-Ersatz: der Fast-Path und die Laufzeitmessung (Vorregistrierung, 2026-11-14) | 3 |
 | [2026-11-14-rdna2-pcie-auto](2026-11-14-rdna2-pcie-auto/) | PcieAuto on gfx103x: the decode miss split from the CPU pool's speed (#4007) | 3 |
 
 ## Loose files

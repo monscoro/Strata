@@ -1,0 +1,509 @@
+# Ansatz-Verbesserungen: KV-Cache-Quantisierung & Exact-Cell-Fenster
+
+Stand: 2026-11-10 (Centering gemessen, s. §7 und Zeile A6), Literaturabgleich nachgezogen · Autorenkontext: GLM-5.3 (opencode), auf Basis des Papers
+`docs/paper/KV-Window-Hardening.tex` (11 Seiten, 8 Tabellen; v1.10, Stand 2026-11-10)
+und des Schwester-Papers `docs/paper/KV-mean-centered-calibrated-quantization.tex`
+(v0.5, 9 Seiten; Stand 2026-11-10 — das Paper trägt seit der Umbenennung den
+Arbeitstitel „Mean-Centered Calibrated KV Quantization" und den gemessenen
+Per-Kanal-Offset), des GLM-Selbst-Reviews (dasselbe Modell — Selbst-Review-Caveat gilt; §8
+dokumentiert die Blindstellen) und des unabhängigen Zweit-Reviews (grok-4.7 via
+opencode, Desk-Review ohne Messungen; alle 8 Major-Befunde wurden gegen die
+Messquellen verifiziert und in den Artikel implementiert). Beide Reviews liegen
+**außerhalb des Repos** und sind hier nur als Provenienz genannt, nicht als
+Quelle für Zahlen.
+
+**Tabellenzählung im Paper (Stand PDF 2026-10-25):**
+Tab. 1 Survey, Tab. 2 Footprint, Tab. 3 Decisions (A-Serie), Tab. 4 Runtime 128K,
+Tab. 5 cwe-2k, Tab. 6 cwe-4k, Tab. 7 cwe-128k (Tail, erstes der zwei Texte),
+Tab. 8 Regionen 128K (erster Text).
+Am 2026-10-24 wurden alle Zahlen der Tabellen 4–8 Zeile für Zeile gegen
+`docs/KV_QUANT_WORKPACKAGE.md` (Branch `KV_QUANT_research`) geprüft und die
+Captions von Tab. 7/8 präzisiert; danach wurden die Revisionsplan-Items 1–10
+des Grok-Reviews in den Artikel umgesetzt (u. a. KL-Definition top-64-trunkiert,
+Hybrid-Modellbenennung, zwei 128K-Texte, ≈28K-Break-even, eingezogener
+Crossover, untraceable Gates-Zählungen entfernt).
+
+## 0. Regeln für dieses Dokument
+
+- **Keine erfundenen Messwerte.** Jede Zahl hier ist entweder messberichtet
+  (`docs/bench-results/…`, `docs/DETAILS.md`, `docs/KV_QUANT_WORKPACKAGE.md`)
+  oder explizit als Literaturangabe mit Quelle bezeichnet.
+- Punkte, die nur aus Code-/Text-Lektüre folgen, sind als **statische
+  Analyse** markiert und müssen vor jedem Claim verifiziert werden.
+- Neue Features bleiben **opt-in**; der `int8`-Default-Pfad bleibt
+  **byte-identisch** (SHA-Gate; Paper §5, A-Serie, und der Abschnitt
+  „Correctness gates").
+- Jede Prüfung, die sich zu einem offiziellen Claim hardnet, braucht einen
+  Messbericht in `docs/bench-results/<datum>-…` mit genau derselben Methodik wie
+  das Paper (fp16-Referenz, gepaarte Statistik, vorzeichenbewusste Lesung).
+- **Die Reviews sind Werkzeug, nicht Auftrag.** Die Textpunkte beider Reviews
+  sind abgeschlossen und werden nicht erneut aufgerollt. Die Messpunkte (GLM
+  Nr. 11/12, Grok Q2/Q3) sind in die Leiter S0–S5 eingegangen, **soweit sie dem
+  5,0-Bit-Ziel dienen**; sie sind damit Leiterstufen, keine Review-Pflichten.
+  Was dem Ziel nicht dient, wird nicht gemessen: Multi-Turn (D3), der
+  S/R-Knie-Sweep und ein Vokabular-Vollrescore bleiben offen. Die *Regeln*
+  dieses Abschnitts gelten weiter — nicht weil ein Review sie verlangt, sondern
+  weil der neue Claim („`int8`-Qualität unter 5,0 bit") an genau denselben
+  Schwächen gemessen würde (trunkierte KL, fehlender Build, fehlende Rohlogs).
+- **Bilanzregel Indexer:** Der FP32-Indexer (128 Dimensionen je 4-Zellen-Block,
+  rechnerisch 192 MiB bei 128K bzw. 1,0 bit je KV-Wert) ist **Teil der
+  Modellarchitektur**, nicht des KV-Codecs. Er wird deshalb **nicht** in bit/cell
+  eingerechnet und nicht mit dem KV-Speicher gemittelt; eine Indexer-Kompression
+  ist eine eigene, spätere Frage mit eigenem Selektions-Nachweis (Score-Abstand an
+  der Grenze, Flip-Rate), kein Hebel dieses Arbeitspakets.
+- **Sichtbare Versionierung:** jedes Paper trägt auf Seite 1 eine Versionszeile
+  (Version, Build-Zeit mit Zeitzone, Datum der Erstfassung) und dieselbe Angabe
+  in den PDF-Metadaten; die `.tex`-Datei führt die Versionshistorie als
+  Kommentarblock, eine Zeile pro Inhaltsrevision. Die Version zählt
+  Inhaltsrevisionen; die Zeit ist der Build und wird beim Kompilieren aus der
+  Uhr gesetzt (`\buildstamp`), damit sie nicht von der Datei abweicht.
+
+## 1. Status quo (gemessene Basis)
+
+| Punkt | Ergebnis | Quelle |
+|---|---|---|
+| Production-Point 256/64, B=6.144 | 5.29 bit/cell, 1.016 MiB @128K | `docs/DETAILS.md` |
+| `int8`-Default | 8.25 bit/cell, 1.584 MiB | `docs/DETAILS.md` |
+| Gap-Closure | 73 % (4K); über die zwei 128K-Texte 34–58 % der Tail-Mean-KL gegenüber plain | Paper Tab. 6, §7.3 |
+| 2K-Lage | gegen `int8` nicht trennscharf (t=−1,92, int8 vorn; Fenster nur in 2/8 Segmenten besser) | Paper Tab. 5 |
+| 4K-Lage | `int8` signifikant besser (t=−3,55; 7/8 Segmente für int8) im Mittel; Antwortregion nicht trennscharf | Paper Tab. 6 |
+| 128K-Lage | Auf beiden Texten: `int8` gewinnt Tail-p99 (0.01655 vs 0.02977 / 0.0165 vs 0.0210), letzte 1.024 Positionen und Ganzsegment; Tail-Mean favorisiert je einen Arm pro Text (textübergreifend nicht konsistent); Ganzsegment-p99 liegt bei allen Armen hoch (3.66–5.55, isolierte Hartpositionen — unter der top-64-KL-Definition u. U. Floor-Ereignisse) | Paper Tab. 7/8, §7.3 |
+| 256/64 vs 512/128 | 4K qualitativ identisch (t=+0,02); 128K nie qualitativ gemessen; 512/128 kostet +7 MiB (Tab. 4), decode −0.85 t/s; ihr Prefill-Vorteil reproduzierte sich nicht → 256/64 | Paper Tab. 4, Tab. 6, §8.2 |
+| Level-Layout | K 16 uniforme Lloyd-Levels, V 8 Levels, beide im selben 4-Bit-Block (nicht „4-bit K / 8-bit V") | Paper §2/§3, WP §12.2 |
+| Hadamard an/aus | `q4lm32nr` gegen `q4lm32`: Gleichstand (cwe-2k t +0,21; cwe-4k t −1,31 / −0,17, nirgends signifikant). Das ist der 16-Level-Basis-Arm, **nicht** das Fenster, nicht `q4lm8v`, nicht 128K | WP §7.9 |
+| Schreiber-Platz | Post-Norm/Post-RoPE, dann FWHT (**statische Analyse**, WP §5.1). Pro-Kanal-Skalen im KIVI/KVQuant-Sinn können nur **vor** FWHT leben. `n_rot` = 64 von 256: FWHT mischt rotierte mit unrotierten Dims; das ist ungeprüft | WP §5.1 |
+| Clip nach Rotation | Post-FWHT-Clip schadet auf cwe-2k: κ 0,94/0,94 +34 % KL (t −2,29), OSCAR-Paar 0,96/0,92 +111 % (t −6,66). Die OSCAR-Clip-Zahlen gelten für unrotierte Kanäle, nicht für diese Geometrie | WP §7.11 |
+| `q4_0`-Anker | Anderes Protokoll, nicht cwe: Document-PPL etwa +8 % / +12 % gegen fp16 (Q2_0, 1K/8K); Swift-`quant_quality` z. B. KL 0,0364 auf dem festen Set (WP §7.1). **Kein** cwe-Paar von `q4_0` gegen das Fenster | `docs/bench-results/2026-09-27-kv-q4`, WP §7.1 |
+| Laufzeit | Prefill gleich, Decode −1.0 t/s (Streubreite; decode = Serving-Rate unter `--spec 4`-Drafts); 568 MiB frei, 416 Slots mehr | Paper Tab. 4 |
+| Korrektheits-Gates | SHA-Byteidentität gegen den Vorrelease-Stand (dump-logits `A014F504…BA052`, int8 + fp16); Parität 12/12 (Synthetik-Suite `kv_q4_parity`, nicht A4); Nadel 18/18 im WP (plain, 256/64, 512/128, je 6/6, gesättigt); **2026-10-24 Reproduktion** int8 gegen 256/64, Engine 0.1.47, gleiche sechs Nadeln, 6/6 und 6/6, Antworten = gepflanzte Wörter (`docs/bench-results/2026-10-24-needle-window/`); Window+Streaming-Verweigerung vor Load, Exit 2 | Paper §7.5 „Correctness gates", `docs/bench-results/2026-10-24-needle-window/` |
+| Break-even | ≈27.600 Zellen (B=6.144); darunter ist das Fenster teurer als der 4-bit-Basis-Effekt; bei 32K noch billiger als `int8` (7,67 vs 8,25 Bit) — Setup bietet ab 32K an | WP §7.20, Paper §3.2 |
+| Hang | 1× auf *plain* `q4lm8v` @128K-Prefill, 6/6 Re-Runs ohne Reproduktion | Paper §9 (Threats) |
+| Offen | A4-Paritätstest; CUDA/SYCL-Builds; 128K-Knie-Dichte; Task-Breite; per-channel-Anker **vor** der Rotation (A1); Indexer-Auswahl↔Overlay (C4) plus die Frage, welcher Anteil der ausgewählten Zellen überhaupt im Overlay liegt (E1) | Paper §8.2, Tab. 3, Abschnitt 6 |
+
+## 2. Katalog
+
+Priorität: **P1** = nächster sinnvoller Zug (hoher Informationsgewinn pro
+Aufwand), **P2** = wichtig, danach, **P3** = Warteschlange.
+Aufwand: **S** ≤ 1 Tag, **M** = mehrere Tage, **L** = Woche(n).
+
+### A. Quantisierungslayout
+
+| ID | Titel | Motivation (aus Status quo / Review) | Vorschlag | Prüfmessung | Aufwand | Prio |
+|---|---|---|---|---|---|---|
+| A1 | **Per-channel-K vor der Rotation** | KIVI/KVQuant quantisieren K entlang der Kanalachse; das Paper nennt genau diesen Arm als den fehlenden fairen Konkurrenten. **Korrektur gegen WP §5.1 (statisch):** nach FWHT gibt es keine Kanäle mehr. Ein „per-channel auf derselben Rotation"-Arm misst nicht, was KIVI misst. Der faire Arm skaliert K **vor** FWHT (oder ohne FWHT; die an/aus-Ablation auf `q4lm32` war bei 2K/4K ein Gleichstand, trägt diese Frage also nicht). Weiterhin nur auf diesem Indexer-Cache (12 von 48, top-2048), nicht auf einem Dense-Cache | Pipeline-Änderung, opt-in, V bleibt wie heute. Nicht bauen, bevor E1 sagt, dass der Restfehler in gelesenen Zellen liegt und nicht nur in ungelesenen | cwe-4k zuerst, dann 128K nur bei einem 4K-Unterschied; Gate: byte-identischer `int8`-Pfad | **M** | **P1** |
+| A2 | Level-Symmetrie-Check (16/16, 8/8) | Der Level-Split (K 16, V 8, selber 4-Bit-Block) ist eine Byte-/Codebook-Wahl, keine gemessene Sensitivität. Die *Bit*-Variante („K will Bits") ist auf Swift falsifiziert (t +0,05, McNemar p=1,000). KIVI sagt die Richtung voraus; das darf die Lesung nicht vorwegnehmen. Der top-k-Artikel (Token gegen Bits) ist **nicht** die Begründung für 16/8 — das war eine Fehllektüre im ersten Review | Zwei Arme unter gleichen Bits: 16/16 und 8/8. Richtung nicht vorhersagen |cwe-4k gegen das uniforme Lloyd-Layout; 128K nur bei einem 4K-Unterschied. **Antwort (2026-11-10, gemessen):** die 8-Stufen-V-Tabelle ist ein **Messarm ohne Byte-Gewinn** (ein 3-Bit-Codebook in 4-Bit-Bytes, WP-2-Probe) und kostet **1,10 dB** Block-MSE (lloyd16K+lloyd8V+LS 6,527e-03 gegen lloyd16+LS 5,072e-03, beide mit Centering) → **der ausgelieferte Codec ist 16/16**; ein echtes 3-Bit-Layout (das Byte zu sparen) bleibt B2. **End-to-end bestätigt (C4, 2026-11-10 abends):** der Produktcodec `q4lm32w` (16/16 + Fenster) liegt auf cwe-4k bei KL **0,01689** gegen `int8`'s 0,01688 — gepaart **+0,00002** (t = −0,02, per Position [−0,00240, +0,00237]); gegen den 8-Stufen-V-Fenster-Arm ist er **+0,00400** nats besser (t = +2,99, CI [+0,00138, +0,00663], **signifikant**). **Der Level-Split ist damit der Produktpfad** (der Zwischenstand dieses Arms ist mit dem Git-Tag **`known-good-q4lm32w`** markiert ✓✓ — der Stand, auf dem der Produktarm auf cwe-4k auf `int8`-Niveau liegt und der bei 128K hinter `int8` zurückbleibt; die SHAs d6e65140272b / 4c7aeebd64fa sind die der Kampagne ✓, und der Shear-Code im Baum lässt die ausgelieferten Formate unberührt ✓✓) — und der Offset ist es nicht (siehe A6). **Merge-Gegenprobe (2026-11-11):** der **unkalibrierte** 16/8-Fensterarm misst auf dem gemergten Build bei 128K **0,07524** — auf fünf Nachkommastellen **exakt** die Zahl des Vorgängers für denselben Arm (`docs/DETAILS.md`: „whole segment 8-bit 0,06435, window 0,07524, plain 0,08834"). Der Merge ist damit für den ausgelieferten Arm **neutral ohne Restabweichung**; die 0,6 %, die ich vorher als Merge-Abweichung abgetan hatte, sind die **Kalibrierungs-Wirkung** (+0,00045, nicht signifikant). | **S** | **P1** |
+| A3 | Pre-RoPE-K | KVQuants Pre-RoPE-Gewinn gilt für ihre per-channel Keys. Bei uns ist die Platzierung schon gelesen, nicht offen: der Schreiber sieht Post-Norm/Post-RoPE-K (WP §5.1, statisch), und FWHT mischt danach Kanäle, von denen nur 64/256 rotiert sind. Ein Pre-RoPE-Arm testet ein anderes Fehlermodell, solange A1 nicht gezeigt hat, dass die Kanalachse **vor** der Mischung überhaupt trägt | Nicht bauen, bevor A1 einen Unterschied zeigt. Wenn doch: eigener opt-in Pfad, `int8` unberührt | cwe-4k gegen den Post-RoPE-Schreiber, nur nach A1 | **M** | **P3** |
+| A4 | Layer-wise-Präzisionspaare | KVTuner berichtet auf **ihren** Modellen nahezu verlustfreie 3,25–4,0 bit. Das ist kein Zielwert für unsere KL. Unser Format ist global; gemischt werden können nur die 12 Cache-Layer, nicht die 36 ohne diesen Cache. PyramidKV (mehr Budget in unteren Schichten, ihre 12-%-LongBench-Zahl) ist eine andere Achse: Token-Budget pro Layer, nicht Bits pro Layer. Output-KL schreibt den Fehler keiner Schicht zu, also fehlt das Signal für beide | Erst ein per-Layer-Fehlersignal (Instrumentierung, nicht die vorhandenen Logs). Danach höchstens 2 Stufen auf den 12 QSA-Layern, opt-in | cwe-4k; Gate: `int8` byte-identisch | **L** | **P3** |
+| A5 | Non-uniform Level für K | KVQuant: sensitivitätsgewichtete Datentypen, ihre Wikitext/C4-PPL, nicht unsere KL. **Nicht noch einmal Clip:** Post-FWHT-Clip ist auf cwe-2k schlechter (WP §7.11). Offen ist nur eine andere 16-Level-Tabelle bei gleicher Blockgröße, nach der Rotation | Eine alternative Codebook-Tabelle, Leser unverändert, opt-in | cwe-4k gegen das uniforme Lloyd-Layout; 128K nur bei einem 4K-Unterschied | **S** | **P2** |
+| A6 | **Per-Kanal-Offset vor der Rotation (das Centering, der Nullpunkt)** — **der größte gemessene Blockhebel (−1,9 bis −2,6 dB MSE), aber ein *Ersatz* für den Level-Split und damit kein Produktpfad** | **Gemessen am 2026-11-10 auf den echten Zellen** (Dump des Engines: 12 QSA-Layer × 32.746 Zellen × 2 KV-Köpfe, `tools/kv_codec_mse.py`): der feste Kanal-Offset bläht unsere **Max-Skala** auf (`d = amax/lmax`, das Shuffle-Maximum über den 32er-Block) und kostet im Blockmaß **1,70 dB (K) und 4,63 dB (V)**, zusammen **2,01 dB** (voller Dump, Attributions-Skript; der Kampagnen-Harness liest 1,90 dB) — **mehr** als Level-Tabelle (0,30 dB) und per-Block-Skala (0,31 dB) zusammen. (Die frühere Angabe „0,17 dB (K) und 0,36 dB (V)" kam aus einem Lauf über einen **trunkierten** Zellsatz: die Offsets wurden dort aus zu wenigen Zellen geschätzt und tragen fast kein Signal; auf dem vollen Dump stimmen die beiden Werkzeuge auf sechs Nachkommastellen überein — Abweichung 15. Die frühere Rücknahme der Kernaussage (Abweichung 11) ist damit **widerrufen**; die Kernaussage der Kampagne steht wieder.) In der Literatur ist es derselbe Eingriff wie der **Nullpunkt** der asymmetrischen Quantisierung (OffQ, arXiv:2606.07116: „can be absorbed into the zero-point"), und **die Rotation kann ihn nicht ersetzen**: sie verteilt die Energie nur (‖H·μ‖ = ‖μ‖). Zwei eigene Messfehler unterwegs (der K-Offset auch auf V; die S2-Sonde mittelt über die Köpfe und misst nur K) — **die Tabelle muss je Kopf und je Seite sein** | Per-(Layer, KV-Kopf, Kanal)-Tabelle für **K und V getrennt** (12 × 2 × 256 Werte je Seite), angewendet **vor** dem FWHT; das Ringfenster trägt dieselben (zentrierten) Werte; der Snapshot-Formatbyte bekommt +32 (ein zentrierter Zustand darf nicht in einen unzentrierten zurückgespielt werden); Streaming trägt dieselbe Basis. Opt-in, `int8` byte-identisch. **Gebaut** (Kernel, Writer/Leser, Loader `STRATA_KV_CENTER=<datei>`, Generator `tools/kv_center_table.py`, Snapshot-Kennzeichen) | **Gate G1 (Stabilität) erfüllt**: über Text und Länge Korrelation 0,9489, mittlere Abweichung 0,0799 sd; der Build-Effekt 2026-10-27 → 0.1.59.1 ist **exakt null**. **G2 erfüllt**: MSE −1,9 dB beim Anker, −2,6 dB beim q4lm8v-Codec. **G3 nicht erfüllt**, weil das registrierte Maß σ/Schritt **skaleninvariant** ist und ein Bias-Entfernen per Definition nicht zeigen kann; der Bericht trägt stattdessen \|d\|/σ (die Skala relativ zur Streuung des Blocks — die Größe, die „besser den Wertebereich ausnutzen" meint). **Der KL-Arm (cwe-4k, C3) ist gelaufen:** plain 0,03182 → **0,02505**, Window 0,02090 → **0,01871**; gepaart gegen `int8` fällt der Abstand von +0,00402 auf +0,00184 (statistisch nicht mehr signifikant). **Aber C4 hat die Lesart geändert (2026-11-10, abends):** die **Wirkung der Kalibrierung hängt am Codec** — auf dem plain 16/8-Arm **+0,00677** nats (per Position [+0,00350, +0,01003], t = +4,06, **signifikant**), mit Fenster **+0,00218** (CI [−0,00022, +0,00459], **nicht signifikant**) und auf dem **16/16-Codec −0,00079** (CI [−0,00341, +0,00183], **nichts**). Die Kalibrierung und der Level-Split holen **dieselbe verschwendete Spannung** zurück: wer 16 Stufen auf beiden Seiten hat, hat für den Offset nichts mehr zu holen. **Damit ist A6 kein Produktpfad**, sondern ein Hebel für Codecs, die Spannung verschenken (der 16/8-Probe). **Die dritte Messung (D1, 128K, 2026-11-11) schärft das und schließt die offene Frage:** auf dem **16/16-Codec** ist die Kalibrierung bei 128K **+0,00314** nats (gepaart, t = +2,05, CI [+0,00014, +0,00615], **marginal signifikant**) und verbessert die Top-1-Übereinstimmung mit fp16 **signifikant** (949 gegen 836 richtige Positionen, exakter McNemar p = 0,0080) — die beiden Statistiken, für die sie nominiert war; auf dem **ausgelieferten 16/8-Codec** ist sie **−0,00045** (CI [−0,00362, +0,00271], **nichts**). Das **Vorzeichen ist über die Länge und über den Codec nicht etabliert**: 16/8 geht von +0,00218 (4K) auf −0,00045 (128K), 16/16 von −0,00079 (4K) auf +0,00314 (128K) — von den **vier** Messungen ist nur **eine** signifikant, und sie ist marginal. **Die Produktentscheidung ändert sich nicht**: der Produktpfad bleibt der **unkalibrierte** 16/16-Arm (die Kalibrierung kostet dafür ein Artefakt, die Basisdisziplin im Snapshot und 1,8 % Laufzeit und kauft auf dem Produktcodec bei 4K nichts). **Die Produktentscheidung ist A2** (`q4lm32w`: 16/16 + Fenster, **ohne** Kalibrierung — auf `int8`-Niveau: +0,00002, t = −0,02; kein Artefakt, keine Basisdisziplin, +1,8 % Laufzeit gespart). | **M** | **P1** (als Produktpfad: **zurückgestellt** — die Implementierung bleibt, der Einsatz im Produktcodec entfällt) |
+
+| A7 | **Randomisierter Hadamard (H·D)** — **mit Messung geschlossen, mit Regime-Gate** | Die Literatur meint mit „randomized Hadamard transform" (RHT) = Hadamard × zufällige Vorzeichendiagonale (QuIP#, QuaRot, QTIP, SpinQuant); das volle FHRT mit Permutation benutzt im LLM-Bereich niemand, und die Theorie (Ben-Basat et al. 2026-10) zeigt, dass die sign-only-Variante reicht — die Permutation ist der teure Teil, und die Literatur nutzt sie nur adaptiv (RotateKV: outlier-bewusstes Channel-Reordering, OSCAR: offline Kovarianzen). **FlagRot (2026-11-02) warnt explizit: Rotation hilft nicht immer** — sie glättet ein stacheliges Teilstück und gibt einem flachen einen neuen Peak; das ist der Schatten unseres WP §7.9 (Hadamard an/aus = Gleichstand) | **Nicht bauen. Die Messung** (2026-11-10, echte Zellen): drei Vorzeichenzüge liegen innerhalb 0,01 dB, und auf den **zentrierten** Daten ist der RHT (−0,18 dB) *schlechter* als das uniforme Gitter mit der gefitteten Skala (−0,20 dB). **Die Literatur erklärt das und liefert die Bedingung:** der kontrollierte KV-Vergleich (AMD, arXiv:2607.09683) findet „the rotation neither helps nor hurts" auf isotropen oder niedrigrangigen Daten und „TQ-KV is the only viable scheme" auf **schweren Rändern** — der RHT ist damit eine **Versicherung gegen die Schwänze**, kein Hebel. **Unser Regime ist gemessen:** die prä-Rotation-Exzesskurtosis ist **−0,18**, also *leichter* als Gauß → die Versicherung wird hier nicht gebraucht. **Das Gate ist deshalb die Kurtosis, nicht die MSE** — und die S2-Sonde liefert sie ohne Zusatzlauf | **geschlossen durch Messung** (kein weiterer Test für dieses Modell). Für ein Modell mit Massenaktivierungen (schwere Ränder) wäre der RHT die richtige Wahl: das ist eine **eigene** Registrierung mit einem neuen Arm, nicht dieser Kandidat | **S** | **P3** (geschlossen) |
+| A8 | **Ein Schnellpfad für die Lloyd-Modi** — **Enabler, kein Qualitätshebel; die Qualität hat Vorrang** | Der Prompt-Schnellpfad (`qsa_prompt_attn_batch`, Mode 4) lehnt die Lloyd-Modi ab (`qsa_prompt_attn.cu:2524`). **Der Grund ist nicht die Affinität — das war eine falsche Annahme in dieser Zeile (korrigiert 2026-11-11, nach dem Code und den Community-Benchmarks):** der Kernel wendet die **Skala pro Gruppe (32 Werte) nach der Gruppen-Partialsumme** an (`sc[0] = fmaf(tg[0], S.ks[…][g], sc[0])`), unterstützt also **eine affine Karte, die entlang der Head-Dimension variiert**; fest verdrahtet ist nur die **Wertabbildung `code − 8`** (der `i8x2_to_h2`-Bit-Trick) — und der Kernel sagt selbst: *„Mode 4 could carry the level table the way it carries the int8 codes; **that is owed if a level-table format ships**."* Der Fast-Path ist damit **keine Affinitäts-Reparatur, sondern ein Tabelleneintrag im Operandenbau** (`level[code]` statt `code − 8`; die Level sind kleine ganze Zahlen → exakt in fp16, die Gruppenskala bleibt unverändert). **Der Preis ist der Decode-Kern als Rückfall** (`prefill.cpp:4843-4848`, 32 Queries pro Schritt) — im B1-Pfad als **+12 %** gemessen (q4_0 128,8 s gegen plain q4lm8v 144,1 s je Segment), im 32K-Nadel-Lauf als **2,25×** (int8 51,7 s, q4_0 50,0 s, q4lm8v 116,4 s; freie Maschine). **Wichtig: das ist ein Kernel-Struktur-Preis, kein Matrix-Core-Preis** — die WMMA-Achse ändert die Prompt-Raten auf dieser Karte nicht (479,4 → 478,0 tok/s bei 4k, 565,4 → 565,5 bei 16k; `docs/bench-results/2026-11-08-wmma-int8/`) und ist ein **Decode**-Hebel; auf den iGPUs ist derselbe Pfad ein 2,4×-**Prefill**-Hebel (PR #5725), auf RDNA3 bringt er nichts end-to-end (PR #5535). **Die Entscheidung (2026-11-10): Qualität vor Geschwindigkeit — die Level-Tabelle bleibt** (nach dem Centering ist sie noch 0,37 dB besser als der affine Kandidat); der Schnellpfad für unsere Modi ist ein **eigener, späterer** Schritt | **Zwei Wege, und die Entscheidung ist billig:** (a) **LUT-Dequantisieren vor dem MMA** (die Codebook-Familie: TurboQuant/FLUTE — der Operand ist `level[code]`; AMD misst 32 % → 95 % des BF16-Durchsatzes mit Pair-LUT, SoA-Layout, GQA-Tiling und MFMA-Dispatch; **aber**: im **compute-gebundenen** Prefill zahlt die Dequantisierung, und das ist genau unser Fall); (b) **den Codec affine machen** — ein **verschobenes uniformes Gitter mit per-Block-Nullpunkt** lässt den Operanden einen affinen Ausdruck des Codes bleiben (**kein Lookup, keine Änderung am Operandenbau**); das ist die *Nullpunkt*-Idee der Literatur (OffQ, KIVI), und der **optimale Compander ist genau die Lloyd-Tabelle** (Max 1960, „An optimal class of companding laws") — die Frage ist also, **wie viel vom Lloyd-Max-Vorteil bei einer pro Block *affinen* Karte bleibt**. **Das ist eine Host-Frage ohne Kernel — und sie ist beantwortet (2026-11-11, `tools/kv_affine_price.py`, 1.572.480 Blöcke):** der **Uniformitätspreis** (die Form der Lloyd-Tabelle gegen ein uniformes Gitter, **gleiche Bytes**) ist **0,43 dB** — die Lloyd-Tabelle gewinnt auf gleichem Budget; der **Scherungspreis** (ein verschobenes uniformes Gitter mit per-Block-Nullpunkt) ist **1,29 dB**, das heißt: **mit einem Nullpunkt je Block ist die affine Karte 0,86 dB besser als die Lloyd-Tabelle**, aber sie kostet 0,5 bit/Zelle extra und eine Kernel-Konstante je Block. **Der Grund ist der Bias** (die rotierten Zeilen tragen einen festen Kanal-Offset; ein um null zentriertes Gitter verschenkt Range). **Also:** die affine Variante ohne Nullpunkt reitet den Kernel unverändert und kostet 0,43 dB; die affine Variante mit Nullpunkt ist besser, aber ein **eigener Codec** (mit eigenem Byte-Format und eigenem End-to-End-Arm) und damit **nicht** Teil dieser Zeile, sondern eine eigene Stufe neben A8. | **L** | **P2** → **P1**, sobald ein Level-Tabellen-Format ausgeliefert wird (mit `q4lm32w` ist das der Fall): **Stufe S6** trägt den Fast-Path als Arbeitsstufe |
+| A9 | **Ein verschobenes uniformes Gitter mit per-Block-Nullpunkt (der affine Shear)** — **im Blockmaß besser als die Lloyd-Tabelle, aber auf mehr Bytes; die End-to-End-Zahl fehlt** | **Gemessen am 2026-11-11 auf den echten Zellen** (`tools/kv_affine_price.py`, 12 Layer, 1.572.480 Blöcke): die Lloyd-Form kostet **0,43 dB** gegen ein uniformes Gitter (bei **denselben** Bytes), und der per-Block-Nullpunkt holt **1,29 dB** zurück → das gescherte Gitter ist **0,86 dB besser als die Lloyd-Tabelle**. **Was der Nullpunkt tut, ist gemessen:** er korrigiert die **Lage des Gitters**, und die folgt der **Schiefe** der Blockverteilung (r = +0,89 mit dem Rest; der Blockmittelwert ist nahezu null, erklärt nur r = +0,51 und trägt im Median **0,03 Schritte** bei). Die Verschiebung selbst ist klein (**0,56 Codes** von der Kernel-Konvention), aber der Bulk gewinnt: der Medianfehler fällt von 0,0868 auf **0,0744** (−14 %), während die Ausreißer (4,8 % des Gesamtfehlers) etwas mehr clippen (5,8 % → 8,2 % der Werte). **Es ist eine dritte Art, den Bias zu entfernen** — neben der per-Kanal-Kalibrierung (ein **Vektor** je Layer/Kopf/Kanal, 2,00 dB, Preis: 12 KB je Modell + Basisdisziplin + V-Add-Back) und der Rotation (die nur verteilt): der Nullpunkt (eine **Form** je Block, 1,16 dB, Preis: **0,5 bit/Zelle** + eine Kernel-Konstante je Block). **ERGEBNIS 2026-11-12 (der End-to-End-Arm auf cwe-4k, acht Arme in einem Lauf): der Offset ist ein **wirksamer** Hebel (+0,00193 nats, t = +2,07 — genau die Vorhersage aus dem Blockmaß ✓), aber **die Lloyd-Form ist ihm um 0,00050 überlegen**, und das Ziel `q4u32zc` landet **exakt gleichauf** mit dem Produktarm (+0,00001) — bei +0,5 bit/Zelle. **Der Shear ist damit kein Produktpfad (der Kill der Vorregistrierung greift) ✓.** **Der methodische Gewinn bleibt: die Brücke Block→nats ist linear und für alle drei Hebel dieselbe (0,00116 bis 0,00167 nats/dB)** → **eine Blockmessung ersetzt künftig einen 128K-Lauf** ✓. Und die Kalibrierung wirkt am stärksten auf dem schwächsten Codec (0,00321 nats auf dem uniformen Gitter gegen 0,00079 auf der Lloyd-Tabelle) ✓ — die Substitute-Geschichte, end-to-end bestätigt ✓. **ERGEBNIS 2026-11-12 (der End-to-End-Arm auf cwe-4k, acht Arme in einem Lauf): der Offset ist ein **wirksamer** Hebel (+0,00193 nats, t = +2,07 — genau die Vorhersage aus dem Blockmaß ✓), aber **die Lloyd-Form ist ihm um 0,00050 überlegen**, und das Ziel `q4u32zc` landet **exakt gleichauf** mit dem Produktarm (+0,00001) — bei +0,5 bit/Zelle. **Der Shear ist damit kein Produktpfad (der Kill der Vorregistrierung greift) ✓.** **Der methodische Gewinn bleibt: die Brücke Block→nats ist linear und für alle drei Hebel dieselbe (0,00116 bis 0,00167 nats/dB)** → **eine Blockmessung ersetzt künftig einen 128K-Lauf** ✓. Und die Kalibrierung wirkt am stärksten auf dem schwächsten Codec (0,00321 nats auf dem uniformen Gitter gegen 0,00079 auf der Lloyd-Tabelle) ✓ — die Substitute-Geschichte, end-to-end bestätigt ✓. **NEU RICHTUNG (2026-11-13, aus UltraQuant und InnerQ):** der Fast-Path braucht **keinen** Offset, sondern **kein Codebook** — „with the per-block scale in place the codebook itself barely matters“ (UltraQuant B.1 ✓✓, unsere Messung: die Lloyd-Form kostet nur 0,00050 nats ✓✓) — **und ein per-Token-Faktor lässt sich nicht in den Attention-Score falten** (UltraQuant §5.3 ✓✓), **also ist genau der Hebel, der die Hardware abhält, der Offset** ✓✓. **Die Fast-Path-Richtung ist damit `q4u32`** (das uniforme Gitter mit per-Block-Skala ✓✓) **nicht** der Shear ✓✓ — und die Skalenform ist noch zu verfeinern (UE8M0 statt fp16 → 4,25 bit/Zelle ✓✓, und die globale Konstante c = 0,156 statt eines Artefakts ✓✓). **Die beiden sind additiv** (2,00 + 1,16 = 3,18 dB) — **der Zielpunkt des Arms ist deshalb `q4u32zc`** (der Shear **und** die Kalibrierung zusammen; die anderen drei Modi sind die Ablation) — **und der Preis des Fits ist ein dokumentiertes Stellrad, kein Festwert**: der Durchlauf-Zaehler des Offset-Fits (2 Voreinstellung, 7 Reduktionen/35 Shuffles je Block; 4 Durchlaeufe kosten 0,022 dB mehr Blockfehler, 6 sind die Referenz) steht mit seiner Tabelle in der Vorregistrierung (`docs/bench-results/2026-11-11-shear-codec/README.md`) und ist nach oben wie nach unten begruendbar, **bevor** der Arm laeuft — sie korrigieren verschiedene Anteile. **Die Regel, die daraus folgt: wo man die Korrektur anbringt, entscheidet, was sie kostet** — dieselbe Sache ist im Modell billig und im Cache teuer | Ein neuer Codec: 16 **gleichmäßige** Stufen, die Skala **per LS** je 32-Wert-Block (wie die FIT-Variante, aber gleichmäßig), dazu ein **Nullpunkt je Block** — gespeichert als Konstante `c` im fp16 (+2 Bytes je 32 Werte → **5,0 bit/Zelle**; ein 8-Bit-Nullpunkt gäbe 4,66). Der Leser rekonstruiert `v = s·(code−8) + c`. **Die Messung braucht weder Mode 4 noch den Schnellpfad** (die Qualitätsarme laufen über den Verify-Pfad) — der End-to-End-Arm ist also **ohne** Fast-Path-Bau machbar; der Fast-Path (Mode 4 mit der Konstante) ist eine eigene, spätere Stufe | **Der End-to-End-Arm ist die nächste Messung (Stufe S7)** — vorregistriert in `docs/bench-results/2026-11-11-shear-codec/README.md`: (i) die **Block-MSE der Engine-Implementierung** muss die Harness-Vorhersage treffen (Wirksamkeitsgatter), (ii) gepaarte KL gegen `q4lm32w` (der Produktarm) **und** gegen `q4lm32w`+Kalibrierung, (iii) die **Additivität** (der Nullpunkt neben der Kalibrierung), (iv) die **Byte-Rechnung** (4,66 oder 5,0 bit/Zelle im Bulk, plus Ring) gegen das 5,0-Bit-Ziel, (v) die **gleiche Prüfung in beiden Richtungen**: der Shear muss nicht nur besser sein, er muss auch *billiger* sein als sein Ersatz | **M** (ein Codec im Writer/Leser + ein Format-Byte; **kein** Kernel für die Messung) | **P1** (die Messung), **P2** (der Codec als Produktformat) |
+### B. Fenstergeometrie & Kosten
+
+| ID | Titel | Motivation | Vorschlag | Prüfmessung | Aufwand | Prio |
+|---|---|---|---|---|---|---|
+| B1 | Knie-Sweep für S/R bei 128K | 256/64 ist der billigste **getestete** 128K-Arm mit sauberer Qualitätslesung, nicht das gemessene Optimum. StreamingLLMs „wenige Sinks" ist kein Auftrag, R auf 4 zu senken: R=8 war auf dem alten Gitter zu knapp (WP §7.16). R unter 64 erst nach E1, und nur wenn die ersten Zellen überhaupt gelesen werden | S∈{128, 192, 256, 384, 512} × R∈{64, 128} bei 128K. Kein R=4-Arm in dieser Runde | cwe-128k-KL plus Laufzeit (Tab.-4-Methodik) | **M** | **P1** |
+| B2 | ≤3-Bit-Overlay bei 128K | `strata-wp`: die frühen Runden mit dünneren Level-Tabellen zeigten auf dem *R=8*-Gitter einen Byte-/Qualitäts-Crossover bei ≈4,8–5,3 bit/cell — **dieser Crossover wurde später als R=8-Artefakt eingezogen** (bei R=64 waren beide Basen über fünf Formen nicht trennscharf, \|t\| ≤ 1,50) und das alte Byte-Modell war überholt (Paper §8.4, Grok M6). **Was bleibt:** das Fenster trägt kürzere Level-Tabellen bei R=64 ohne messbaren Nachteil; ob ein ≤3-Bit-Base bei 128K konkurrenzfähig ist, ist ungemessen | Arm mit 3-bit-Overlay hinter dem 4-bit-Basisbetrieb bei 128K; Byte-Seite **zwingend mit dem korrigierten Modell** ($R+S+B$ zusätzlich) rechnen, bevor gebaut wird | cwe-128k + Laufzeit-A/B; Gate: ≤ heutige KL oder Memory-Bonus | **M** | **P3** |
+| B3 | Streaming-kompatibler Sink-Pool | Paper §4: R-Zellen bleiben nahe Position 0; ein getrimmter side pool könnte mit einem gestreamten Cache kombinieren, ohne das Silent-Failure-Risiko zu vergrößern | Prototyp: *Sink-only*-Fenster (R ohne S-Ring) unter Streaming; A2-Lockerung als separater Flag mit lauter Doku | Nadel-Tests 32K/128K + Parität; zwingend: Verhalten „laut ablehnen" statt „leise quantisiert" | **M** | **P3** |
+| B4 | `B`-Term-Kosten | Paper §3 (Byte fraction): 0.75 der 0.79 hinzugefügten bit/cell am 128K-Punkt sind der Ringanteil über B=6.144; B=512 ist billiger (4.60 bit, 884 MiB), aber Prefill ≈5× langsamer (105 t/s, Paper Tab. 4) → ein offline/batch-Punkt. Das Byte-Modell für eine kleinere Ring-Größe mit gleicher Latenz ist die Lücke (**statische Analyse**). **Messung 2026-11-01** (`docs/bench-results/2026-11-01-decode-4k/`, decode-sonde bei 4K): die Decode-Verteilung am Antwortpunkt unterscheidet sich zwischen `B = 6.144` (ganzer Prompt exakt im Ring) und `B = 512` (Ring verdrängt, `--prefill 512`) um +0,00005 [−0,00188, +0,00197] — die exakte Lesemenge des Decode-Pfades ist Horizont-bedingt (`R` Sinks + `S` davor), `B` kommt im Lesepredikat nicht vor; bestätigt die Lesung aus `qsa_win_slot` am echten Lauf. Was offen bleibt, ist der Laufzeit-/Byte-Teil. **Byte-Modell neu gerechnet 2026-11-01** (`docs/bench-results/2026-11-01-b4-byte-model/`, offline): die Formel `4,50 + 16·(R+S+B)/L` reproduziert beide Anker exakt (4,60 bei B=512, 5,29 bei B=6144, dazu 151 MB und die 0,75/0,79-Aufteilung; die Konstante 16 ist hergeleitet: 16.384 bit je Ringzeile ÷ 1.024 skalare Zellen je Position). Prototyp fp16-Kopie je Append-Batch statisch bewertet: entlässt am Decode-Punkt 151 MB (138,4 MB gegenüber dem 512er-Arm) ohne Decode-Änderung (Q5 getragen, 128K statisch), ändert nichts an bit/Zelle und nichts an der Prefill-Latenz; „kleinere Chunks bei gleicher Latenz" kaufte quantisierte Reads des eigenen Chunks und ist im Code nicht gebaut. A/B bleibt | Option: die fp16-Kopie nur für den aktuellen Chunk resident halten und nach der Attention wieder freigeben, sodass mehrere kleinere Chunks vorprefillt werden; vorher das Byte-Modell neu rechnen | Byte-Modell neu rechnen, dann Same-Day A/B gegen Paper Tab. 4 | **M** | **P3** |
+
+### C. Systemintegration & Korrektheit
+
+| ID | Titel | Motivation | Vorschlag | Prüfung | Aufwand | Prio |
+|---|---|---|---|---|---|---|
+| C1 | **A4: Volle Zell→Zeilen-Parität** | Offener Review-Gate: ein form-spezifisches Fehllesen bliebe stumm | Dump/Re-Read-Test über alle Shapes (Ring-Wrap, veraltete Tags, Sinks, Batch-Grenzen, Leer) | Parität: bitweise, jede Shape. **Ausgeführt 2026-11-01:** `engine/src/kernels/kv_win_parity.cpp` (ctest `kv_win_parity`, `kv_win_parity_win_all`, `kv_win_parity_refuse` mit WILL_FAIL; gfx1200, ROCm 7.1): die WP-2a-Seitenpool-Form (`kv_append_win` beider Schreibformen + `kv_gather_q4_step` mit und ohne Fenster) gegen ein unabhängig auf dem Host nachgerechnetes `qsa_win_slot`-Prädikat — Ring-Wrap, veraltete Tags (zwei Initialisierungen), Sinks nie bewegt, Batch-Grenze T = S+B legal, überdimensionierter Batch laut verweigert, Rewind-Läufe; bitweise pro Zelle und Kanal. 31.462 Zell-Checks pro Phase (horizon-Phasen) bzw. 5.099 (Inv-Tags+Rewind), 0 Abweichungen in allen vier Phasen und beiden Moden (default und `STRATA_KV_WINDOW_TAG=1`); Laufzeit ≈ 1,7 s bzw. ≈ 1,1 s. Der Verify/MTP-Ring selbst bleibt in `kv_window_parity` | **S** | **P1** |
+| C2 | CUDA/SYCL Build-Coverage | Bisher nur geplante Bauten, keine Messung: SYCL bietet `q4lm8v` ohnehin nicht an, aber der Code soll trotzdem bauen | `nvcc` und `dpcpp` kompilieren + Parität-Suiten | beide Backends grün; `q4lm8v` bleibt SYCL-off | **M** | **P1** |
+| C3 | Hang-Untersuchung (plain 4-bit, 128K-Prefill) | Paper §9 (Threats): 1× nicht reproduzierbarer Hang auf dem *plain*-Arm; 6/6 Re-Runs ohne Reproduktion | Wiederholte 128K-Prefill-Zyklen auf dem plain-Arm mit Logging; nichts übernehmen, solange der Fund nicht reproduziert | Fund als Bug-Report; keine Aussage im Paper | **S** | **P2** |
+| C4 | **Indexer-Auswahl ↔ Overlay verifizieren** | Paper §3, statische Analyse (Grok-Q3): das Overlay zwingt Sinks/Recent nicht in die top-2048-Selektion. Ohne diese Lesung ist E1 nicht interpretierbar | Lesen von `engine/include/strata/kernels/qsa*.hpp` und `engine/src/core/layer.cpp` **auf diesem Branch**. **Gelesen 2026-11-01, statisch (keine Messung):** (i) der Indexer scoret **vor** dem Overlay — die `pooled`-Schlüssel sind fp32-Projektionen von `x` (`indexer.k_proj`, `layer.cpp:1350–1358`; `pooled[b] = rope_neox(rms_norm(mean(raw…)))`, `qsa.hpp:225` aus Zell-0-Rohkeys), nie aus dem KV-Cache, Scoring ohne Overlay-Twin; ein Quantisierungsvertrag für Sinks/Recent kann die Auswahl also nur zweiter Ordnung über `x` verändern, (ii) Zwangspfad **nein**: nur der unvollständige Schwanzblock kommt mit +1e9-Bias immer in die Auswahl (Zellen `j ≥ (n_kv/r)·r`, ≤ 3), Selektionsbreite `min(n_kv, idx_top_k + 3)` → bei 4K 2.051 von ~4.057 Zellen (≈ 51 %). E1s Zähler existiert bereits: `STRATA_KV_SELSTATS` (`prefill.cpp:3430`, zählt in_r/in_s/in_b/outside) | **Zunächst statisch.** Kein Kernel, bevor die Lesung steht | **S (statisch)** | **P1** |
+
+### D. Evaluations-Decke
+
+| ID | Titel | Motivation | Vorschlag | Prüfmessung | Aufwand | Prio |
+|---|---|---|---|---|---|---|
+| D1 | **Zweiter RULER-Task** | Review M2: Nur cwe gemessen | z. B. `niah_multikey` oder `variable_tracking` bei 4K, im Harness | gleiche Segment-/Scoring-Struktur wie heute; Gate: keine qualitative Abweichung von der Heut-Lesung | **S** | **P1** |
+| D2 | **Gepaarte Mittelregion bei 128K** | Review Q4: Tail-Scoring (Paper Tab. 7) übersieht innenliegende Degradation. **Update (Grok):** ein *Ein-Arm*-Innenwert existiert bereits — der WP-Bericht listet für den Window-Arm KL 0,054 auf den ersten 4.096 Positionen und 0,164 auf einem mittleren 4K-Block (Positionen 65.536–69.631); die anderen Arme sind **nicht** auf diesem Block gescoret | Der one-arm-Schnitt steht; fehlen: `int8`-, plain- und fp16-Score auf demselben Block (65.536–69.631), dann gepaarte Differenz | Familien-Logs der WP-Läufe; **welche raw logs dafür noch existieren, ist zu prüfen — die `bench/results`-Ordner des Tree sind leer**, sonst Re-Run mit `--prefill 512` | **S (falls Logs)** | **P1** |
+| D3 | Multi-Turn-A/B | Review Q3: Das Fenster ist für „Chat, der wächst" gebaut, aber nie als solches gemessen (Paper §8.3) | 8–16 lange Prompts; danach Follow-up-Runden, jede +512 Anhänge-Tokens; Fenster gegen `int8` | Prefill/Decode wie Paper Tab. 4 + KL der Antwortregion | **M** | **P2** |
+| D4 | p99-Bootstrap-CI | Review Minor 5: p99 ohne Konfidenzband (Paper §6, Metrics-Notiz) | Bootstrap (10k Resamples) über die vorhandenen Per-Position-Logs | CI-Intervalle in den Tabellen; **offline, keine GPU** | **S** | **P1** |
+| D5 | LongBench-Subset | D1 nachrangig, breiteres Taskfeld | Zwei LongBench-Subsets bei 4K/8K; konkrete Auswahl erst nach D1 | gegen `int8` gemessen, gleiche Methodik | **M** | **P3** |
+| D6 | **KL-Ebene rescoren (Reverse + Vokabular)** | Review M4 (GLM) + Grok M2: Zwei Skalen der Frage sind offen. (a) Die KL der Tabellen ist **top-64-trunkiert, renormalisiert und mit Floor-Substitution** gerechnet (`quant_quality.py`, `kl_between`) — Masse außerhalb der Referenz-Top-64 tritt nur über den 64.-Logprob-Floor ein; die 17-Nat-Positionen in Tab. 8 tragen genau diese Floor-Signatur (Paper §6.3). (b) Die Gegenrichtung $D(\mathrm{arm}\Vert\mathrm{ref})$ wurde nie gerechnet | **Offline-Doppelbewertung auf vorhandenen per-Position-Logs:** (a) Full-Vocabulary-KL statt top-64-trunkiert (neue Scoring-Passage im Harness), (b) gepaarte Differenz der Richtungen | beide Sichten auf denselben Logs; Bericht: sind Rangfolge und/oder 2K/4K/128K-Einordnung stabil unter Definitionwechsel? **Nur Offline, keine GPU** — aber nur, wo raw logs noch existieren (siehe D2-Vorbehalt) | **S** | **P1** |
+
+### E. Was der Status quo gegen die Paper-Referenzen noch nicht beantwortet
+
+Diese Zeilen sind der Literaturabgleich (Abschnitt 6), nicht neue Messungen.
+Jede Literaturzahl darin ist die des zitierten Papiers auf dessen Modell, nicht unsere.
+
+| ID | Titel | Motivation | Vorschlag | Prüfmessung | Aufwand | Prio |
+|---|---|---|---|---|---|---|
+| E1 | **Deckt das Overlay die gelesenen Zellen?** | Der teure Restfehler liegt außerhalb des Fensters: `int8` gewinnt p99, letzte 1.024 und das Ganzsegment, das Fenster schließt nur 34–58 % der Tail-Mean-KL. KIVI/StreamingLLM begründen fp16 auf *recent* und *sinks* nur, wenn die Attention diese Stellen liest. Der top-k-Artikel sagt dasselbe von der anderen Seite: Token-Budget und Bits gehören zusammen. Unser Indexer liest höchstens 2.048 Zellen pro Query; das Overlay ändert die Präzision, nicht die Auswahl (Paper §3, statisch). Ob die ausgewählten Zellen in R+S fallen, ist ungemessen | Eine instrumentierte 128K-Prefill-Passage, nach C4: Anteil der Indexer-Treffer in R, in S, in keinem von beiden, pro QSA-Layer. Kein neuer Kernel. Liegt der Anteil nahe 0, ist B1 (mehr S/R) der falsche Ausgabeort und ein positionsfestes Overlay schützt Zellen, die nicht gelesen werden | Ein Lauf, Zähler, kein KL-Urteil. Bericht: Anteile, nicht eine Qualitätszahl. **Gemessen 2026-11-01** (`docs/bench-results/2026-11-01-e1-128k/`, cwe-8k×2, 130.048 Token, `q4lm32`, Ring 6144): für `n_kv` > 16.384 (42.624 Stichproben, 87,4 Mio Zellen) exakt (R+S) **8,55 %**, `in_b` 40,8 %, außerhalb **50,6 %**, Tag-Lesung **48,6 %** (32K: 11,7 / 59,2 / 29,1 / 70,2); Recall R 20,3 % / S 63,4 % (32K: 28,9 / 86,2); S-Leiter 13,6/21,3/32,4/43,6/52,1 % (32K: 20,3/34,1/52,1/65,6/76,2). Der `outside`-Anteil steigt mit dem Horizont (0 → 3,4 → 18,0 → 50,6 %), der Ring deckt selbst mit Tag-Lesung weniger als die Hälfte; die 10-%-Linie greift. **Qualitätsseite 2026-11-03** (`docs/bench-results/2026-11-03-tag-arm/`): die Tag-Lesung ist am 4K-Decode-Punkt `int8`-Parität (0,00235 gegen 0,00184; gepaart +0,00051 [−0,00068; +0,00170], Top-1 48/48; gegen das Fenster −0,00198, 7/8 Segmente, Intervall mit 0) und am 128K-Punkt **wirkungslos** (−0,00001 nats gegen das Fenster, Block-95 % ±0,0007) — die Abdeckung ist keine Qualitätszahl. **Einsatzbereich 32K/64K 2026-11-03** (`docs/bench-results/2026-11-03-deploy-range/`): nach der vorregistrierten Regel trägt die Tag-Lesung an keiner der beiden Längen (gepaart gegen das Fenster −0,01008 [−0,03335; +0,01238] bzw. −0,00953 [−0,01877; +0,00049], beide Intervalle mit 0, Schwelle 0,0013 nats); ohne die 2 % Floor-Positionen (post hoc) bleibt bei 32K −0,00313 [−0,00471; −0,00144], bei 64K und 128K null. `int8`-Parität wird an keinem der drei Punkte erreicht (getrimmt +0,0021 / +0,0018 / +0,0006). Der 128K-Punkt liest denselben Text ein zweites Mal (Tail Token für Token identisch mit dem 64K-Tail, Verschiebung 65.511) und trennt Länge von Wiederholung nicht. **Wiederholungs-Kontrolle 2026-11-03/04** (`docs/bench-results/2026-11-03-repeat-control/`, Länge fest bei 65,5K, nur die Wiederholung variiert): liest der Tail denselben Text 32.756 Token früher, sinkt `KL(fp16‖int8)` von 0,02669 auf 0,00352 im Mittel (Faktor 0,132) und von 0,000739 auf 0,000055 im Median (0,074), beide Klauseln von `P1` erfüllt. Der Tag-Effekt dreht dabei das Vorzeichen: `tag − win` −0,00743 [−0,01728; +0,00093] frisch gegen **+0,00176 [+0,00024; +0,00359]** wiederholt (4.749 von 6.143 Positionen schlechter). `tag − int8` ist nur frisch nach der Regel geschlossen (−0,00603, Obergrenze −0,00134), getrimmt aber +0,00096 [−0,00003; +0,00196], also floor-getragen. Der 128K-Nullpunkt ist damit überwiegend Wiederholung, kein Längen-Befund. **256K 2026-11-04** (`docs/bench-results/2026-11-03-256k/`, Referenz `int8`, keine fp16-Referenz): `KL(int8‖win)` 0,000405 [+0,0000023; +0,001210] — informativ, aber knapp; `tag − win` −0,000302 [−0,000905; +0,0000001], Regel `Q1` nicht erfüllt (Schwelle 0,0013, Intervall mit 0); `KL(int8‖tag)` 0,000103, Obergrenze +0,000305, nach `Q2` geschlossen; keine Position über 1 nat. Damit ist „kein Hebel über 32K" für 32K/64K/128K/256K belegt. Der Arm ist damit abgeschlossen (2026-11-04): Forschungsarm, kein Default, keine weiteren Läufe geplant | **S** | **P1** |
+| E2 | **`q4_0` auf dem cwe-Harness** | llama.cpp ist der Produktionsanker im Paper (q8_0 / q4_0). Unser `q4_0` ist auf dem Document-Probe und auf `quant_quality` gemessen, nicht auf cwe gegen das Fenster. Das Format existiert; es braucht keinen neuen Kernel | `--kv q4_0` (und, wenn der Harness es schon kann, `k8v4`) auf cwe-4k neben `int8`, plain `q4lm8v` und dem Fenster. Die quant_quality-PPL nicht in diese Tabelle schreiben | Dieselbe gepaarte KL wie Tab. 6. 128K nur, wenn 4K das Fenster nicht schon einordnet | **S** | **P2** |
+| E3 | Heavy-Hitter-Overlay, keine Eviction | H2O sammelt Attention als Heavy Hitters und **wirft** Zellen weg. Wegwerfen bleibt Nicht-Ziel (A-Serie: eine still fehlende Zelle ist ein Fehler). Die nicht-evictive Lesung — fp16 auf gesammelte Treffer, 4 bit auf den Rest, alles adressierbar — ist nur dann ein Kandidat, wenn E1 zeigt, dass R+S die gelesenen Zellen verfehlt | Nicht bauen vor E1. Wenn E1 daneben liegt: opt-in Overlay-Politik, eigener Härtungs-Punkt, laute Verweigerung wenn die versprochene exakte Zelle nicht im Pool ist | cwe-4k gegen 256/64 bei gleichem fp16-Budget, nicht bei gleichem R+S | **L** | **P3** |
+| E4 | **GEAR-Diagnose, kein GEAR-Kernel** | GEAR korrigiert den 4-bit-Rest mit Low-Rank plus dünnen Ausreißern (ihre Messung). Unser Rest nach dem Fenster ist genau die Fläche, die das Overlay nicht deckt. Die 17-Nat-Positionen sind unter der trunkierten KL Floor-Ereignisse, also noch kein Beleg für dünne Ausreißer | Offline, wo per-Position-Logs existieren: ist der Restfehler auf wenige Positionen konzentriert oder über den Bulk verteilt? Kernel nur, wenn die Verteilung dünn ist. Sonst ist mehr Fenster (B1) oder eine andere Basis (A1/A5) die passendere Antwort | Histogramm der vorhandenen per-Position-KL; keine GPU | **S** | **P2** |
+
+## 3. Vorschlag zur Arbeitspaket-Gliederung („WP-3")
+
+Die P1-Punkte zerfallen in zwei Spuren. **Spur 1** ist die Produktentscheidung
+und steht vollständig als Leiter S0–S5 in §7; sie wird hier nicht wiederholt.
+**Spur 2** rundet den Punkt ab, blockiert die Leiter nicht und läuft parallel,
+weil sie offline oder ohne GPU läuft. Diese Gliederung sortiert Spur 2 nach
+Informationsgewinn pro Aufwand.
+
+1. **WP-3a — Wohin das fp16-Geld geht** ist S1 der Leiter (C4 statisch →
+   E1-Zähler). Ohne diese Lesung ist jeder weitere Arm ein Ratespiel; deshalb
+   steht sie in §7, nicht hier.
+2. **WP-3b — Evaluations-Absicherung (offline, wo Logs existieren):**
+   D6 (KL-Ebene rescoren) → E4 (Restfehler dicht oder dünn, dieselbe Log-Lage) →
+   D4 (p99-CI) → D2 (gepaarte Mittelregion; **Vorbehalt: raw logs prüfen, Tree-Ordner sind leer**).
+   *Ergebnis:* robustere Berichtszahlen. D6 und E4 liefern zugleich die
+   Eingangsgrößen für S0 und S1.
+3. **WP-3c — Engineering:** C1 (A4-Parität) → C2 (CUDA/SYCL).
+   *Ergebnis:* Die zwei offenen Review-Gates des Papers schließen. Für Latte 1
+   (Default-Anspruch) blockierend, für Latte 2 (opt-in) nicht.
+4. **WP-3d — Anker und Breite, nur auf Zuruf:** E2 (`q4_0` auf cwe-4k, der
+   llama.cpp-Anker auf demselben Harness), D1 (zweiter RULER-Task; als S5 nur
+   nach einem Latte-Gewinn), D3 (Multi-Turn), B2 (≤3-Bit-Overlay bei 128K,
+   **vorher Byte-Seite korrekt rechnen**; der alte 4,8–5,3-Crossover ist als
+   R=8-Artefakt eingezogen). Keiner davon ist eine Stufe: sie ordnen ein oder
+   begrenzen die Aussage.
+5. **WP-3e — Geometrie, gesperrt bis S1:** B1 (Knie-Sweep 128K, R nicht unter
+   64) läuft nur, wenn S1 zeigt, dass die Sinks/Recent gelesen werden. A3, A4,
+   E3 bleiben hinter ihren Gates.
+
+**Gates für jede Messung:**
+
+- Standard-Parität + Byteidentitäts-SHA auf `int8` unverändert.
+- Messberichts-Zeilen in `docs/bench-results/<datum>-<arm>/` mit Anzahl
+  gemessener Positionen, Rounds, Layout.
+- Update in `docs/DETAILS.md` und hier: Status-Wechsel P1 → erledigt.
+
+## 4. Bewusste Nicht-Ziele
+
+- **Eviction** (SnapKV/H2O/PyramidKV-artig) bleibt draußen: das Fenster ist
+  quantisierungsseitig konzipiert und hält jede Zelle adressierbar (die
+  A-Serie behandelt eine still nicht mehr verfügbare Zelle als Fehler).
+  H2O als Overlay-Politik (E3) ist davon getrennt und hinter E1 gesperrt.
+- **FP8**: Auf Ziel-Hardware (Consumer-AMD über HIP) hat kein FP8-
+  Attention-Kernel — siehe Paper §1. vLLMs „1–2 Punkte" sind ihre Suite,
+  ihr Head-Dim 256, nicht ein KL-Ziel für uns.
+- **Clip nach der Rotation** nicht wieder öffnen: cwe-2k hat es schlechter
+  gemessen (WP §7.11). **Hadamard aus** nicht als Qualitätsarm wieder öffnen:
+  der Gleichstand gilt für `q4lm32` bei 2K/4K (WP §7.9), und ein Speed-Claim
+  über drei gesparte FWHTs ist auf dem Fensterpfad nicht gemessen.
+- **R=4** nicht aus StreamingLLM ableiten. R=8 war auf dem alten Gitter zu knapp.
+- **Keine Default-Änderung ohne Latte 1**: `int8` bleibt Standard, bis ein Arm
+  auf **keiner** robusten Statistik hinter `int8` liegt (§7, Latte 1: 4K gepaart,
+  128K Ganzsegment + p99 + letzte 1.024 auf beiden Texten) **bei ≤ 5,0 bit/cell**
+  **und** alle Korrektheits-Gates grün sind (SHA-Byteidentität, Parität 12/12,
+  Nadel, Setup-Suite, plus C1 und C2). Ein Arm, der nur Latte 2 erreicht (Parität
+  innerhalb der Margen bei ≤ 6,0 bit/cell), wird als opt-in Modus ausgeliefert und
+  ändert den Default nicht.
+
+## 5. Quellen
+
+Paper-Messbasis: `docs/DETAILS.md` (§ „KV cache quantization"; u. a. der
+zweite 128K-Text und der SHA-Gate-Wortlaut),
+`docs/KV_QUANT_WORKPACKAGE.md` (Branch `KV_QUANT_research`; §5.1 Schreiber-Platz,
+§7.9 Hadamard-Gleichstand, §7.11 Clip-Urteil, §7.12–§7.21 Fenster-Historie,
+K-vs-V-Falsifikation und Crossover-Einzug),
+`docs/bench-results/2026-09-27-kv-q4/`,
+`docs/bench-results/2026-10-24-needle-window/` (Nadel-Paar int8 gegen 256/64, Engine 0.1.47).
+**Vorbehalt (verifiziert 2026-10-24):** die Window-Laufordner
+`docs/bench-results/2026-10-14-kv-q4lm32/`, `2026-10-17-kv-wp2a-window/`,
+`2026-10-17-kv-wp2b-window3bit/`, `2026-10-18-kv-runtime-ab/` und
+`2026-10-18-kv-wp2b-oscar-knee/` liegen in diesem Tree **leer** (0 Dateien);
+der Workpackage-Bericht auf dem Research-Branch ist die Referenz, keine
+per-Position-Raw-Logs (deshalb der D2/D6/E4-Logs-Vorbehalt).
+Reviews: GLM-5.3-Selbst-Review (Blindstellen in dessen §8) und der
+grok-4.7-Desk-Review. Beide Dateien liegen **außerhalb dieses Repos**; zitiert
+wird hier nur, was in Paper oder Messordnern belegt ist. Literatur: die
+Bibliographien von `KV-Window-Hardening.tex` und
+`KV-mean-centered-calibrated-quantization.tex`, nicht die
+Draft-Formulierungen der Reviews (dort steht u. a. noch „4-bit K / 8-bit V" und
+der GEAR-Titel „Serving"). Die **Margen in §7 (Latte 1) stehen nur hier**, nicht
+im Paper: das Paper nennt Latte A (Parität bei ≤ 6,0 bit/cell, opt-in) und
+Latte B (Default-Wechsel unter 8,25 bit/cell); §7 verschärft beide auf
+**5,0 bit/cell mit den K-Margen**. Diese Zahlen sind eine Arbeitsfassung und
+werden mit dem ersten Lauf eingefroren.
+**Aufwand und Prioritäten sind Schätzungen (statische Analyse), keine Messwerte.**
+
+## 6. Literaturabgleich (Paper-Bibliographie gegen den Status quo)
+
+Jede Zeile benutzt nur, was das Paper der Arbeit zuschreibt, plus die
+WP-Befunde oben. Literaturzahlen sind nicht unsere. Der Survey im Paper
+(Stand nach dem 2026-10-25-Ausbau) zitiert zusätzlich die nächsten
+Mechanismen: SKVQ, IntactKV, RotateKV, PM-KVQ, SAW-INT4, SpinQuant,
+Palu, ShadowKV, Quest, DuoAttention, RazorAttention, NSA, QServe,
+Scissorhands, ChunkKV, und die Gegenrichtung „keys want the bits"
+(`spectralkv`). Die Leiter in Abschnitt 7 ändert das nicht.
+
+| Referenz | Was davon bei uns schon entschieden ist | Was daraus noch prüfbar ist |
+|---|---|---|
+| StreamingLLM (Sinks) | Das Overlay behält die ersten R Zellen. R=64 ist das kurze-Kontext-Knie, das den Fenster-Arm an `int8` heranbringt; R=8 war zu knapp | Nicht „weniger Sinks". Erst E1: werden die ersten Zellen vom Indexer gelesen? |
+| KIVI (per-channel K, per-token V, fp16-Recent) | Wir haben das Recent-Residual (S), nicht die Kanalachse. Der Bit-Kontrast „K sensitiver als V" ist falsifiziert | A1, und zwar **vor** FWHT. Das Recent-Residual trägt nur, wenn E1 die letzten S Zellen in der Auswahl findet |
+| KVQuant (per-channel, pre-RoPE, non-uniform; <0,1 PPL auf ihren Texten) | Platzierung ist post-RoPE (statisch). Clip nach FWHT schadet. Ihre PPL ist kein KL-Ziel | A5 (andere Tabelle, nicht Clip). A3 nur hinter A1 |
+| GEAR (4 bit + Low-Rank + dünne Ausreißer) | Unser Restfehler ist die Fläche außerhalb des Fensters. Die 17-Nat-Stellen sind Floor-Ereignisse, kein Ausreißerbeleg | E4, offline. Kein Kernel vorher |
+| QuaRot, RotateKV | FWHT an/aus auf `q4lm32`, 2K/4K: Gleichstand. Die Rotation trägt dort keine messbare KL | Nicht wiederholen. Speed (drei FWHTs) auf dem Fensterpfad ist ungemessen und bei Decode-in-Streubreite kein P1 |
+| QuIP# / RHT (Hadamard + Zufalls-Vorzeichen), RHT-Theorie 2026 | Die Rotation selbst trägt bei uns keine messbare KL (WP §7.9). Der RHT ist die sign-only-Variante; das volle FHRT (mit Permutation) benutzt im LLM-Bereich niemand | **A7** — nur als billiger Parity-Test, Erwartung ≈ 0. Die Permutation wäre adaptiv (RotateKV, OSCAR), also mit Kalibrierpreis |
+| FlagRot (2026-11-02) | „Rotation hilft nicht immer": sie glättet ein stacheliges Teilstück und gibt einem flachen einen neuen Peak — genau der Schatten unseres Gleichstands (Crest pre 3,72 < post 3,93) | Stützt die A7-Erwartung ≈ 0. Die Entscheidung je Teilstück (Flag-Bits) ist ein anderer Mechanismus, kein Codec-Umbau |
+| OptR / llama.cpp-Mean-Centering (2026) | Mean-Centering ist softmax- **und** ausgabe-erhaltend; die Basis-Falle ist dokumentiert (ein Versatz aus der falschen Basis verschlechtert messbar) | **A6** — der Kandidat, den die Literatur 2026 aufmacht; bei uns durch den S2-Offset belegt (Median 0,2673 gegen 0,0044 Rauschen) |
+| KVTuner (3,25–4,0 bit, ihre Modelle) | Globales Format. Nur 12 Layer haben diesen Cache | A4, hinter einem per-Layer-Signal, das die Output-KL nicht hergibt |
+| PyramidKV (mehr Budget unten; 12 % Cache ≈ voll auf LongBench, ihre Zahl) | Dieselbe Lücke: kein per-Layer-Fehler | Nicht als Sweep. Hängt an demselben Signal wie A4 |
+| SnapKV, H2O | Eviction ist Nicht-Ziel | E3 nur als Overlay, nur nach E1 |
+| top-k (Token gegen Bits) | Nicht die Begründung für 16/8. Die Bit-Richtung ist falsifiziert | E1: das Token-Budget ist bei uns die Indexer-Auswahl, die Bits sind das Overlay |
+| llama.cpp q4_0 / q8_0 | `q4_0` ist auf anderen Protokollen gemessen, nicht auf cwe gegen das Fenster | E2 |
+| vLLM FP8 | Kein FP8-Attention-Pfad auf der Zielkarte. Ihre 1–2 Punkte sind suite-spezifisch | Nicht verfolgen |
+
+## 7. Arbeitsplan: besser als `int8` bei 5 bit/cell
+
+Die Leiter steht seit dem 2026-10-25 in zwei Papers: `KV-Window-Hardening.tex`
+(Abschnitt „Avenues for Improvement", zwei Latten A/B) und
+`KV-mean-centered-calibrated-quantization.tex` (Status und Arbeitsplan, das
+5,0-Ziel mit Kriterien K1–K6 und derselben Leiter S0–S5). Dieses Kapitel ist
+die Arbeitsfassung und **verschärft** das Ziel: **5,0 bit/cell** — weniger Speicher
+als das heutige Fenster (5,29) bei besserer Qualität als `int8` (8,25). Das ist
+die einzige Fassung, die den Branch-Namen trägt: `int8`-Qualität, nicht „etwas
+weniger schlecht als `int8`".
+
+### Warum die alte Latte zu schwach war
+
+Die alte Fassung verlangte Überlegenheit und ließ 8,25 bit/cell zu. Ein Arm, der
+`int8` bei 8,2 bit/cell schlägt, spart 0,6 % Speicher — ein Sieg ohne Produkt.
+Die Byte-Grenze ist das, was aus einem Qualitätsergebnis ein Produkt macht.
+
+Umgekehrt fehlte der Rückfall. Ein Arm, der `int8` nicht schlägt, aber bei
+6,0 bit/cell innerhalb einer Marge bleibt, ist dem heutigen Fenster (5,29 mit
+gemessenem Rückstand) vorzuziehen und als opt-in auslieferbar. Diesen Rückfall
+hält das Paper als Latte A fest; er bleibt hier als Latte 2 stehen, aber er ist
+nicht das Ziel.
+
+Und 5,0 ist keine Rundung von 5,29: es sind 6 % weniger Speicher als das
+heutige Fenster und 39 % weniger als `int8` (Rechenweg unten). Wer 5,0 erreicht,
+hat das Fenster nicht verbessert, sondern ersetzt.
+
+### Das Ziel (Latte 1)
+
+Ein Arm gewinnt nur, wenn **alle** Punkte gelten. „Besser als `int8` in allen
+Bereichen" heißt: `int8` liegt auf keiner der robusten Statistiken vorn. Ein
+Gleichstand auf einer Statistik ist kein Verlust (die Rate ist 39 % niedriger),
+ein Rückstand ist einer.
+
+| # | Punkt | Schwelle | Anker (heute) |
+|---|---|---|---|
+| K1 | cwe-4k, gepaarte Mean-KL (Arm − `int8`) | Differenz ≤ 0, obere 95-%-Grenze < **+0,001 nats**, `int8` führt in höchstens 4 von 8 Segmenten | ohne Centering +0,00402, t = −3,55, `int8` führt in 7/8; **mit Centering (A6) +0,00184, t = −1,85, `int8` führt in 2/8** (zwei von drei Bedingungen erfüllt); **der Produktcodec 16/16 + Fenster (A2) +0,00002, t = −0,02, `int8` führt in 5/8** — der Arm ist ein **statistischer Gleichstand** (per Position [−0,00240, +0,00237]). **Die Bedingung „obere Grenze < +0,001" ist auf diesem Korpus unerfüllbar** (die Paritätsauflösung liegt bei 0,00200) und wird als solche vermerkt, nicht geändert |
+| K2 | cwe-128k, **beide** Texte, Ganzsegment-KL | ≤ `int8` auf beiden Texten | +0,02597 (Text 1), +0,01089 (Text 2). **Gemessen 2026-11-11 (Text 1 = `s00`, 131.060 Positionen):** der 16/16-Produktarm **+0,00741** (gepaart, t = +4,80, CI [+0,00439, +0,01044]) → **K2 fällt**; mit Kalibrierung +0,00427 (t = +2,91); der 8/8-Fensterarm +0,01090 ohne und +0,01044 mit Kalibrierung. Text 2 ist **zurückgestellt** |
+| K3 | cwe-128k, **beide** Texte, p99 und letzte 1.024 | ≤ `int8` auf beiden Texten und beiden Statistiken | p99 +0,01322 / +0,00450; letzte 1.024: 0,00444 (Fenster) gegen 0,00265 (`int8`). **Gemessen 2026-11-11 (Text 1):** der p99 des 16/16-Arms **2,0583** gegen `int8`'s **1,6615** (+0,3968) → **K3 fällt**; mit Kalibrierung 1,9240 (ebenfalls über `int8`); der 8/8-Fensterarm 2,1567 ohne, 2,3328 mit Kalibrierung |
+| K4 | effektive Rate bei 128K | ≤ **5,0 bit/cell** (Byte-Modell, vor dem Lauf aufgeschrieben) | 39 % unter `int8`, 6 % unter dem Fenster |
+| K5 | Laufzeit | Prefill höchstens **10 % unter `int8`** (526 t/s), Decode in der Streubreite | Setzung; B=512 zeigt −80 %, das Risiko ist real |
+| K6 | Gates | `int8`-SHA unverändert, Parität 12/12, Nadel 6/6 + 6/6, Setup-Suite, plus C1/C2 | wie heute |
+
+Die 10 % in K5 sind eine Setzung, keine Messung: das heutige Fenster liegt bei
+528 gegen 526 t/s (+0,4 %), also praktisch gleich; ein Ring, der ein Drittel
+kleiner ist, kann Prefill kosten, und dieser Preis muss begrenzt sein.
+
+**Latte 2 (Rückfall, opt-in).** Wenn Latte 1 nicht erreichbar ist, bleibt der
+Rückfall aus dem Paper: Parität innerhalb der halben heutigen Abstände bei
+≤ 6,0 bit/cell — 4K-Mean ≤ +0,002, Ganzsegment ≤ +0,013 auf beiden Texten, p99
+≤ +0,007 auf beiden Texten, Rate ≤ 6,0. K5 (Laufzeit) und die Gates aus K6 ohne
+C1/C2 gelten auch hier. Ein Arm, der das erfüllt, ersetzt das heutige Fenster
+als opt-in Punkt und lässt den Default bei `int8`. Latte 2 ist kein Ziel, sondern
+die Untergrenze, unter der der Branch nichts ausliefert.
+
+### Das Byte-Budget bei 5,0 (Rechnung, keine Messung)
+
+Das Byte-Modell des Papers (§3.2): bits/cell ≈ 4,50 + 16(R+S+B)/L, mit L =
+131.072 bei 128K. Die 4,50 sind die 4-bit-Basis (576 B je Zelle und Layer); der
+zweite Term ist der residente Ring, der die Zellen exakt hält. Daraus:
+
+- Bei 5,0 bleiben für den Ring **0,50 bit/cell** → **R+S+B ≤ 4.096 Zellen**.
+  Mit 256/64 ist das B ≤ 3.776 gegen heute 6.144; der Ring schrumpft damit von
+  6.464 auf 4.096 Zellen (**−37 %**), wenn er fp16 bleibt.
+- Der Ring muss aber nicht fp16 sein. `int8` ist das Qualitätsziel, nicht fp16:
+  ein Ring aus int8-Zellen (8,25 bit inkl. Skala) erlaubt **7.943 Zellen** —
+  23 % mehr als heute — bei 5,0. Ein 12-bit-Ring erlaubt 5.461 (−15 %).
+- Die Basis kann nicht unter 4,50: 1.024 Werte je Zelle und Layer ergeben bei
+  4,5 bit je Wert 576 Byte (32 Blöcke à 18 Byte), und weniger Level passen nicht
+  in dieselben 4 bit.
+
+Damit hat das Ziel zwei Stellschrauben, und beide sind nötig: **weniger oder
+billigere exakte Zellen** (Byte-Seite) und **bessere Bulk-Kodierung** (Qualität
+für den Rest). Keine allein reicht: ein kleinerer Ring verliert die
+Tail-Statistiken, die `int8` heute gewinnt; ein besserer Bulk ohne Byte-Seite
+bleibt über 5,0.
+
+Nebenbei: der Break-even gegen `int8` sinkt mit dem kleineren Ring von ≈27.600
+auf ≈17.500 Zellen. Setup bietet das Fenster ab 32K an; daran ändert sich
+nichts, aber der Punkt wird auch bei 24K schon billiger als `int8`.
+
+### Was das Produkt davon hat (Rechenweg, linear aus Tab. 4)
+
+Die zwei gemessenen Punkte: `int8` 8,25 bit → 1.584 MiB, Fenster 5,29 →
+1.016 MiB bei 128K (B=6.144).
+
+- 5,0 bit/cell → ≈ **960 MiB**, also **≈ 624 MiB (39 %) weniger** als `int8`
+  und **56 MiB (6 %) weniger** als das heutige Fenster.
+- Expert-Cache: 416 Slots je 568 MiB (Tab. 4) → **≈ 457 Slots mehr** als `int8`.
+- Der Gewinn ist Speicher und Slots, kein Speed: Prefill muss in der 10-%-Grenze
+  bleiben (K5), Decode liegt heute in der Streubreite.
+
+### Schon tot für dieses Ziel
+
+Nicht noch einmal messen: Clip nach FWHT (WP §7.11), Hadamard an/aus als
+Qualitätsarm (WP §7.9), K-vs-V-Bit-Story (t +0,05), 3 bit ohne Fenster
+(+51 % KL, t −3,60), R=8, Nadel (gesättigt, keine Trennung), PPL (dreht die
+Rangfolge um). cwe-2k „erreicht `int8`-Niveau" (WP §7.16) ist kein 4K- und kein
+128K-Gewinn. **Neu hier:** ein größerer fp16-Ring als Weg zu `int8` — bei 4K
+Gleichstand mit 256/64 (t +0,02), bei 128K nie qualitativ gemessen, und
+arithmetisch bei 5,0 auf 4.096 Zellen begrenzt (oben).
+
+### Leiter S0–S5
+
+Jede Stufe hat eine Frage und einen Kill. Die nächste Stufe startet nur, wenn
+die vorherige nicht getötet hat. Das Risiko ist nicht „der Arm könnte
+scheitern" — Scheitern ist der gewünschte Ausgang —, sondern „Engine-Default
+und `int8`-SHA haben sich bewegt". Jede Stufe ist opt-in.
+
+| Stufe | Frage | Prüfung | Kill | Kosten |
+|---|---|---|---|---|
+| **S0** | Ist die Latte selbst stabil? | Ein vorhandenes cwe-4k-Paar (`int8`, Fenster 256/64, plain) zusätzlich zur heutigen KL unter einer zweiten Definition rescoren (top-256 oder volles Vokabular), **auf denselben Positionen**, Vorzeichen mitberichten. Das Histogramm derselben Positionen ist E4, kein eigener Lauf | Rangfolge oder Vorzeichen drehen → kein Kernel, bis 128K unter derselben Definition neu gelesen ist; K1/K2 sind dann undefiniert | **Nicht scorer-only:** die per-Position-Logs (top-64) liegen in diesem Tree und auf `KV_QUANT_research` nicht vor (dort nur `compare.json`/`paired.json`, Segment-Aggregate). Ein 4K-Lauf je Arm mit `STRATA_LOGPOS_TOPK=256` (3 Arme), Auswertung offline |
+| **S1** | Sitzt das fp16-Geld auf Zellen, die der Indexer liest? | C4 (statisch, dieser Branch), dann ein 128K-Prefill-Zähler: Anteil der Indexer-Auswahl in R, in S, in keinem von beiden, je QSA-Layer. Dazu E4: ist der 4K-Restfehler dicht oder dünn? | < ½ der Treffer in R+S → das positionsfeste Overlay ist der falsche Ausgabeort; **B1 läuft nicht**, und E3 (auswahlfolgendes Overlay) wird der Kandidat — unter derselben Regel „eine versprochene exakte Zelle, die den Pool verlassen hat, ist ein Fehler". Dichter Rest → kein GEAR-Kernel | Ein Zählerlauf, kein neues Format. **Update 2026-11-01** (`docs/bench-results/2026-11-01-e1-128k/`): die 128K-Hälfte ist gemessen — exakt 8,55 %, `in_b` 40,8 %, außerhalb 50,6 %, Tag-Lesung 48,6 %, Recall 20,3/63,4. Die registrierte Lesung (Recall und d-Fächer, nicht der unerreichbare 50-%-Satz) steht damit für beide Längen: **B1 bleibt geschlossen**, die Leiter kauft bei 128K weniger pro S (S=8.192 nötig für 52,1 %; der Ring mit B=512 wiegt dann 5,57 bit/Zelle, mit B=6.144 6,26 — teurer als der Produktpunkt). Der Hebel bleibt die Tag-Lesung (48,6 % exakt statt 8,6 %, null Bytes); ihr Qualitätsbeweis ist seit 2026-11-03 geführt und fällt geteilt aus: am 4K-Decode-Punkt `int8`-Parität (gepaart +0,00051 [−0,00068; +0,00170]), am 128K-Punkt wirkungslos (−0,00001 nats, Block-95 % ±0,0007) — `docs/bench-results/2026-11-03-tag-arm/`. Im Einsatzbereich 32K/64K (`docs/bench-results/2026-11-03-deploy-range/`) trägt sie nach der vorregistrierten Regel an keiner der beiden Längen (32K −0,01008 [−0,03335; +0,01238], 64K −0,00953 [−0,01877; +0,00049], beide mit 0); der einzige belastbare Rest ist 32K getrimmt (−0,00313 [−0,00471; −0,00144], post hoc, ohne die 2 % Floor-Positionen), und der 128K-Nullpunkt ist mit einer zweiten Lesung derselben Passage konfundiert. `int8`-Parität an keinem der drei Punkte. `B1` bleibt geschlossen; ein Auslieferungs-Default ist der Tag nicht. Die Wiederholungs-Kontrolle 2026-11-03/04 (`docs/bench-results/2026-11-03-repeat-control/`) erklärt den 128K-Nullpunkt: derselbe Tail 32.756 Token früher gelesen senkt `KL(fp16‖int8)` um Faktor 0,132 im Mittel und 0,074 im Median, und der Tag wird dort signifikant schlechter als das Fenster (+0,00176 [+0,00024; +0,00359], 4.749 von 6.143 Positionen); frisch ist er getrimmt besser (−0,00130 [−0,00244; −0,00009], post hoc). Der Tag bleibt ein Forschungsarm, kein Default. Am 256K-Punkt (`docs/bench-results/2026-11-03-256k/`, Referenz `int8`, keine fp16-Referenz) ist der Ring informativ (`KL(int8‖win)` 0,000405, untere Grenze 2,3·10⁻⁶ über 0), der Tag trägt nicht (`tag − win` −0,000302, Intervall mit 0, Schwelle 0,0013) und die Lücke zu `int8` ist nach der Regel geschlossen (0,000103, Obergrenze +0,000305). Der Arm ist damit abgeschlossen (2026-11-04): Forschungsarm, kein Default, keine weiteren Läufe geplant |
+| **S2** | Trägt die Kanalachse **vor** der Rotation? | Zweite Momente der K-Kanäle vor und nach FWHT, getrennt für die 64 rotierten und die 192 unrotierten Dimensionen, 12 QSA-Layer. Keine Quantisierung ändern | Vor der Rotation kein schwererer Tail als danach → A1 nicht bauen; KIVIs Achse ist in dieser Pipeline nicht da | Debug-Statistik hinter einem Env-Flag, `int8` unberührt |
+| **S3** | Reicht das billige Bulk-Werkzeug? | cwe-4k, gepaart gegen `int8`, in dieser Reihenfolge: (a) 16/16 gegen 8/8 im vorhandenen Format (A2), (b) alternative 16-Level-Tabelle (A5), (c) nur wenn S2 überlebt: per-channel K vor FWHT (A1). Jeder Arm berichtet K1, K4 und bit/cell | Kein Arm erreicht K1 bei ≤ 6,0 bit (der weicheren Latte 2, also erst recht nicht bei 5,0) → der Bulk ist nicht der Hebel; **kein 128K**, zurück zu S1 (Overlay-Ort) oder Abbruch. Ein Gleichstand zählt als Kill | (a)/(b) kein neuer Kernel; (c) opt-in Pipeline-Änderung mit SHA-Gate |
+| **S4** | Welche 5,0-Komposition hält? | Nur der S3-Sieger als Bulk, drei Byte-Varianten bei 128K, beide Texte, alle K-Statistiken, Byte-Modell vorher: (a) fp16-Ring, R+S+B=4.096 (B=3.776); (b) int8-Ring, R+S+B=7.943 (B=7.623); (c) 12-bit-Ring, R+S+B=5.461 (B=5.141) | Keine Variante erfüllt K1–K5 → Latte 1 ist nicht erreichbar; dann Latte 2 prüfen (Parität bei 6,0) oder negatives Ergebnis. Prefill unter 90 % von `int8` → Variante tot, auch wenn die Qualität passt | (a) nur Konfiguration; (b)/(c) neuer Ring-Tier im Schreiber/Leser, eigener Härtungspunkt |
+| **S5** | Ist der Gewinn nicht cwe-spezifisch? | Nur nach einem K1–K6-Gewinn: zweiter RULER-Task bei 4K (D1), dieselben Kriterien | Verliert dort → kein Auslieferungs-Claim; der Arm bleibt Forschungsarm | Ein Task, nicht LongBench |
+| **S6** | **Kann das ausgelieferte Format den Prompt-Schnellpfad benutzen?** | **Ja — und die Schuld ist unsere.** Die Produktformate (`q4lm32w`, ggf. + Centering) sind **Level-Tabellen-Formate**, und Mode 4 lehnt sie ab (`qsa_prompt_attn.cu:2524`): fest verdrahtet ist die Wertabbildung `code − 8` — **der Kernel sagt selbst:** *„Mode 4 could carry the level table the way it carries the int8 codes; **that is owed if a level-table format ships**."* **Der gemessene Preis auf dieser Karte: 2,25× Prompt-Lesedauer** (32K-Nadel, freie Maschine: `int8` 51,7 s, `q4_0` 50,0 s, `q4lm8v` 116,4 s — der Lloyd-Arm läuft über den Decode-Kern als Rückfall). **Das ist ein Kernel-Struktur-Preis, kein Matrix-Core-Preis** (die WMMA-Achse ändert die Prompt-Raten auf dieser Karte nicht: 479,4 → 478,0 tok/s bei 4k, 565,4 → 565,5 bei 16k; `docs/bench-results/2026-11-08-wmma-int8/`); die Matrix-Core-Achse ist ein **Decode**-Hebel und wird als **eigener kleiner Punkt** geführt („durchgängig belegen oder streichen"), nicht in dieser Stufe. **Der Architekturentscheid ist gemessen (2026-11-11, `tools/kv_affine_price.py` auf den Engine-Zellen: 12 Layer, 1.572.480 Blöcke) — drei Preise in drei Währungen:** **(a) der Tabelleneintrag im Operandenbau** (`level[code]` statt `code − 8`; der kleine Kernel-Change, den der Kernel selbst verspricht, mit den LUT-Optimierungen der Codebook-Familie: Pair-LUT, SoA-Layout, GQA-Tiling) — **0 dB Qualitätsverlust**, aber ein Lookup je Element (im compute-gebundenen Prefill zahlt die Dequantisierung); **(b0) den Codec affine machen ohne Nullpunkt** (uniformes Gitter, Skala per LS, Nullpunkt 0) — **kein Kernel-Change whatsoever**, aber **−0,43 dB** gegen die beste Lloyd-Variante (−0,13 dB gegen `lloyd16+max`); **(b1) den Codec mit einem verschobenen uniformen Gitter und per-Block-Nullpunkt affine machen** (der klassische Compander-Zug: Max 1960; μ-Law/A-Law als die Ingenieursform; zugleich die *Nullpunkt*-Idee der Literatur, OffQ, KIVI) — **+0,86 dB besser als die Lloyd-Tabelle** (der „Scherungspreis" 1,29 dB), aber **0,5 bit/Zelle extra** (4,5 → 5,0; mit einem 5-Bit-Nullpunkt 4,66) **und** eine Konstante je Block im Kernel (K: die Query-Gruppensummen, je Kopf einmal; V: eine gewichtete Summe je Gruppe). **Der Grund für den Gewinn ist der Bias:** die rotierten K/V-Zeilen tragen einen festen Kanal-Offset, ein um null zentriertes Gitter verschenkt deshalb Range (der Nullpunkt liegt im Median 0,94 Schritte vom Gitterzentrum). **Der per-Block-Nullpunkt entfernt den Bias pro Block — ohne Tabelle, ohne Basisdisziplin, ohne Artefakt** (die per-Kanal-Kalibrierung holt 2,01 dB, der per-Block-Nullpunkt 1,29 dB; **beide zusammen 3,18 dB** — sie sind also *kein* Ersatz füreinander). **Keine End-to-End-Aussage:** die Block-MSE übersetzt sich nicht 1:1 in nats; die einzige vermessene Brücke (1,10 dB Block ↔ +0,00400 nats, der Level-Split) ist eine Beobachtung, kein Gesetz. **Konsequenz:** (b1) ist eine **eigene Codec-Stufe** (ein Nullpunkt je 32-Wert-Block, ein Byte im Format, ein End-to-End-Arm) und **nicht** Teil von S6; S6 bleibt der Fast-Path, und der Architekturentscheid zwischen (a) und (b0) fällt **zugunsten von (a)** (0 dB Verlust, ein Lookup), solange der Lookup-Preis im Prefill nicht gemessen ist. **Gatter:** (i) die Prompt-Lesedauer des Produktarms ≤ 1,15× der des `int8`-Arms (32K-Nadel, gleiche Geometrie, freie Maschine, drei Tiefen); (ii) **bitweise Parität** gegen den heutigen Decode-Pfad (`qsa_prompt_attn_parity`); (iii) die **Qualität des Produktarms unverändert** (gepaarte KL-Differenz ≤ 0,0002 gegen den Produktarm ohne Fast-Path — der Fast-Path darf **nichts** kosten). **Kill:** ist der Uniformitäts-Preis groß **und** der LUT-Weg im Prefill teurer als der Decode-Kern-Fallback, bleibt der Preis von 2,25× und steht als Eigenschaft des Formats im Paper | **M** (ein Kernel-Change + Parität; die Entscheidung selbst ist ein Host-Test) | **P1**, sobald ein Level-Tabellen-Format ausgeliefert wird (das ist mit `q4lm32w` der Fall), sonst **P2** |
+| **S7** | **Trägt der gescherte Codec end-to-end?** | **Das ist die offene Frage nach dem Blockmaß — und die erste, die nicht durch eine weitere Blockzählung zu beantworten ist.** A9 hat gemessen: das verschobene uniforme Gitter mit per-Block-Nullpunkt ist im Blockmaß **0,86 dB besser als die Lloyd-Tabelle** (bei +0,5 bit/Zelle). Ob das im Modell ankommt, ist eine andere Frage: die Block-MSE übersetzt sich nicht 1:1 in nats, und die einzige vermessene Brücke der Kampagne ist *ein* Punkt (1,10 dB Block ↔ +0,00400 nats, der Level-Split, t = +2,99) — eine Beobachtung, kein Gesetz. **Der Test ist billig, weil die Messung keinen Fast-Path braucht:** die Qualitätsarme laufen über den Verify-Pfad, und der Codec wird im Writer und im Leser gebaut (ein Nullpunkt je Block, +2 Bytes je 32 Werte) — Mode 4 bleibt unberührt. **Der Arm wird gegen drei Anker gepaart**, weil die Frage drei Teilfragen hat: gegen `q4lm32w` (der Produktarm — der Shear muss **besser** sein), gegen `q4lm32w`+Kalibrierung (der Shear muss **auch neben** der Kalibrierung noch etwas holen — die Blockmessung sagt 1,18 dB) und gegen `int8` (der Anker). **Der Wirksamkeitsschalter** ist ein **eigener** Codec mit einem **Schalter** (Nullpunkt an/aus), damit die beiden Arme **nur** im Nullpunkt verschieden sind — die Wirkung des Nullpunkts ist damit end-to-end **isoliert** statt mit dem Skalen-Fit vermischt. **Gatter (vor dem Lauf festgelegt):** (i) die **Block-MSE der Engine-Implementierung** muss die Harness-Vorhersage treffen (Wirksamkeitsgatter: ein Fehler in der Rekonstruktion fällt sofort auf), (ii) die gepaarte KL gegen `q4lm32w` muss **kleiner** sein (sonst ist der Shear im Modell nichts), (iii) die gepaarte KL gegen `q4lm32w`+Kalibrierung muss **kleiner** sein (sonst ist er ein Ersatz für die Kalibrierung statt eine Ergänzung), (iv) der **Top-1** (exakter McNemar) und der **p99** dürfen nicht schlechter werden, (v) die **Byte-Rechnung** muss die 5,0-Bit-Ziel tragen (4,66 mit einem 8-Bit-Nullpunkt, 5,0 mit fp16) — sonst ist der Shear kein Produktkandidat, sondern nur eine Messung. **Kill:** ist der Arm end-to-end nicht besser, ist A9 eine Block-Eigenschaft ohne Modellwirkung und wird **nicht** weiterverfolgt (der Fast-Path S6 bleibt dann der einzige Weg, den Lloyd-Arm preislich zu machen) | Ein Codec im Writer (`engine/src/kernels/cuda/kv_q4.cu`: 16 gleichmäßige Stufen, Skala per LS, Nullpunkt je Block als Konstante `c`) und im Leser/Verify-Pfad (`v = s·(code−8) + c`), ein Format-Byte im Snapshot (+64, ein zentrierter Zustand darf nicht in einen unzentierten zurückgespielt werden), ein Schalter `STRATA_KV_ZERO=1`, und ein Paritätstest (`kv_q4_parity`), der die Rekonstruktion gegen die Harness-Vorhersage prüft. **`int8` byte-identisch**, alles opt-in. **Kein Kernel für Mode 4** in dieser Stufe | **M** | **P1** |
+
+**Stand 2026-10-25, gemessen** (`docs/bench-results/2026-10-25-s0-kl-support/`,
+`…-s1-selstats/`, `…-e4-error-shape/`). S0: Rangfolge und Vorzeichen halten unter
+top-64 und top-256, der Kill feuert nicht. E4: der Rest ist dünn (schlimmstes 1 %
+trägt 71–86 % der KL) und ein Kopf-Phänomen (88–90 % sind Ränge 1–8); GEAR ist
+nicht getötet und nicht gestartet. S1 lief bei 32K, nicht 128K. Die 50-%-Schwelle
+ist an diesem Punkt arithmetisch unerreichbar (Breite 2.051, R+S = 320, Decke
+15,6 %). Gemessen bei `n_kv` > 16.384: 11,7 % der Treffer werden exakt gelesen,
+Recall von S 86 %, von R 29 %. 98,9 % der Treffer im bezahlten Ring haben noch
+ihren Tag; ein Tag-Read würde 70,2 % der Selektion exakt lesen, bei denselben
+Bytes. **B1 läuft nicht, E3 in Fenstergröße auch nicht** — beide sind von diesem
+Read dominiert. Der nächste Arm ist der Read selbst, opt-in, Default unverändert,
+Qualität auf cwe-4k gegen das heutige Fenster und gegen `int8`. Kein
+Qualitätsanspruch aus dem Zähler. Der Score-Rand (0,01 % der Spreizung) trägt
+keinen Score-Pool.
+
+S2 lief am 2026-10-27 auf cwe-4k (32.746 Token je QSA-Layer, 12 Layer, batched Prefill,
+`docs/bench-results/2026-10-27-s2-channels/`). Die Kanalachse **vor** der Rotation ist nicht schwerer als
+danach: Exzess-Kurtosis im Mittel −0,18 pre gegen −0,14 post, Crest 3,72 gegen 3,93, und die
+Vorzeichenprobe ist ein Münzwurf (52,5 % der 3.072 Kanäle). **Der Kill feuert, A1 wird nicht
+gebaut.** Die Ausnahme sind 70 Kanäle (2,3 %, 49 davon in den 64 rotierten Dimensionen) mit
+Kurtosis > +1 vor der Rotation; der Hadamard flacht alle davon ab (post ≤ +0,46). Die
+Breiten-Spreizung von 16× bis 7.267× ist der Norm-Gewichtvektor (tote Kanäle mit
+`var` = 0,001), also eine bekannte feste Transformation, keine Datenachse. S3 startet damit bei (a)
+16/16 gegen 8/8 und (b) alternative 16-Level-Tabelle; (c) entfällt.
+
+S3(a) lief am 2026-10-27/28 (`docs/bench-results/2026-10-27-s3-level-split/`): neun Arme auf einem
+Build, 32.746 Positionen je Arm, gepaart je Position. Nachgerechnet gegen einen `fp16`-Arm auf
+demselben Build — die Einheit, in der auch der `int8`-Anker 0,01688 und die Fensterzahlen von
+2026-10-25 stehen; `KL(int8‖Arm)` ist eine andere Größe und bestraft Fehler mit, die `int8` selbst
+macht. **`int8` 0,01688 (top-64), `q4lm32`+Fenster 0,01689, `q4lm32s`+Fenster 0,01881,
+`q4lm8v`+Fenster 0,02090, `q4lm32s` 0,02420, `q4lm32` 0,02512, `q4lm8v` 0,03182, `q4lm8k` 0,03212,
+`q4lm8` 0,04127.** Der Build reproduziert den Altbestand auf fünf Stellen (`int8` 0,01688, `q4lm8v`
+0,03182), deshalb ist der Vergleich mit dem Fensterarm von 2026-10-25 zulässig.
+
+Drei Befunde. (1) Der Split trägt nicht: 16/8 gegen 8/16 ist −0,00030 [−0,00357, +0,00297], also
+**keine Richtung** — K und V sind gleich empfindlich (0,0075 gegen 0,0072), und `q4lm8v` verschenkt
+0,0072 nats an die V-Seite ohne Gegenleistung. (2) Die Least-Squares-Skala ist **kein Hebel**:
++0,00033 gegen `max|x|/87` (t 0,21). Die frühere Zahl 0,0028 war ein Artefakt des `int8`-Ankers.
+(3) Der Fensterpunkt mit 16/16-Bulk ist von `int8` nicht zu unterscheiden (+0,00002 top-64,
++0,00034 top-256, `int8` führt in 4/8 Segmenten) und **0,0040 nats besser als der heutige
+Produktpunkt** bei identischen Bytes ([−0,00663, −0,00138], t −2,99, besser in 7/8 Segmenten). Der
+Read bleibt kein Hebel: Tag-Read gegen Fenster +0,00117 [−0,00162, +0,00395], t = 0,82.
+
+**Die Bytes dieses Laufs sind 7,39 bit/value, nicht 5,29.** `B` ist der Prefill-Chunk
+(`qsa_set_kv_win_batch`, Deckel 6.144), und alle Arme liefen mit `--prefill 512`; bei 4.608 Zellen
+verteilt sich der Ring über zehnmal weniger Zellen als bei 128K. Die 5,29 bit/cell und 1.016 MiB
+sind der 128K-Produktpunkt mit B = 6.144 und hier **nicht** gemessen. Am Messpunkt spart der Arm
+10,4 % gegen `int8` (7,39 gegen 8,25), nicht 36 %. Die gepaarten Aussagen bleiben unberührt, weil
+alle verglichenen Arme dasselbe S/R/B haben; die Sparangabe nicht.
+
+**Die Ring-Geometrie ist an ihrem Plateau (2026-10-28).** `docs/bench-results/2026-10-28-ring-geometry/`
+verschiebt bei festen 832 Ringzeilen und B = 512 nur die Aufteilung zwischen Sinks (`R`) und recent
+(`S`): 256/64 (Referenz) gegen 320/0, 192/128 und 64/256, `KL(fp16‖Arm)` 0,01689 / 0,02053 / 0,01757 /
+0,01882 (top-64). **Kein Arm gewinnt** (Regel: Intervall schließt 0 in beiden Stützen aus **und**
+besser in ≥ 6/8 Segmenten), 256/64 bleibt. Zwei Aussagen sind trotzdem gesichert: **Sinks tragen** —
+`R = 0` kostet +0,00394 [+0,00097, +0,00691], 8/8 Segmente, etwa so viel wie der ganze Gewinn der
+16/16-Tabelle — und **mehr Sinks helfen nicht** (128: +0,00063, 256: +0,00186, beide unter der
+Auflösung). Ein Distanzprofil zeigt die erwartete Form: der Verlust ist in den ersten 1.536
+Positionen null und sitzt ab 2.048, also erst nach der Verdrängung aus dem Ring. Bei festem
+`R + S + B` nimmt jedes Sink eine recent-Zelle weg; bei 4.608 Zellen ist der Ring der knappe Teil.
+Die Qualitätsseite bei gleichen Bytes ist damit geschlossen — übrig bleibt die Byte-Seite (Zeilenzahl,
+nicht Aufteilung). **Der Lauf ist Prefill, nicht Decode:** im Chunk liest jede Abfrage `S + B` exakte
+Zellen, beim Decode nur `S + R` (die `B`-Zeilen sind dann allokiert, aber außerhalb des Lesefensters;
+bei 128K sind das 151 MB). Die `S`-Achse ist damit hier fast wirkungslos, und die Decode-Qualität
+dieser Geometrie ist ungemessen.
+
+K1 als Regel ist bei diesem Korpus nicht erreichbar: die gepaarte Streuung (0,22 nats) ergibt bei
+32.746 Positionen eine einseitige Grenze von 0,0020 selbst bei echter Parität; die Schwelle
+< 0,001 bräuchte rund 131.000 Positionen, also den 128K-Satz, den es nicht gibt. Der beste Arm
+liegt bei 0,0025 — eine Auflösungsgrenze, kein Urteil über den Arm.
+
+**Zielwechsel 2026-10-27.** Das 5,0-bit/cell-Ziel ist **zurückgestellt**: ohne deutlich
+bessere Rotationsansätze und Fehlerkorrekturen ist es mit diesem Codec nicht
+erreichbar. Der Branch maximiert ab jetzt **Qualität bei gleichen Bytes** und erst
+danach Bytes. Die Latte 1 (K1-K6) bleibt als Definition stehen, ist aber keine
+Bedingung mehr für den nächsten Schritt; S4 und S5 (die 128K-Kompositionen auf 5,0)
+laufen nicht, solange das Ziel zurückgestellt ist. Der gemessene Hebel bei gleichen
+Bytes ist die Bulk-Tabelle (0,0072 bis 0,0175 nats; der Produktpunkt holt davon 0,0040),
+nicht der Read (0,0012, nicht signifikant), nicht die Kanalachse (S2, tot) und nicht
+die Ring-Geometrie (Sinks tragen 0,0039, aber 0, 128 und 256 Sinks sind schlechter
+oder gleich; 256/64 bleibt).
+
+S0 brauchte einen 4K-Lauf je Arm (die Logs liegen jetzt vor), S1 einen
+Zählerlauf (gelaufen, 32K); S3 kostet 4K-GPU-Zeit für höchstens drei
+Arme; S4 ist der einzige 128K-Block (drei Varianten × zwei Texte). Wenn S3 keinen
+Sieger hat, endet der Branch mit einem dokumentierten Negativ-Ergebnis — das ist
+ein valides Ergebnis und billiger als ein 128K-Sweep.
+
+### Nicht auf dieser Leiter
+
+E2 (`q4_0` auf cwe) ist ein Vergleich, keine Hypothese, die gewinnen kann — es
+ordnet den Punkt ein, es bewegt ihn nicht. C1/C2 sind Review-Gates: für Latte 1
+(Default-Anspruch) blockierend, für Latte 2 (opt-in) nicht. D2/D3/D4/D6
+begrenzen die Aussage, nicht den Punkt. B1 läuft nur, wenn S1 überlebt; B2/B3,
+A3, A4, E3 und ein GEAR-Kernel hängen an ihren Gates (E3 an S1, GEAR an der
+Restfehler-Form aus S1/E4). A4 mischt höchstens `int8` mit etwas Schlechterem
+und kann `int8` damit nicht überholen.
+
+## 8. Was an Qwen3.8-Flash-Next überhaupt ansetzt
+
+„Modelagnostisch" heißt hier vier Dinge gleichzeitig: kein Neutraining, kein Kalibrier-Set, die Indexer-Auswahl bleibt dieselbe, der `int8`-Pfad bleibt byte-identisch. Eine Methode darf im Survey stehen und trotzdem an dieser Architektur scheitern. Die Zahlen unten sind die kompilierte Geometrie (`engine/include/strata/core/geometry.hpp`, `qsa.hpp`), keine Messung.
+
+| Tatsache | Folge |
+|---|---|
+| 48 Layer, davon 12 QSA (3, 7, …, 47) und 36 GDN | Jede KV-Methode gilt nur für die 12 Cache-Layer. GDN hat einen festen SSM-Zustand, keinen Token-Cache. „Untere Layer brauchen mehr Bits" ist an dichten Attention-Stapeln gemessen und überträgt sich nicht als Konstante |
+| Indexer: 4 Köpfe × 128, Block 4, Budget 2.048 (+3 für den unvollständigen Block). Schlüssel sind **FP32 per Vertrag**, weil eine andere Auswahl eine andere Attention ist | Quantisieren der Indexer-Keys oder Ersetzen der Auswahl ist kein Cache-Format. Es ändert das Modell |
+| 2 KV-Köpfe, 24 Query-Köpfe, head_dim 256 | Methoden, die Köpfe in „Retrieval" und „Streaming" teilen, haben fast keine Freiheitsgrade. Ein Kopf weg ist die halbe Cache |
+| `n_rot` = 64 von 256, und 64 von 128 auf dem Indexer-Key | Pre-RoPE-Rezepte, die den ganzen Head vor RoPE quantisieren oder rotieren, beschreiben eine andere Maschine. 192 Dimensionen sind nicht rotiert |
+| Seite 4 je Indexer-Block, Streaming verweigert das Fenster (A2) | Ein Offload-Cache und ein residenter Exact-Pool sind derselbe Konflikt wie heute |
+
+### Setzt an, ohne das Modell anzufassen
+
+Das sind die einzigen Survey-Ideen, die als opt-in auf dem QSA-K/V-Cache baubar sind.
+
+- **Recent- plus Sink-Overlay auf einem 4-bit-Bulk.** Das ist der gemeinsame Kern von KIVI, SKVQ, IntactKV, StreamingLLM und RotateKVs Sink-Schutz, und es ist gebaut. Die kalibrierten Zutaten derselben Papiere (Kanal-Umordnung, gelernte Rotation, Pivot-Tokens als Parameter) sind nicht agnostisch und bleiben draußen.
+- **Per-channel vor FWHT, getrennt nach rotiert und nicht rotiert.** Das ist die Form von KVQuant, die hier noch Sinn hat. Nicht deren Pre-RoPE-Rezept, und nicht nach der Rotation: nach FWHT gibt es keine Kanäle mehr (WP §5.1, statisch). Die S2-Sonde muss die Momente für Dimensionen 0–63 und 64–255 getrennt berichten. Das ist die Hypothese, die keines der Papiere so stellt.
+- **16/16 gegen 8/8 im vorhandenen Format.** Agnostisch, Kernel steht. Die Bit-Richtung „Keys wollen mehr Bits" (`spectralkv`) ist auf Swift nicht getragen. Die Level-Frage ist S3(a) der Leiter, nicht ein neues Papier.
+- **Präzision folgt der Auswahl, nicht der Position.** Der top-k-Artikel sagt Token-Budget und Bits zusammen. Hier ist das Token-Budget der Indexer, und der darf nicht ersetzt werden. Der agnostische Schnitt ist: jede Zelle bleibt gespeichert, fp16 nur für Zellen, die der Indexer tatsächlich geliefert hat. Die Auswahl wechselt pro Query, also ist der Pool eine Vereinigung oder die letzte Auswahl, kein stabiles 2.048er-Fenster. Eine versprochene exakte Zelle, die nicht mehr im Pool liegt, ist der Fehler, den die A-Serie verbietet. Erst nach E1. Wenn R+S schon die gelesenen Zellen deckt, ist diese Methode tot, bevor sie gebaut wird.
+- **Alternatives 4-bit-Format ohne Kalibrierung** (token-weises INT4 plus kleine Hadamard, wie SAW-INT4). Agnostisch, aber dieselbe Familie wie Lloyd plus FWHT. Die an/aus-Ablation war bei 2K/4K ein Gleichstand. Kein Grund, das vor S3 zu bauen.
+
+### Sieht agnostisch aus, passt hier nicht
+
+- **DuoAttention, RazorAttention.** Zwei KV-Köpfe. Ein Streaming-Kopf wäre die halbe Cache. Die Papiere rechnen mit vielen KV-Köpfen.
+- **Quest, NSA, jede Eviction (H2O, SnapKV, PyramidKV, Scissorhands, ChunkKV).** Ersetzt oder löscht, was der Indexer später auswählen kann. Eine ausgewählte, nicht mehr vorhandene Zelle ist eine stille falsche Attention. NSA ist obendrein trainiert.
+- **ShadowKV.** Die dünne Rekonstruktion doppelt den Indexer. Der Offload kollidiert mit dem residenten Pool (A2).
+- **Palu, SpinQuant, IntactKV-als-Parameter, KVQuant-Kalibrierung, PM-KVQ-Kalibrierung, die 2026er Low-Rank-Adaption.** Projektionen umschreiben, Rotationen lernen oder an einem Set kalibrieren. Das ist ein anderes Modell, kein Cache-Flag.
+- **Pre-RoPE auf dem ganzen Head** (KVQuant, RotateKVs Grouped-Head-Rotation vor RoPE). `n_rot` ist 64, nicht 256. Ein Port muss die unrotierten 192 Dimensionen einzeln behandeln oder er misst ein anderes Fehlermodell.
+- **FP8, QServes Serving-Stack.** Kein FP8-Attention-Kernel auf der Zielkarte. Das KV4-Format haben wir der Idee nach schon.
+- **Layer-Pyramide als Übernahme der publizierten Rangfolge.** 12 QSA-Layer, dazwischen GDN. Eine eigene 12er-Suche wäre eine neue Messung, kein Port, und ohne per-Layer-Fehlersignal unbegründet.
+
+### Was das an der Leiter ändert
+
+S1 (E1) ist nicht optional. Wenn Sinks und Recent nicht in der Auswahl liegen, ist der Survey-Kern, den wir schon gebaut haben, auf diesem Modell ein No-op, auch wenn er modelagnostisch korrekt ist. S2 berichtet die zwei RoPE-Scheiben getrennt. S3(c), falls sie lebt, ist per-channel vor FWHT auf diesen zwei Scheiben, nicht ein Pre-RoPE-Port. DuoAttention, NSA, Palu, Eviction und FP8 kommen nicht auf die Leiter.
