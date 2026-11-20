@@ -198,6 +198,10 @@ the card's name, its architecture and the build's list.
 
 - If CMake cannot find the HIP compiler, add `-DCMAKE_HIP_COMPILER=/path/to/rocm/llvm/bin/clang++`. Use the compiler and
   libraries from the same ROCm installation.
+- **On Windows:** `tools\build_hip_windows.bat gfx1200 build-hip-port` does the same build with the ROCm toolchain and
+  the Visual Studio Build Tools (the ROCm clang links against the MSVC runtime, so the build runs inside `vcvars64.bat`).
+  It sets the ROCm cmake packages by hand: on Windows they are called `hip-config.cmake`, not `hipConfig.cmake`, so
+  `find_package("hip")` does not find them on its own.
 - Do not enable both GPU backends in one build.
 - Linux engine packages: `VARIANT=rx6000 tools/packaging/build_hip_linux.sh`.
 - **A hand-built engine has no tuning table.** The packaged engines carry `tuning/<arch>-hipblaslt-<version>.txt` beside the binary
