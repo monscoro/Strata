@@ -9357,14 +9357,16 @@ def local_installed_engine() -> Path | None:
 
 
 def wants_self_build(a) -> bool:
-    """Whether a build that sits in the tree should be used instead of the ready-made engine: only when the
-    person asked for it (--prefer-self-build, STRATA_PREFER_SELF_BUILD or STRATA_SELF_BUILD_DIR), and never
-    over an explicit --prebuilt."""
+    """Whether a build that sits in the tree should be used instead of the ready-made engine.
+
+    Private branch: a self-build in the tree takes precedence over the ready-made engine whenever one is
+    present, so no ready-made package is downloaded in that case.  An explicit --prebuilt still wins, and
+    STRATA_PREFER_RELEASE=1 keeps the release's ready-made engine (for testing it)."""
     if getattr(a, "prebuilt_given", False) is True:
         return False
-    return bool(getattr(a, "prefer_self_build", False) is True
-                or os.environ.get("STRATA_PREFER_SELF_BUILD") == "1"
-                or os.environ.get("STRATA_SELF_BUILD_DIR"))
+    if os.environ.get("STRATA_PREFER_RELEASE") == "1":
+        return False
+    return True
 
 
 def local_rocm_lib_dirs() -> list[str]:
@@ -9506,7 +9508,7 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision, kv=None):
         if cand is not None:
             say(f"  self-built engine preferred: using {cand} instead of the ready-made one")
             local = str(cand)
-    if not local and kv in ("q4u32w", "q4lm8v") and hip:
+    if not local and kv in ("q4u32", "q4u32w", "q4lm8v") and hip:
         local = local_installed_engine() or local_engine_build()
         fmt = "q4u32" if kv == "q4u32w" else kv
         if local is None:
