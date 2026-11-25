@@ -42,22 +42,24 @@ setzt `--kv-resident` und nimmt damit echte Evictions und Host-Nachläufe in Kau
 * Prompt: die ersten 256 IDs aus `terminal/data/quant_quality/cwe-4k/set.ids.json`, gespeichert in
   `prompt256.tokens` (SHA-256 `88e11621955e7c21ea2336c4c0440812ae5b65f6e037e7d9176b86e1f50fc31b`).
 * Kontext: 32.768 Zellen. Beide Arme laufen mit `--max-new 1`.
-* Resident-Arm: kein `--kv-resident`.
-* Streaming-Arm A: `--kv-resident 32768` (kein Eviction, gleiche KV-Größe).
-* Streaming-Arm Eviction: `--kv-resident 20480` bei 32.768 Kontextzellen; die Stream-Map muss Blöcke
-  ausgeben und aus der Host-Kopie zurückholen.
+* Resident-Arme (`resident-a`, `resident-b`, `resident-evict`): kein `--kv-resident`.
+* Streaming ohne Eviction (`streamed-noevict`): `--kv-resident 32768` bei 32.768 Kontextzellen — die Host-Kopie
+  existiert, es wird nichts ausgegeben.
+* Streaming mit Eviction (`streamed-a`, `streamed-evict`): `--kv-resident 20480` bei 32.768 Kontextzellen; die
+  Stream-Map muss Blöcke ausgeben und aus der Host-Kopie zurückholen (die Startzeile sagt `20480 of 32768 cells`).
 
 | Datei | Größe | SHA-256 |
 |---|---:|---|
 | `resident-a-logits.bin` | 993.288 | `75cb396e76efb4848298f82ecff0c65f6757879c4331ce9acfc8b6c99e3be066` |
 | `resident-b-logits.bin` | 993.288 | `75cb396e76efb4848298f82ecff0c65f6757879c4331ce9acfc8b6c99e3be066` |
 | `streamed-a-logits.bin` | 993.288 | `75cb396e76efb4848298f82ecff0c65f6757879c4331ce9acfc8b6c99e3be066` |
+| `streamed-noevict-logits.bin` | 993.288 | `75cb396e76efb4848298f82ecff0c65f6757879c4331ce9acfc8b6c99e3be066` |
 | `resident-evict-logits.bin` | 993.288 | `75cb396e76efb4848298f82ecff0c65f6757879c4331ce9acfc8b6c99e3be066` |
 | `streamed-evict-logits.bin` | 993.288 | `75cb396e76efb4848298f82ecff0c65f6757879c4331ce9acfc8b6c99e3be066` |
 
-Alle fünf Dateien sind **bytegleich**. Das gleiche gilt für die fünf `*-first.bin`-Dateien
+Alle sechs Dateien sind **bytegleich**. Das gleiche gilt für die sechs `*-first.bin`-Dateien
 (993.280 Byte, SHA-256 `1624cc6d367b18881211555baec379d5db88fe6e3b04c0ccf22220cb0cb7e3a7`,
-Greedy-Token 2423). Damit deckt der Test sowohl den normalen Streamed-Pfad als auch echte
+Greedy-Token 2423). Damit deckt der Test sowohl den Streamed-Pfad ohne Ausgabe als auch echte
 Evictions ab. Die Dateien enthalten Header und eine Logits-Zeile: ein native IQ-Pack läuft nicht
 durch die per-Token-Dump-Schleife. `--dump-logits` schreibt für diesen Pfad jetzt die Zeile des
 ersten Verify-Fensters; vor der Änderung war die Datei trotz Erfolgsmeldung leer.
@@ -73,6 +75,27 @@ q4u32-Build oder ein Upstream-Build bekommt weiterhin keine Config mit `--kv-res
 `--kv-check` prüft zusätzlich die Engine-Version: eine Config mit `q4u32`-Fenster und `--kv-resident`
 gilt erst ab `0.1.63-q4u32` als startbar. `terminal\tools\test_setup_choices.py` läuft ohne Fehler
 durch (75 Tests; `pytest` ist auf dieser Maschine nicht installiert).
+
+## Default-Pfad nach dem Rebuild
+
+Der Rebuild nach der Default-Änderung (Engine-Auto-Pfad und Setup schreiben `q4u32` + `STRATA_KV_WINDOW=1`) hat
+SHA-256 `0a3b299211320432ef3060593534525740cf509102452aded35f22900b16198f` (45.682.688 Byte,
+`0.1.63-q4u32`). Mit ihm wurden Gate 1 (5/5, 159 s) und Gate 2 erneut gefahren: alle fünf Wiederholungen
+(`reg-resident-a/-b`, `reg-streamed-a`, `reg-resident-evict`, `reg-streamed-evict`) reproduzieren die
+dokumentierten Dateien byteidentisch (`75cb396e…` bzw. `1624cc6d…`); die `reg-*`-Dateien sind danach gelöscht,
+die Zahlen stehen hier. Der zuvor fehlende Arm ohne Eviction (`streamed-noevict`, `--kv-resident 32768`) wurde
+mit demselben Binary neu gemessen und ist ebenfalls bytegleich.
+
+`default_check.py` startet die Gate-Argumente einmal **ohne `--kv`** (der neue Default) und einmal mit
+`--kv q4u32` (reines Grid), 255-Token-Prompt, 32K Kontext:
+
+| Arm | Startzeile | Freies VRAM (1-Token-Fenster) |
+|---|---|---|
+| ohne `--kv` | `KV storage: q4u32 with the exact-cell window (q4u32w) …` | 11.261 MiB |
+| `--kv q4u32` | keine KV-Zeile (explizit benannt) | 11.280 MiB |
+
+Die 19 MiB sind der Ring bei B = 256 (der Prompt hat 255 Token; bei B = 6.144 sind es 152 MiB, siehe den
+128K-A/B). Rohausgaben: `default-check-auto-default.log`, `default-check-plain-grid.log`.
 
 ## Erste Laufzeit- und Speichermessung
 

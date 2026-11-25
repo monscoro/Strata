@@ -1,0 +1,70 @@
+strata: gfx12 (RDNA4): exact extra switches on by default (STRATA_GFX12_DEFAULTS=0 turns them off; a switch you set is kept): HEAD_MIX_MULTI
+strata: gfx12 (RDNA4): the matrix-core QSA block scorer is on once a prompt is past 28,672 tokens (+5.7% prompt speed at 98K on an R9700, shorter prompts unchanged; the first-token KL against the warp kernel is 0.002 on average above 30K; STRATA_SELECT_WMMA=0 or STRATA_GFX12_DEFAULTS=0 turns it off)
+strata: RDNA4 (gfx12): prompt chunks of 30,000+ tokens use the chunked GDN scan (STRATA_GDN_CHUNKED=0 turns it off)
+strata: gfx12 (RDNA4): 12 exact speed switches on by default (STRATA_GFX12_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE ATTN_LANECELL ATTN_MERGE_V2 TSUM EXPDEC SMALL_UNR GR_Q32_G GR_Q8_PFS
+strata generate: PCIe probe: 14.0 GB/s host->device (best of 14.0 14.0 14.0 13.8) -> pcie_frac 0.11 (default 0.15)
+strata generate: CPU expert kernels: AVX-2
+strata generate: native pack: C:\Users\krone\git\Strata-data\packs\qwen-iq3_xxs experts (largest blob 2.33 MB), token embedding IQ3_S in mapped host memory (260 MiB, 0.2 s)
+strata: gfx12 (RDNA4): the hyper-connection projections are read as Q8_0 (quantized at load, decode faster, answers differ slightly); STRATA_HC_Q8=0 keeps the bf16 read
+strata generate: 266 MiB of weights loaded from C:\Users\krone\git\Strata-data\packs\qwen-iq3_xxs in 0.1 s (494 canonical tensors skipped: served natively)
+strata: STRATA_HC_Q8=1: 0.62 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: 496 native projection matrices, 2706.89 MiB of weights, in 2.6 s
+strata generate: PLE direct read probe: 108733 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile C:\Users\krone\git\q4u32-stabilize\terminal\data\expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of C:\Users\krone\git\flash-next\SC117_IQ3_XXS\Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00002-of-00002.gguf
+strata generate: experimental native Q5_K head, 437043200 bytes, in 0.3 s
+strata generate: GPU 0: AMD Radeon RX 9060 XT (gfx1200)
+strata generate: HIP runtime C:\Users\krone\git\q4u32-stabilize\terminal\engine\amdhip64_7.dll
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: CPU pool tasks/phase: 36 (automatic), participating threads: 12
+strata generate: CPU pool: 11 workers by default (12 physical cores, 24 logical processors; bounded by every physical core but the host's)
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 2,4,...,22 (11 workers, one per physical core; host on 0)
+strata aux cpus: not available on this system
+strata generate: expert cache 336 slots, 0.55 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 docs/bench-results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: the profile fill asks for 0 pairs ahead (STRATA_FILL_AHEAD)
+strata generate: pre-filled 336 of 336 slots from the profile in 0.4 s (1639 MB/s); slot 0 verified
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.63-q4u32)
+strata generate: sampling greedy
+strata generate: token graph hit path: 336 resident experts, decided on the device
+strata: prompt kernels: chunks of 1024 tokens or more run 48 of 48 layers on the fused kernels; shorter chunks run 48 on the staged fused entry.
+strata: the prompt attention on matrix cores on (gfx1200) by default; STRATA_HIP_WMMA=0 turns it off
+strata generate: prompt path borrows 184 cache slots (0.30 GiB)
+strata prefill: QSA layers: norm + rope in one pass on, attention gate in the attention epilogue off
+strata: prompt attention: the matrix-core prompt path serves the 4-bit uniform grid (q4u32), scale per 32 values
+strata generate: 184 lent slots refilled in 61.1 ms
+strata generate: prefill 255 tokens in 1 chunks, 5583.9 ms (45.7 tok/s); experts streamed 7386 (0 by DMA, host 1738.2 ms), resident 61, on the CPU 0 (share 0.00); PLE 2.1 ms
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 69.5 MiB of device buffers
+strata verify: capturing the 1-token window (11280 MiB of VRAM free)
+strata expdec: CUDA0 gate/up type 17: expdec_gu_kernel R 1 MINB 4, 16 rows per block, grid 80 x 10 (cap 10 groups), captured into a graph
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+strata expdec: CUDA0 gate/up type 16: expdec_gu_kernel R 1 MINB 4, 16 rows per block, grid 80 x 10 (cap 10 groups), captured into a graph
+strata expdec: CUDA0 down type 42 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 16 rows per block, grid 80 x 10 (cap 10 groups), captured into a graph
+strata expdec: CUDA0 gate/up type 22: expdec_gu_kernel R 1 MINB 4, 16 rows per block, grid 80 x 10 (cap 10 groups), captured into a graph
+strata expdec: CUDA0 gate/up type 18: expdec_gu_kernel R 1 MINB 4, 16 rows per block, grid 80 x 10 (cap 10 groups), captured into a graph
+strata verify: captured the 1-token window (upload no error, sync no error) in 136.8 ms
+speculation              1 rounds of 6, drafts accepted 0 of 0 (0.000), 1.00 tokens per round
+window sizes             T1:1 T2:0 T3:0 T4:0 T5:0 T6:0  (min draft probability 0.50, draft-conf 0.00, cost rule 0)
+suffix drafts            0 windows, drafts accepted 0 of 0
+accepted per round       0:1 1:0 2:0 3:0 4:0 5:0
+verify window            wait for rings 22.429  pool 165.080  host 0.018  commit 0.057 ms/round; CPU experts 9.88 distinct / 9.88 routed per layer
+pool multi               gate/up 37.961  quantize 0.266  down 5.398 ms/round; 19.1 GB/s over the rows phases; CPU pool call 164.959 ms/round
+dispatch                 plan 0.192  activation quantize 0.149  jobs 120.467  run 43.688 ms/round
+adaptive tier            0 experts swapped into the VRAM tier (every 4 rounds, 0.000 ms/round)
+expert tiers             decode: RAM 0 blobs, files 0 blobs, 827.1 MB read from the files (827.14 MB/round, 357.3 ms/round of reading, 2.32 GB/s per reading thread) (the GGUF in place); prompt copies 12986.2 MB
+routing prefetch         468 experts warmed, 305 of the file tier's 0 blob reads had been warmed (0.0%); predictor 57.6 ms/round on its thread, 0 layers skipped (still busy)
+pcie experts             0.00 distinct experts per layer read over PCIe (share 27/256 of the misses)
+prompt  : 4274 279 2614 45112 1414 321 3627 279 11304 314 1754 45112 3299 13 7145 279 5600 1379 13418 9434 45112 4105 13 2423 42513 20655 73 89 42513 20655 73 89 2423 2423 2423 2715 37527 69 4428 42513 20655 73 89 2423 2423 2423 2423 42513 20655 73 89 159815 4107 868 2423 42513 20655 73 89 2423 3781 86 89 33287 159815 4107 868 2423 42513 20655 73 89 42513 20655 73 89 506 15742 40716 2423 42513 20655 73 89 2423 2423 42513 20655 73 89 2423 2423 42513 20655 73 89 2423 2423 2423 2423 2423 2423 14110 44023 785 2423 2423 281 9952 180398 42513 20655 73 89 2423 2423 2423 2423 50285 525 1705 2423 3781 86 89 33287 2423 2423 42513 20655 73 89 42513 20655 73 89 159815 4107 868 2423 2423 2423 2423 2423 2423 50285 525 1705 2715 340 371 69 2423 42513 20655 73 89 42513 20655 73 89 2423 27685 1207 3628 2423 42513 20655 73 89 2423 27685 1207 3628 2423 2423 2423 42513 20655 73 89 2423 42513 20655 73 89 2423 2423 50285 525 1705 2423 2423 50285 525 1705 2423 2423 2423 2715 37527 69 4428 2423 42513 20655 73 89 42513 20655 73 89 2423 2423 42513 20655 73 89 42513 20655 73 89 2423 2423 42513 20655 73 89 27494 80 549 2423 42513 20655 73 89 3781 86 89 33287 2423 2423 2423 2423 42513 20655 73 89 159815 4107 868 2423 2423 2423 2423 2423
+output  : 2423
+decode                   1 tokens in 327.0 ms  ->  3.06 tok/s
+prefill                  255 tokens in 5645.2 ms  ->  45.17 tok/s  (time to first token 7960.5 ms)

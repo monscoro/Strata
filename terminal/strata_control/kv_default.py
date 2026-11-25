@@ -4,7 +4,9 @@ This tree's engine is the Strata release it was changed from plus the suffix of 
 The suffix is the marker: an upstream engine has no suffix and no q4u32 default, so a config for one names the format
 it always named and that start stays byte-identical to the release.  A config for a q4u32 build on a **gfx12** card
 leaves `--kv` out above 8K and lets the engine choose (q4u32 there, where its prompt path was measured); up to 8K
-the release named fp16 and so does this rule.
+the release named fp16 and so does this rule.  Since the 128K A/B (2026-11-25) that engine default runs the grid
+with the exact-cell window (q4u32w), and setup writes the window env (STRATA_KV_WINDOW=1, S=256, R=64) beside the
+absent flag so the config shows it; an explicit `--kv q4u32` stays the plain grid.
 
 The flavour is read from the engine itself: the suffix of its own version line (setup.py's binary_engine_flavor), or
 the manifest's "flavor" field for a packaged engine.  An engine whose flavour cannot be told counts as one without it.
@@ -71,7 +73,9 @@ def kv_flag(flavor: str, context: int, named: str | None, *, hip: bool = False, 
     format itself.  Up to 8K it keeps naming fp16, so those starts stay as they were.
 
     `q4u32w` is setup's name for q4u32 plus the exact-cell window: the config names `--kv q4u32`, and setup writes
-    the window into the engine env (STRATA_KV_WINDOW=1, S=256, R=64).
+    the window into the engine env (STRATA_KV_WINDOW=1, S=256, R=64).  The default is that same windowed point on
+    gfx12 since the 128K A/B: the flag stays out and setup writes the same env, so only a named `--kv q4u32` (or
+    STRATA_KV_WINDOW=0 beside the default) runs the plain grid.
     """
     if named == "q4u32w":
         return "q4u32"

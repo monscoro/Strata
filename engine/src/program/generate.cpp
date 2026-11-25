@@ -1211,8 +1211,9 @@ void usage() {
                  "  --ple-delay-us U     fault injection: each row read completes no earlier than U us\n"
                  "  --ple-sync-submit    A/B arm: submit table reads on the token thread (default: an I/O thread)\n"
                  "  --kv fp16|int8       KV storage (plan v0.3 P7): int8 codes + fp16 scale per 64 values, half the\n"
-                 "                       VRAM. Without --kv the part decides: above 8K of context q4u32 on gfx12 (see below), fp16\n"
-                 "                       elsewhere and up to 8K anywhere - q4u32 there would run the prompt 2.5x slower (A.21)\n"
+                 "                       VRAM. Without --kv the part decides: above 8K of context q4u32 with the\n"
+                 "                       exact-cell window on gfx12 (see below), fp16 elsewhere and up to 8K anywhere\n"
+                 "                       - q4u32 there would run the prompt 2.5x slower (A.21)\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see docs/bench-results/2026-09-27-kv-q4)\n"
                  "  --kv q4lm32          q4_0's blocks and rotation with Max-Lloyd's 16 levels for N(0,1) in place of\n"
@@ -1241,12 +1242,16 @@ void usage() {
                  "                       and STRATA_KV_Q4_PROMPT=0 sends it back there. Its sibling q4u32z adds\n"
                  "                       the per-block offset (the zero point) and carries a constant per block.\n"
                  "                       This is the default on gfx12 above 8K of context since A.23 (its prompt path is the measured\n"
-                 "                       one there); naming it keeps it on a part that defaults away.\n"
-                 "                       With STRATA_KV_WINDOW=1 it also reads the exact-cell window (setup's 4th\n"
-                 "                       KV choice, S/R 256/64): 1,016 MiB at 128K against int8's 1,584, needles\n"
-                 "                       3/3 at 4K and 32K, and on gfx12 the prompt is level with int8 at 32K.\n"
-                 "                       At 4K the pair ties int8 (+0.00052 KL); at 128K it is +0.00530 behind\n"
-                 "                       (top-1 98.31%)\n"
+                 "                       one there); naming it keeps it on a part that defaults away. The default runs it\n"
+                 "                       with the exact-cell window (q4u32w: the recent 256 and sink 64 cells of each QSA\n"
+                 "                       layer read exact fp16 from a 152 MiB side pool; STRATA_KV_WINDOW=1, S/R 256/64).\n"
+                 "                       Decided by the 128K A/B (docs/bench-results/2026-11-25-q4u32-window-ab): KL 0.06949\n"
+                 "                       against the plain grid's 0.078700 over 131,060 positions, the same 131,061-token\n"
+                 "                       prompt at 26.5 against 26.2 tok/s. --kv q4u32 runs the plain grid without it;\n"
+                 "                       STRATA_KV_WINDOW=0 turns it off beside the default too. The windowed point keeps\n"
+                 "                       1,016 MiB at 128K against int8's 1,584, needles 3/3 at 4K and 32K, and on gfx12 the\n"
+                 "                       prompt is level with int8 at 32K. At 4K the pair ties int8 (+0.00052 KL); at 128K it\n"
+                 "                       is +0.00530 behind (top-1 98.31%%)\n"
                  "  --kv q4lm8[q4lm8k]  WP-2 PROBE (measurement only, not a byte layout): the same blocks\n"
                  "                       and the same 576 B/cell, with Max-Lloyd's 8-level (3-bit) table for N(0,1)\n"
                  "                       on both tensors or on K only. Answers whether the fixed\n"
@@ -2844,6 +2849,25 @@ static bool pcie_auto_split_ok() {
 // the "no prompt path" state; on CUDA nothing changes (mode 4 exists, but it was neither built nor measured on this
 // branch).  Above 8K of context only: up to 8K the release kept fp16, and the grid was measured against the 8-bit the
 // release kept above 8K - a start of 8K or less with no --kv therefore stays fp16 (A.20-A.23, A.28).
+// Since 25.11.2026 the default runs that grid with the exact-cell window (q4u32w, S/R 256/64): the 128K A/B
+// (docs/bench-results/2026-11-25-q4u32-window-ab) decided it - paired over 131,060 positions the windowed arm
+// takes a mean KL of 0.06949 against the plain grid's 0.078700 (d -0.0092077, t -5.66, 95% CI
+// [-0.012395, -0.006020], McNemar 1063 vs 885, p 6.0e-5: every pre-registered criterion met) while the same
+// 131,061-token prompt runs at 26.5 against 26.2 tok/s (single run each, inside this machine's run spread) and
+// the window's side pool costs 152 MiB of VRAM (6,739 against 6,891 MiB free). An explicit `--kv q4u32` never
+// reaches the default branch, so naming the format still runs the plain grid.
+
+// A default the environment can still override: set `key` to `value` only where nothing is set at all, so a
+// hand-set STRATA_KV_WINDOW / _S / _R keeps ruling (the window's own reader is layer.cpp's qsa_set_kv_q4_mode).
+[[maybe_unused]] static void env_default(const char* key, const char* value) {
+    if (std::getenv(key) != nullptr) return;
+#if defined(_WIN32)
+    _putenv_s(key, value);
+#else
+    setenv(key, value, 0);
+#endif
+}
+
 [[maybe_unused]] static const char* kv_default_mode(int64_t max_context) {
 #if defined(STRATA_USE_HIP)
     if (max_context <= 8192) return "fp16";   // up to 8K: the release's own default, unchanged
@@ -4914,9 +4938,32 @@ int main(int argc, char** argv) {
     }
     if (o.kv == "auto") {   // not named by the user: the part decides (kv_default_mode carries why)
         o.kv = kv_default_mode(o.max_context);
-        if (o.kv == "q4u32")
-            std::fprintf(stderr, "strata generate: KV storage: q4u32 (the default on this part above 8K: 54.5 %% of int8's "
-                                 "bytes, level with it at 32K and 106K; --kv int8|fp16|q4_0 names another)\n");
+        if (o.kv == "q4u32") {
+            // The default is the windowed point q4u32w (see kv_default_mode): the env is filled only where the
+            // person has not set it, so STRATA_KV_WINDOW=0 still runs the plain grid and a hand-sized S/R keeps
+            // its size. qsa_set_kv_q4_mode below reads the env, after this block.
+            env_default("STRATA_KV_WINDOW", "1");
+            const char* win = std::getenv("STRATA_KV_WINDOW");
+            const bool windowed = win != nullptr && win[0] == '1';
+            if (windowed) {
+                env_default("STRATA_KV_WINDOW_S", "256");
+                env_default("STRATA_KV_WINDOW_R", "64");
+            }
+            if (windowed)
+                std::fprintf(stderr, "strata generate: KV storage: q4u32 with the exact-cell window (q4u32w) (the "
+                                     "default on this part above 8K: 5.29 bit/cell at 128K, 64 %% of int8's bytes; "
+                                     "the grid alone is 54.5 %%, level with it at 32K and 106K. The window keeps the "
+                                     "recent 256 and sink 64 cells of each QSA layer exact fp16 in a 152 MiB side "
+                                     "pool; at 128K KL 0.06949 against the plain grid's 0.078700 with the prompt "
+                                     "level - docs/bench-results/2026-11-25-q4u32-window-ab). --kv q4u32 runs the "
+                                     "plain grid, --kv int8|fp16|q4_0 names another, STRATA_KV_WINDOW=0 turns the "
+                                     "window off)\n");
+            else
+                std::fprintf(stderr, "strata generate: KV storage: q4u32, the plain grid (STRATA_KV_WINDOW=0; the "
+                                     "default on this part above 8K is q4u32 with the exact-cell window: 5.29 "
+                                     "bit/cell at 128K against int8's 8.25, KL 0.06949 against the plain grid's "
+                                     "0.078700 at 128K - docs/bench-results/2026-11-25-q4u32-window-ab)\n");
+        }
         else if (o.max_context <= 8192)
             std::fprintf(stderr, "strata generate: KV storage: fp16 (the default up to 8K of context; --kv names another)\n");
         else

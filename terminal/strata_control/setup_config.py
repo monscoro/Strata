@@ -233,9 +233,11 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     if _kv:
         args += ["--kv", _kv]
     kv = kv_value(engine_flavor, ctx, a.kv, hip=bool(hip), arch=_arch)   # the format the engine will run with: the estimates below need one
-    # the exact-cell window's choices (setup's 4th = q4u32w, and the Lloyd arm q4lm8v): its 152 MiB ring is always
-    # resident, so the estimates below use the windowed variant's bytes per cell
-    window = a.kv in ("q4u32w", "q4lm8v")
+    # the exact-cell window's choices (setup's 4th = q4u32w, and the Lloyd arm q4lm8v), and since the 128K A/B
+    # (2026-11-25) the default too: where nothing was named and the engine picks q4u32 itself, it runs the
+    # windowed point q4u32w (the engine's auto path fills the same env, setup writes it so the config shows it).
+    # Its 152 MiB ring is always resident, so the estimates below use the windowed variant's bytes per cell.
+    window = a.kv in ("q4u32w", "q4lm8v") or (not a.kv and kv == "q4u32")
     window_kv = "q4lm8v" if a.kv == "q4lm8v" else "q4u32"   # the format the window runs on (the messages name it)
     window_stream = (window and window_kv == "q4u32" and engine_flavor == "q4u32" and
                      engine_ver >= WINDOW_STREAM_ENGINE)
@@ -505,7 +507,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             ok(f"rocBLAS tuning tables for {gpu['arch']}: {', '.join(rocblas_tables)} (the engine takes the one of its rocBLAS build)")
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
-    if window:                                         # the window's S/R travel in the engine env (server.py passes it)
+    if window and kv in ("q4u32w", "q4lm8v", "q4u32"):   # the window's S/R travel in the engine env (server.py passes it)
         cfg.setdefault("env", {}).update({"STRATA_KV_WINDOW": "1", "STRATA_KV_WINDOW_S": "256",
                                           "STRATA_KV_WINDOW_R": "64"})
     if gpu["count"] > 1 or a.gpu is not None:

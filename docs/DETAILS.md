@@ -246,12 +246,12 @@ New fields may be added to an event; a reader should ignore fields it does not k
 
 | Option | What it does |
 | --- | --- |
-| `--kv` left out | The Terminal names the format itself: `int8` above 8K of context, `fp16` up to 8K. On RDNA4 (gfx12) with this tree's engine (`0.1.63-q4u32`) it names nothing above 8K, and the engine picks `q4u32` (54.5% of 8-bit's bytes, level with it at 32K and at 106K tokens). An upstream engine has no such default, so the Terminal names a format there. |
+| `--kv` left out | The Terminal names the format itself: `int8` above 8K of context, `fp16` up to 8K. On RDNA4 (gfx12) with this tree's engine (`0.1.63-q4u32`) it names nothing above 8K, and the engine runs `q4u32` with the exact-cell window (the row below: 5.29 bit/cell at 128K, 1,016 MiB against 8-bit's 1,584; the 128K A/B chose it over the plain grid, KL 0.06949 against 0.078700, the same prompt at 26.5 against 26.2 tok/s). An upstream engine has no such default, so the Terminal names a format there. |
 | `--kv int8` | 8-bit KV cache. What the Terminal writes above 8K context on every card that is not gfx12, and on every engine that is not a q4u32 build. |
-| `--kv q4u32` | 4-bit KV cache on the uniform grid (a per-32-value block scale, fitted instead of taken from the block maximum). The default on gfx12 in this tree; on other cards it runs the prompt 2.5x slower (the decode kernel it replaces), so there it has to be named on purpose. |
+| `--kv q4u32` | 4-bit KV cache on the uniform grid (a per-32-value block scale, fitted instead of taken from the block maximum). The default's base on gfx12 in this tree, where the default adds the exact-cell window (a named `--kv q4u32` runs the plain grid); on other cards it runs the prompt 2.5x slower (the decode kernel it replaces), so there it has to be named on purpose. |
 | `--kv q4_0` | Half the KV memory with a Hadamard rotation before 4-bit rounding. About 4% faster at 128K, measurably less precise on long documents (perplexity +8-12%; needle tests still pass). Setup asks above 8K context. |
 | `--kv k8v4` | Keys at 8 bits, values as rotated 4-bit: 23% less KV memory than 8-bit, so more experts fit in VRAM. More precise than `q4_0` on long documents. Prompts are 2-5% slower. |
-| `--kv q4u32` + the window (this tree, opt-in) | `q4u32`'s 4-bit cells plus an exact-cell window (the recent 256 and the sink 64 cells of each QSA layer stay fp16 in a resident side pool). Setup's 4th KV choice writes `--kv q4u32` and the engine env `STRATA_KV_WINDOW=1` (S/R 256/64): 1,016 MiB at 128K against 1,584 MiB for 8-bit. Measured quality (cwe-4k, 32,746 positions, engine 0.1.59.1): mean KL 0.01739 against int8's 0.01688 (+0.00052, a statistical tie, int8 ahead in 4 of 8 segments; p99 0.2653 against 0.1888); on the 128K text (131,060 positions) 0.06949 against the fair int8 anchor's 0.06419 (+0.00530, top-1 98.31% against 98.41%, p99 1.9837 against 1.7455). On gfx12 the prompt is level with 8-bit at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at 4K and 32K. Combines with `--kv-resident`: the exact-cell side pool stays in VRAM while the q4 blocks stream from RAM; streamed and fully resident runs were bitwise identical at 32K (`docs/bench-results/2026-11-25-q4u32w-streaming/`). Exists only in a build from this source. |
+| `--kv q4u32` + the window (`--kv q4u32w`, this tree; the default on gfx12 since the 128K A/B) | `q4u32`'s 4-bit cells plus an exact-cell window (the recent 256 and the sink 64 cells of each QSA layer stay fp16 in a resident side pool). Setup's 4th KV choice writes `--kv q4u32` and the engine env `STRATA_KV_WINDOW=1` (S/R 256/64); the default on gfx12 above 8K is the same point with no `--kv` in the config (the engine fills that env itself). 1,016 MiB at 128K against 1,584 MiB for 8-bit. Measured quality (cwe-4k, 32,746 positions, engine 0.1.59.1): mean KL 0.01739 against int8's 0.01688 (+0.00052, a statistical tie, int8 ahead in 4 of 8 segments; p99 0.2653 against 0.1888); on the 128K text (131,060 positions) 0.06949 against the fair int8 anchor's 0.06419 (+0.00530, top-1 98.31% against 98.41%, p99 1.9837 against 1.7455). The 128K A/B (2026-11-25) then decided the default: paired over the same 131,060 positions the window is −0.0092077 mean KL against the plain grid (t −5.66, 95% CI [−0.012395, −0.006020], McNemar 1063 vs 885, p 6.0e-5), and the A/B's own timings put the same 131,061-token prompt at 26.5 against 26.2 tok/s (one run each, inside this machine's spread; the side pool cost 152 MiB of VRAM). On gfx12 the prompt is level with 8-bit at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at 4K and 32K. Combines with `--kv-resident`: the exact-cell side pool stays in VRAM while the q4 blocks stream from RAM; streamed and fully resident runs were bitwise identical at 32K (`docs/bench-results/2026-11-25-q4u32w-streaming/`). Exists only in a build from this source. |
 | `--kv q4lm8v` (this tree, opt-in) | 4-bit Lloyd K and V plus the same exact-cell window (S/R 256/64, env `STRATA_KV_WINDOW=1`): the Lloyd window arm, with the detailed 2K/4K/128K quality series, 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for 8-bit. A hand-written config needs the env; setup's menu writes the `q4u32` pair. Does not combine with `--kv-resident` (only the `q4u32` window has been checked under streaming). Details: [KV cache quantization](#kv-cache-quantization-above-8k-context). |
 | `--kv-streaming on\|off\|auto` | Keeps the context's KV cache in RAM and only the part attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Costs about 13.7 KB of RAM per context token (1.7 GB at 128K). Setup turns it on from 64K when the RAM has room; `on` overrides the RAM test with a note. Never under WSL. |
 | `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off) | The KV takes VRAM only for the cells the requests reach; the expert cache holds the rest and gives slots back as the context grows. Needs one GPU, an expert profile, the whole KV in VRAM and every expert in RAM. Otherwise the engine says so and stays off. On HIP it uses virtual memory management (`STRATA_HIP_VMM=0` turns that off). It pays on cards of about 24 GB or less with contexts of 128K and more. |
@@ -260,15 +260,18 @@ New fields may be added to an event; a reader should ignore fields it does not k
 automatically); `0` forces `cudaHostAlloc` first.
 
 **Who chooses the format, in short.** The engine of this tree (`0.1.63-q4u32`) decides: without `--kv` it
-takes `q4u32` on gfx12 (RDNA4), where the 4-bit prompt path was measured (level with 8-bit: 664,5 against
-669,0 tok/s at 32K, A.23; the paired A/B of the coupled switch gave −1,8 % / −2,1 %, A.22). It uses 54.5 %
-of 8-bit's bytes, which the expert cache gets: **+18,7 %** slots. At 106K tokens (A.28) the same holds:
-737,5 against 743,4 tok/s with the same number of expert-cache slots (−0,8 %), and 3608 against 3079 slots
-with the cache sized automatically (**+17,2 %**). The format's quality at this length was measured with the
-exact-cell window (`q4u32` + `STRATA_KV_WINDOW=1`, the next point): against fp16 over 131.060 positions (13.11.) it
-reaches a mean KL of 0.06949 against the fair 8-bit anchor's 0.06419 (paired +0.00530, t +3.44) and a top-1 of
-98,31 % against 98,41 % (the best rotated anchor, R2a, sits at 0.06238 / 98,49 %); at 4K the same comparison is not
-resolvable. The plain default's quality at 128K is not separately measured. On every other card, and with every engine that is not a q4u32 build, the Terminal writes the
+takes `q4u32` with the exact-cell window on gfx12 (RDNA4), where the 4-bit prompt path was measured (the plain grid
+is level with 8-bit: 664,5 against 669,0 tok/s at 32K, A.23; the paired A/B of the coupled switch gave −1,8 % /
+−2,1 %, A.22). The plain grid uses 54.5 % of 8-bit's bytes, which the expert cache gets: **+18,7 %** slots. At 106K
+tokens (A.28) the same holds: 737,5 against 743,4 tok/s with the same number of expert-cache slots (−0,8 %), and
+3608 against 3079 slots with the cache sized automatically (**+17,2 %**). Since the 128K A/B (25.11.2026) the
+default adds the exact-cell window: at 128K the KV keeps 1.016 MiB against 8-bit's 1.584 (5,29 bit/cell, 152 MiB of
+it the fp16 side pool) and its quality is 0.06949 mean KL against the plain grid's 0.078700 over the same 131.060
+positions (paired −0.0092077, t −5.66, the pre-registered rule met); the same 131.061-token prompt ran at 26,5
+against 26,2 tok/s (one run each, inside this machine's spread). Against fp16 over those positions (13.11.) the
+windowed point is +0.00530 behind the fair 8-bit anchor (0.06949 against 0.06419, t +3.44), top-1 98,31 % against
+98,41 % (the best rotated anchor, R2a, sits at 0.06238 / 98,49 %); at 4K the same comparison is not
+resolvable. On every other card, and with every engine that is not a q4u32 build, the Terminal writes the
 format itself (int8 above 8K, fp16 up to 8K), so those starts stay byte-identical to the last release; `STRATA_HIP_WMMA=0` keeps 16-bit
 everywhere (that is the state without the prompt path, where the 4-bit pool is 2,5x slower). A format the
 person names is always written. **An update never switches the variant of Strata that is installed** — the
@@ -1494,28 +1497,33 @@ never changed. `STRATA_ROUTE_PRIOR` raises KL and is an opt-in again in 0.2.8 (0
 The KV cache is the model's memory of the conversation. Above 8K context it is stored as:
 
 - **int8** (the default everywhere but gfx12 of this tree, 8.0 bit/cell) — what every published number was measured with.
-- **q4u32** (the default on gfx12 of this tree above 8K) — 4.5 bit/cell on the uniform grid, one fitted step per
-  32 values: 54.5 % of int8's bytes, level with it in prompt speed at 32K and 106K. Its quality at 4K and 128K was
-  measured on the exact-cell window (the next point): a tie at 4K, +0.00530 KL at 128K. Details:
-  [Memory modes](#memory-modes).
+- **q4u32 with the exact-cell window** (the default on gfx12 of this tree above 8K since the 128K A/B; setup's
+  4th KV choice; NVIDIA/AMD only) — q4u32's 4.5 bit/cell uniform grid (one fitted step per 32 values) plus an
+  **exact-cell window** (256 recent + 64 sink cells kept as fp16 in a resident side pool): 5.29 bit/cell at
+  128K, 1,016 MiB against 1,584 MiB for int8. Measured quality: at 4K the pair is a statistical tie with int8
+  (mean KL 0.01739 against 0.01688, +0.00052, int8 ahead in 4 of 8 segments; p99 0.2653 against 0.1888); on the
+  128K text it is +0.00530 KL behind the fair int8 anchor (0.06949 against 0.06419, top-1 98.31 % against
+  98.41 %, p99 1.9837 against 1.7455) and ahead of the plain grid (0.078700 mean KL over the same 131,060
+  positions; the paired 128K A/B: −0.0092077, t −5.66, 95 % CI [−0.012395, −0.006020], McNemar 1063 vs 885,
+  p 6.0e-5). On gfx12 the prompt is level with int8 at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at
+  4K and 32K; the A/B's own timings put the same 131,061-token prompt at 26.5 against 26.2 tok/s for the plain
+  grid (one run each, inside this machine's spread). Details: [Memory modes](#memory-modes).
+- **q4u32** (the plain grid, named with `--kv q4u32`) — 4.5 bit/cell, 54.5 % of int8's bytes, level with int8 in
+  prompt speed at 32K and 106K. Naming it turns the window off, and so does `STRATA_KV_WINDOW=0` beside the
+  default.
 - **q4_0** — about 4.0 bit, half the memory, ~4% faster at 128K, but measurably less precise
   on long documents; long-context lookups (needles) still pass.
 - **k8v4** — hybrid, INT8 K + 4-bit V, 816 B/cell.
-- **q4u32 + the exact-cell window** (setup's 4th KV choice, opt-in, NVIDIA/AMD only) — q4u32's
-  4.5 bit/cell plus an **exact-cell window** (256 recent + 64 sink cells kept as fp16 in a resident
-  side pool): 1,016 MiB at 128K against 1,584 MiB for int8. Measured quality: at 4K the pair is a
-  statistical tie with int8 (mean KL 0.01739 against 0.01688, +0.00052, int8 ahead in 4 of 8
-  segments; p99 0.2653 against 0.1888); on the 128K text it is +0.00530 KL behind the fair int8 anchor (0.06949 against
-  0.06419, top-1 98.31 % against 98.41 %, p99 1.9837 against 1.7455). On gfx12 the prompt is level
-  with int8 at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at 4K and 32K.
 - **q4lm8v** (opt-in, NVIDIA/AMD only) — 4-bit Lloyd K and V plus the same **exact-cell window**
   (256 recent + 64 sink cells kept as fp16 in a resident side pool): the measured window arm,
   5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8. About as fast as int8, more expert
   slots; accuracy at 4K between 8- and 4-bit, at the 8-bit level in the answer region; needles
   6/6 at 32K and 128K.
 
-The window is opt-in (`--kv q4u32` + `STRATA_KV_WINDOW=1`, setup's 4th choice from 32K up; or
-`--kv q4lm8v` for the Lloyd arm). Its ring is sized for the prompt chunk (`STRATA_KV_WINDOW_BATCH`, default follows the chunk, capped at 6,144
+On gfx12 in a q4u32 build the window is the default above 8K (the engine fills `STRATA_KV_WINDOW=1` with S/R
+256/64 itself, and setup writes the same env into the config so it shows); everywhere else it is opt-in (`--kv
+q4u32w`, or `--kv q4lm8v` for the Lloyd arm). `STRATA_KV_WINDOW=0` runs the plain grid beside the default. Its ring
+is sized for the prompt chunk (`STRATA_KV_WINDOW_BATCH`, default follows the chunk, capped at 6,144
 cells so setup's 152 MiB figure stays honest); the cap comes from the free ring's 6,144-cell scan
 limit. The exact-cell overlay is orthogonal to the level table: `--kv q4lm32w` turns it on for
 kLloyd, and `STRATA_KV_WINDOW=1` turns it on for any other q4 mode. `q4u32` is the one window arm that also

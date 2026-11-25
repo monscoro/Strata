@@ -7621,20 +7621,31 @@ def choices_from_config(cfg_path: Path) -> dict:
 def kv_check_config(cfg_path: Path) -> None:
     """--kv-check: read a Strata config and report its KV cache settings: mode, window env, streaming pair,
     effective bits per cell, and whether the engine would start.  q4u32's window streams from engine
-    0.1.63-q4u32 on; other window arms beside --kv-resident are still refused."""
+    0.1.63-q4u32 on; other window arms beside --kv-resident are still refused.  A config without --kv names no
+    format on purpose (the engine picks it): the report says so and reads the window env as the q4u32 arm."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     args = cfg.get("args", []) or []
     env = cfg.get("env", {}) or {}
     def val(flag):
         return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
-    kv = val("--kv") or "int8"
+    named = val("--kv")
+    window = env.get("STRATA_KV_WINDOW") == "1"
+    # A config setup wrote leaves --kv out where the engine picks the format itself: q4u32 with the exact-cell
+    # window above 8K on gfx12 in a q4u32 build (the window env beside the absent flag names that arm).  Without
+    # the env the engine's own default is not in the file - the report keeps the release's 8-bit reading and the
+    # mode line below says what it cannot see.
+    kv = named or ("q4u32" if window else "int8")
     ctx_raw = val("--max-context")
     ctx = int(ctx_raw) if (ctx_raw or "").isdigit() else None
     resident = "--kv-resident" in args
-    window = env.get("STRATA_KV_WINDOW") == "1"
     s = env.get("STRATA_KV_WINDOW_S"); r = env.get("STRATA_KV_WINDOW_R"); b = env.get("STRATA_KV_WINDOW_BATCH")
     print(f"\n  {cfg_path.name}")
-    print(f"    KV mode:        {kv}")
+    if named:
+        print(f"    KV mode:        {kv}")
+    else:
+        print(f"    KV mode:        the engine's own default (left out of the config): q4u32 with the exact-cell "
+              "window above 8K on gfx12 in a q4u32 build, fp16 up to 8K; the lines below read it as "
+              f"{kv}")
     print(f"    context:        {ctx if ctx else '(not set)'}")
     print(f"    window env:     STRATA_KV_WINDOW={env.get('STRATA_KV_WINDOW', '(unset)')}"
           + (f"  S={s} R={r}" + (f" B={b}" if b else "") if window else ""))
@@ -7643,10 +7654,14 @@ def kv_check_config(cfg_path: Path) -> None:
     # numbers the papers use, "4.5 bit per cell against int8's 8.25")
     q4_window_arms = ("q4lm32", "q4lm32s", "q4lm8", "q4lm8k", "q4lm8v", "q4lm32w", "q4u32", "q4u32z")
     window_active = window and kv in q4_window_arms   # the window is only on for an arm with a reader (not q4_0/int8)
-    if kv == "q4u32" and window_active:
+    if not named and not window:   # the engine's own default, which this file does not name (and cannot read here)
+        bits = None
+        note = ("the engine's own default, which this file neither names nor pins with the window env: q4u32 with "
+                "the exact-cell window above 8K on gfx12 in a q4u32 build, fp16 up to 8K")
+    elif kv == "q4u32" and window_active:
         bits = 5.29
-        note = ("the windowed 4-bit choice (setup's 4th): 4.5 bit/cell plus the resident ring, 1,016 MiB at 128K "
-                "against 1,584 MiB for int8")
+        note = ("the windowed 4-bit point: 4.5 bit/cell plus the resident ring, 1,016 MiB at 128K "
+                "against 1,584 MiB for int8 (setup's 4th choice and, since the 128K A/B, its default on gfx12)")
     elif kv == "q4lm8v" and window_active:
         bits = 5.29
         note = "measured 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8"
@@ -8712,7 +8727,8 @@ UD_FIT_MIN_SLACK_MIB = 64         # at least a few cache slots beside the estima
 UD_FIT_CARD_GB = 9.5              # the check is for cards up to here
 UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the SYCL measurement above has none of it)
 UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
-KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "q4u32": "4-bit uniform grid (the default on gfx12)",
+KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)",
+            "q4u32": "4-bit uniform grid (plain; the default on gfx12 runs it with the exact window)",
             "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit",
             "q4u32w": "4-bit uniform grid with exact window (256/64)",
             "q4lm8v": "4-bit with exact window (256/64)"}
@@ -10437,12 +10453,16 @@ def main() -> int:
                          "262144, at least 1 - 1.5 for 384K, 2 for 512K, 1 inside the trained range)")
     ap.add_argument("--kv", choices=["int8", "q4_0", "q4u32", "q4u32w", "k8v4", "q4lm8v", "fp16"],
                     help="KV cache precision above 8K context. Left out, a q4u32 build (this tree's engine, "
-                         "0.1.63-q4u32) picks q4u32 on gfx12 (54.5 %% of int8's bytes, level with it at 32K and 106K, "
-                         "measured); setup names 8-bit on every other card and on an upstream engine, as before. q4_0 (half the "
+                         "0.1.63-q4u32) runs q4u32 with the exact-cell window on gfx12 (q4u32w: 54.5 %% of int8's "
+                         "bytes, level with it at 32K and 106K, measured; the 128K A/B chose the window over the "
+                         "plain grid - KL 0.06949 against 0.078700 over 131,060 positions, the same prompt at 26.5 "
+                         "against 26.2 tok/s); setup names 8-bit on every other card and on an upstream engine, as "
+                         "before. q4u32 alone runs the plain grid without the window, q4_0 (half the "
                          "memory, a little less precise), k8v4 (hybrid: INT8 K + "
                          "4-bit V, 816 B/cell), q4u32w (q4u32 with the exact-cell window, 256/64: 1,016 MiB at 128K "
                          "against 1,584 MiB for int8, at 4K a tie with 8-bit (+0.00052 KL), at 128K +0.00530 KL "
-                         "behind; setup writes --kv q4u32 and the window env; opt-in, NVIDIA/AMD only), q4lm8v (the "
+                         "behind; setup writes --kv q4u32 and the window env - the default's point, named on any "
+                         "card, NVIDIA/AMD only), q4lm8v (the "
                          "measured 4-bit Lloyd arm with the same window) or fp16 (16-bit, twice the "
                          "memory of int8) name one")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
@@ -11198,7 +11218,7 @@ def main() -> int:
         ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
     ok(f"context: {ctx} tokens")
     # the KV cache (the model's memory of the conversation): 8-bit, 4-bit after a Hadamard rotation (PR #21), or the
-    # 4-bit uniform grid with the exact-cell window (KV window, 256/64; opt-in)
+    # 4-bit uniform grid - with the exact-cell window (q4u32w, 256/64) where the engine picks that grid itself
     kv = a.kv or ("fp16" if ctx <= 8192 else "int8")
     if kv in ("q4u32w", "q4lm8v") and not WINDOW_KV:
         fail("the Intel Arc (SYCL) engine has no exact-cell window: it is NVIDIA/AMD only",
@@ -11206,8 +11226,9 @@ def main() -> int:
     if ctx > 8192 and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
-        say("  1) the engine's choice  (q4u32 on gfx12, where its prompt path was measured: 45% less memory than 8-bit,")
-        say("             level with it at 32K; 8-bit on every other card and on an upstream engine)")
+        say("  1) the engine's choice  (q4u32 with the exact-cell window on gfx12, where its prompt path was measured:")
+        say("             36% less memory than 8-bit at 128K (1,016 against 1,584 MiB), the prompt level with")
+        say("             it at 32K; 8-bit on every other card and on an upstream engine)")
         say("  2) 8-bit   (what every published number was measured with)")
         say("  3) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
         say("             documents; long-context lookups (needle tests) still pass")
@@ -11233,8 +11254,8 @@ def main() -> int:
         # on gfx12 the engine's own default is the measured 4-bit one, but only in a q4u32 build (0.1.63-q4u32); the engine is not
         # known yet (step 4 comes later), so the line says both
         if a.kv is None and _gfx12:
-            ok(f"KV cache: {KV_WORDS['q4u32']} (the default on this card in a q4u32 build (0.1.63-q4u32); "
-               "an upstream engine uses 8-bit)")
+            ok(f"KV cache: {KV_WORDS['q4u32w']} (the default on this card in a q4u32 build (0.1.63-q4u32): the "
+               "128K A/B chose the window over the plain grid; an upstream engine uses 8-bit)")
         else:
             ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
     if MODELS[model].get("vision", fam.get("vision")) is False:     # UD-IQ4_XS: images, unlike UD-Q4_K_XL

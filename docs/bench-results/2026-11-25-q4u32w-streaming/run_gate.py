@@ -18,6 +18,7 @@ def expand(value):
 
 arm = sys.argv[1]
 tag = sys.argv[2] if len(sys.argv) > 2 else arm
+reserve = sys.argv[3] if len(sys.argv) > 3 else "20480"   # the streamed arms' cells in VRAM
 cfg = json.loads(CFG.read_text(encoding="utf-8-sig"))
 exe = expand(cfg["exe"])
 cwd = expand(cfg["cwd"])
@@ -41,8 +42,9 @@ if arm == "resident":
     i = args.index("--kv-resident")
     del args[i:i + 2]
 else:
-    # Below the context length: the stream map really evicts and restores blocks from the host copy.
-    args[args.index("--kv-resident") + 1] = "20480"
+    # Below the context length: the stream map really evicts and restores blocks from the host copy (pass
+    # 32768 as the third argument for the same host copy without eviction).
+    args[args.index("--kv-resident") + 1] = reserve
 
 env = dict(os.environ)
 env["PATH"] = os.pathsep.join([str(ROOT / "terminal" / "engine" / "rocm" / "bin"),

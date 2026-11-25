@@ -1,7 +1,8 @@
 # AGENTS.md
 
 Version 0.2.17, engine 0.1.63. This tree's own engine is 0.1.63-q4u32: the Strata release it was changed
-from, plus the suffix of what it adds - the measured `q4u32` KV default, so a fork build is never mistaken
+from, plus the suffix of what it adds - the measured `q4u32` KV default (with the exact-cell window on gfx12 above
+8K, decided by the 128K A/B), so a fork build is never mistaken
 for an upstream one. The public model families are
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B. Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
 source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.

@@ -640,8 +640,9 @@ class WindowKV(unittest.TestCase):
 
 
 class WindowKVWrite(unittest.TestCase):
-    """The opt-in's real write path: --kv q4u32 plus the 256/64 window in the config's env (the Lloyd arm writes
-    --kv q4lm8v); the default stays int8."""
+    """The window choices' real write path: --kv q4u32 plus the 256/64 window in the config's env (the Lloyd arm
+    writes --kv q4lm8v).  The default writes no window on NVIDIA (it stays int8) and the window on gfx12 in a
+    q4u32 build, where the engine picks the format itself."""
 
     def install(self, *extra, answers=None, version="0.1.63"):
         from test_setup_golden import card, install
@@ -711,6 +712,26 @@ class WindowKVWrite(unittest.TestCase):
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW"], "1")
         self.assertIn("ignored beside the exact-cell window", out)
 
+    def test_the_gfx12_default_writes_the_window(self):
+        # Since the 128K A/B (2026-11-25) the default on gfx12 in a q4u32 build is the windowed point q4u32w:
+        # no --kv in the config (the engine picks the format itself) and the window env beside it, exactly as
+        # the named choice writes it.  NVIDIA keeps naming 8-bit (test_the_default_stays_int8).
+        from test_setup_golden import card, install
+        amd = [{**card(0, "AMD Radeon RX 9060 XT", 15.9, "gfx1200"), "driver": "amdgpu", "uma": False}]
+        code, out, cfg, _ = install(63.7, [], ["--family", "qwen", "--model", "Q2_0", "--context", "131072",
+                                    "--no-start", "--backend", "hip"], engine_flavor="q4u32",
+                                    engine_version="0.1.63",
+                                    extra=[mock.patch.object(setup, "amd_gpus", lambda: amd),
+                                           mock.patch.object(setup, "hip_devices", lambda *a, **k: amd)])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--kv", cfg["args"])                  # auto: the engine picks the format itself
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW"], "1")
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_S"], "256")
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_R"], "64")
+        self.assertIn("--kv-resident", cfg["args"])            # 0.1.63-q4u32 checks the window under streaming
+        self.assertIn("4-bit uniform grid with exact window", out)   # the OK line says what the default runs
+        self.assertIn("side pool stays in VRAM", out)
+
 
 class WindowKVShortContext(unittest.TestCase):
     """A window choice at 8K keeps a.kv through the engine check: an upstream engine cannot run q4u32/q4lm8v, so
@@ -740,9 +761,10 @@ class WindowKVShortContext(unittest.TestCase):
 class KVCheckConfig(unittest.TestCase):
     """--kv-check: q4u32's window starts beside --kv-resident from engine 0.1.63-q4u32; other window arms and
     older engines are still refused.  q4_0/int8 start with the window off (the engine disables it), so the pair
-    is not a dead pair there."""
+    is not a dead pair there.  A config without --kv is the engine's own default (setup's gfx12 write): the
+    window env beside the absent flag reads as the q4u32 arm."""
 
-    def check(self, kv, resident=True, version="0.1.63"):
+    def check(self, kv, resident=True, version="0.1.63", window=True):
         with tempfile.TemporaryDirectory() as d:
             eng = Path(d) / "engine"
             eng.mkdir()
@@ -750,12 +772,29 @@ class KVCheckConfig(unittest.TestCase):
             exe.write_bytes(b"")
             (eng / "BUILD.json").write_text(json.dumps({"version": version}))
             p = Path(d) / "strata-test.json"
-            args = ["--max-context", "131072", "--kv", kv] + (["--kv-resident", "32768"] if resident else [])
-            p.write_text(json.dumps({"args": args, "env": {"STRATA_KV_WINDOW": "1"}, "exe": str(exe)}))
+            args = ["--max-context", "131072"] + (["--kv", kv] if kv else []) + \
+                   (["--kv-resident", "32768"] if resident else [])
+            env = {"STRATA_KV_WINDOW": "1"} if window else {}
+            p.write_text(json.dumps({"args": args, "env": env, "exe": str(exe)}))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 setup.kv_check_config(p)
             return out.getvalue()
+
+    def test_a_config_without_the_flag_reads_the_engine_default(self):
+        # setup's gfx12 default writes no --kv (the engine picks the format) and the window env beside it: the
+        # report must read that as the q4u32 arm, not call the env ignored or the pair dead.
+        out = self.check(None)
+        self.assertIn("the engine's own default (left out of the config)", out)
+        self.assertIn("OK: window active, q4u32 KV streaming", out)
+        self.assertNotIn("not a q4 arm", out)
+        self.assertNotIn("DEAD PAIR", out)
+        self.assertIn("engine starts:  yes", out)
+        # without the window env the file does not say which format the engine will run: no made-up 8-bit figure
+        out = self.check(None, window=False)
+        self.assertIn("?/cell", out)
+        self.assertIn("neither names nor pins", out)
+        self.assertIn("engine starts:  yes", out)
 
     def test_an_ignored_window_beside_streaming_still_starts(self):
         for kv in ("q4_0", "int8"):
