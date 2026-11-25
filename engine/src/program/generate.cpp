@@ -5019,16 +5019,15 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
-    if (o.kv_resident > 0 && strata::core::qsa_kv_win()) {
-        // The exact-cell window keeps its recent cells in an always-resident side pool; a streamed KV
-        // (--kv-resident) has no such pool, so the window would read quantized where it promises exact - a silent
-        // wrong measurement, not a crash. Refused loudly instead. Setup never writes this pair (a windowed
-        // config's KV cache stays in VRAM, nothing streams beside the window); this is the fallback for a
-        // hand-edited config that sets both.
-        std::fprintf(stderr, "strata: --kv-resident (KV streaming) and the exact-cell window (--kv q4u32 or "
-                            "q4lm8v + STRATA_KV_WINDOW=1) do not combine: the streamed cells have no resident side "
-                            "pool, so the window would read quantized. Keep the window without --kv-resident, or "
-                            "use --kv int8/q4_0/k8v4 for streaming\n");
+    // q4u32's exact-cell window and --kv-resident can be combined: the window's fp16 side pool is carved in every
+    // main QSA state (layer.cpp's ring_cells <= 0, which includes a streamed state) and stays resident, while the
+    // q4 blocks beside it page through the host copy. The MTP ring (ring_cells > 0) never carries a window, and
+    // snapshots of a windowed state are still refused. kv_stream_parity's q4u32w arm checks the pair bitwise; the
+    // other windowed arms have not been checked under streaming and stay refused.
+    if (o.kv != "q4u32" && o.kv_resident > 0 && strata::core::qsa_kv_win()) {
+        std::fprintf(stderr, "strata: --kv-resident (KV streaming) and the exact-cell window do not combine for "
+                             "--kv %s: only q4u32 has been checked bitwise. Keep the window without --kv-resident, "
+                             "or use --kv int8/q4_0/k8v4 for streaming\n", o.kv.c_str());
         return 2;
     }
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
@@ -10393,8 +10392,9 @@ int main(int argc, char** argv) {
     }
 
     std::FILE* dump = nullptr;
-    // The logits header is written WITH THE FIRST ROW, not at open: a native pack never reaches the
-    // per-token dump site, and a header promising rows that were never written is worse than no file.
+    // The logits header is written WITH THE FIRST ROW, not at open: a header promising rows that were never
+    // written is worse than no file.  A native pack skips the per-token loop, so its one row comes from the
+    // initial verify window below and the header starts at zero rows until that row is actually written.
     int32_t hdr[2] = {0, 0};
     bool hdr_written = false;
     const int64_t dump_positions = (int64_t) o.tokens.size() - 1 + o.max_new;
@@ -10415,7 +10415,8 @@ int main(int argc, char** argv) {
         // class of defect as a self-check that verifies the wrong invariant: anything reading the count instead
         // of the size gets a wrong answer that looks authoritative.  `tools/logits_identical.py` caught it by
         // parsing the header and refusing the file.
-        const int32_t n_rows = (int32_t) strata::program::logits_selection::row_count(dump_positions, o.logits_stride);
+        const int32_t n_rows = native_pack ? 0 :
+            (int32_t) strata::program::logits_selection::row_count(dump_positions, o.logits_stride);
         hdr[0] = n_vocab; hdr[1] = n_rows;
     }
 
@@ -24397,6 +24398,22 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "strata generate: STRATA_DUMP_FIRST_LOGITS: cannot write %s\n", fl);
                     if (f) std::fclose(f);
                 }
+                // A native pack has no per-token dump site.  Write the same first row here so --dump-logits is a
+                // real end-to-end artifact for this path instead of an empty file with a printed success line.
+                if (dump != nullptr) {
+                    std::vector<float> row((size_t) ver.vocab());
+                    if (!ver.copy_logits(0, row.data())) {
+                        std::fprintf(stderr, "strata generate: reading the first logits for --dump-logits failed\n");
+                        return 1;
+                    }
+                    hdr[1] = 1;
+                    if ((!hdr_written && std::fwrite(hdr, sizeof hdr, 1, dump) != 1) ||
+                        std::fwrite(row.data(), sizeof(float), row.size(), dump) != row.size()) {
+                        std::fprintf(stderr, "strata generate: cannot write logits to %s\n", o.dump_logits.c_str());
+                        return 1;
+                    }
+                    hdr_written = true;
+                }
             }
             // plan v0.3 P6: the adaptive tier's host work (ranking, copy submission) runs on its own thread while the
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
@@ -24590,9 +24607,15 @@ int main(int argc, char** argv) {
                         (double) mtp.vram_bytes() / 1048576.0);
     }
 
-    if (dump != nullptr && std::fclose(dump) != 0) {
-        std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
-        return 1;
+    if (dump != nullptr) {
+        // No verify window ran (for example a prompt with no generated token): a native pack's declared zero
+        // rows are at least an honest description of the empty file.
+        if (native_pack && !hdr_written && std::fwrite(hdr, sizeof hdr, 1, dump) != 1)
+            std::fprintf(stderr, "strata generate: cannot write the empty logits header\n");
+        if (std::fclose(dump) != 0) {
+            std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
+            return 1;
+        }
     }
     if (layer_dump != nullptr) {
         std::fclose(layer_dump);

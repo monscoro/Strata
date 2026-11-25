@@ -25,6 +25,10 @@ from typing import Any
 #: every size on a single-card Windows Strix Halo (no size threshold: a new model of unknown size could hang the same way).
 UMA_WIN_RESERVE_MIB = 700
 
+#: The first engine that checks q4u32's exact-cell window under --kv-resident bit for bit.  Older q4u32 engines
+#: refuse the pair, and an upstream engine has no q4u32 window at all, so setup must not write it for them.
+WINDOW_STREAM_ENGINE = (0, 1, 63)
+
 
 @dataclass
 class SetupInputs:
@@ -233,6 +237,8 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     # resident, so the estimates below use the windowed variant's bytes per cell
     window = a.kv in ("q4u32w", "q4lm8v")
     window_kv = "q4lm8v" if a.kv == "q4lm8v" else "q4u32"   # the format the window runs on (the messages name it)
+    window_stream = (window and window_kv == "q4u32" and engine_flavor == "q4u32" and
+                     engine_ver >= WINDOW_STREAM_ENGINE)
     if window and kv == "q4u32":
         kv = "q4u32w"
     if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
@@ -311,12 +317,11 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     # --kv-streaming on|off overrides the RAM test (the owner's rule); WSL stays off - it cannot stream.
     stream_need = kv_streaming_need_gb(model, ctx, kv)
     stream_fits = ram >= stream_need
-    # The exact-cell window (setup's 4th choice: --kv q4u32 with the env; also --kv q4lm8v) and KV streaming do not
-    # combine: the window's recent cells live in an always-resident side pool, which a streamed KV does not have, and
-    # the engine refuses the pair loudly (so a hand-edited config holding both does not start). The window is a memory
-    # plan of its own, so it wins when it is chosen: no --kv-resident beside it, the window's KV stays in VRAM (the
-    # measured 5.29 bit at 128K).
-    if window:
+    # The exact-cell window (setup's 4th choice: --kv q4u32 with the env; also --kv q4lm8v) keeps its fp16 side pool
+    # in VRAM.  A q4u32 engine from 0.1.63 on has that pool checked under KV streaming, so it follows the normal
+    # streaming choice.  Older q4u32 engines and the other window arms are still refused with --kv-resident, so setup
+    # keeps their KV in VRAM.  A hand-edited config holding that pair does not start; --kv-streaming off stays explicit.
+    if window and not window_stream:
         stream_fits = False
     if is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
@@ -325,20 +330,22 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
                  "only about 1 GB there): off")
     elif ctx >= 65536 and a.kv_streaming == "off":
         ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
-    elif ctx >= 65536 and window:   # before the streaming branches: streaming never pairs with the window
+    elif ctx >= 65536 and window and not window_stream:
         if a.kv_streaming == "on":
             warn("--kv-streaming on: kept as you chose, but it is ignored beside the exact-cell window "
-                 f"(--kv {window_kv}): streamed cells have no resident side pool for the window's exact cells, and the "
-                 "engine refuses the pair. The window stays and streams nothing; to stream, drop the window "
-                 "(--kv int8/q4_0/k8v4)")
+                 f"(--kv {window_kv}): this engine does not check the window under streaming and refuses the pair. "
+                 "The window stays and streams nothing; to stream, use a newer q4u32 engine or --kv int8/q4_0/k8v4")
         else:
-            ok(f"KV streaming off: the exact-cell window (--kv {window_kv}) and streaming do not combine (the window's "
-               "cells must stay resident, the engine refuses the pair), so the window's KV stays in VRAM "
-               f"(~{kv_ram_gb:.1f} GB at {ctx // 1024}K, the measured 5.29 bit). To stream instead, drop the window "
-               "(--kv int8/q4_0/k8v4)")
+            ok(f"KV streaming off: the exact-cell window (--kv {window_kv}) is not checked under streaming by this "
+               "engine (it refuses the pair), so the window's KV stays in VRAM "
+               f"(~{kv_ram_gb:.1f} GB at {ctx // 1024}K, the measured 5.29 bit). To stream instead, use a newer "
+               "q4u32 engine or --kv int8/q4_0/k8v4")
     elif ctx >= 65536 and (stream_fits or a.kv_streaming == "on"):
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
+        if window_stream:
+            ok("q4u32's exact-cell side pool stays in VRAM beside the streamed q4 blocks; streamed and resident "
+               "windows were bit-for-bit identical in the engine test")
         if not stream_fits:
             warn(f"KV streaming needs ~{stream_need:.0f} GB of RAM for {model} (its experts, the room beside them and "
                  f"the {kv_ram_gb:.1f} GB cache); this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "

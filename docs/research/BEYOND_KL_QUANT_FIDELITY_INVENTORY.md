@@ -151,7 +151,8 @@ Messung fest (statische Analyse, verifiziert 2026-10-27, Branch `kv_q4_quant_wit
    `engine/src/kernels/cuda/kv_q4.cu:267-280,381-510`). Der „Präzisionswechsel" ist also ein
    **Lesewechsel**, messbar als regionsbedingte KL an der Horizontkante. GPU-Residency ist
    separat: `kv_stream.cu:93-156` (CLOCK-Verdrängung) — Auftrag §5, letzter Absatz, ist damit
-   wörtlich zu trennen. Fenster + Streaming wird außerdem abgelehnt (`generate.cpp:3202-3213`).
+   wörtlich zu trennen. Fenster + Streaming wird für die Lloyd-Arme außerdem abgelehnt; `q4u32w` ist
+   seit 2026-11-25 bitgleich geprüft und freigegeben (`docs/bench-results/2026-11-25-q4u32w-streaming/`).
 3. **Selection Distortion ist im heutigen Pfad nicht strukturell null, aber der Weg ist indirekt.**
    Die Indexer-Keys werden aus dem Hidden State `x` projiziert (`engine/src/core/layer.cpp:1351-1358`,
    beide Zweige `project_bf16[_pair](x, … w_idxk → idx_raw)`, Append `:1470-1474`), **nicht** aus

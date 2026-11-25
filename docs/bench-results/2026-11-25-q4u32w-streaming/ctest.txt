@@ -1,0 +1,16 @@
+Internal ctest changing into directory: C:/Users/krone/git/q4u32-stabilize/build-hip-port
+Test project C:/Users/krone/git/q4u32-stabilize/build-hip-port
+    Start 156: kv_stream_parity
+1/5 Test #156: kv_stream_parity .................   Passed  107.85 sec
+    Start 157: kv_stream_parity_lanecell
+2/5 Test #157: kv_stream_parity_lanecell ........   Passed  145.16 sec
+    Start 159: kv_win_parity
+3/5 Test #159: kv_win_parity ....................   Passed    1.26 sec
+    Start 160: kv_win_parity_win_all
+4/5 Test #160: kv_win_parity_win_all ............   Passed    1.19 sec
+    Start 161: kv_win_parity_refuse
+5/5 Test #161: kv_win_parity_refuse .............   Passed    0.25 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) = 255.75 sec

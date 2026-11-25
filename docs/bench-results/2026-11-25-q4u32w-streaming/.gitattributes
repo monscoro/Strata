@@ -1,0 +1,5 @@
+# Gate artifacts are evidence: keep the exact bytes the engine read and wrote.
+*.tokens -text whitespace=-trailing-space
+*.log -text whitespace=-trailing-space
+*.bin -text
+*.txt -text whitespace=-trailing-space

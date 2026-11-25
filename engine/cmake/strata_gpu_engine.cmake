@@ -1210,10 +1210,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME kv_q8_parity COMMAND kv_q8_parity)
 
   # KV streaming (docs/kv-streaming-design.md): streamed vs resident attention, bitwise (GPU, synthetic, no model).
+  # Its q4u32w arm checks the exact-cell side pool beside a streamed q4 cache; the second test runs the lane-cell
+  # scorer, the other instantiation of the same window reader.
   add_executable(kv_stream_parity src/kernels/kv_stream_parity.cpp)
   target_include_directories(kv_stream_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(kv_stream_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_stream_parity COMMAND kv_stream_parity)
+  add_test(NAME kv_stream_parity_lanecell COMMAND kv_stream_parity)
+  set_tests_properties(kv_stream_parity_lanecell PROPERTIES ENVIRONMENT "STRATA_ATTN_LANECELL=1")
 
   # #2403: the verify window's KV calls on a streamed layer and on a ring (steps appends with the host copy, batched
   # resolve + attention, plain launches and graph replays), q4_0 / int8 / K8V4 (GPU, synthetic, no model).

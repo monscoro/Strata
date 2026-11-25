@@ -8,8 +8,10 @@
 //   2. the residency map is consistent after every call (slot_block and page_table invert each other);
 //   3. no call overflowed, and the hit/miss counters add up;
 //   4. a ring (the MTP drafter's layout) restored from the host copy reads the same values as the resident pool.
-// INT8, FP16, Q4_0 (PR #21) and hybrid K8V4 pools; K8V4's appends are the engine's folded calls (layer.cpp), its host
-// copy written through kv_hybrid_k_half / kv_hybrid_v_half.
+// INT8, FP16, Q4_0 (PR #21), q4u32 + the exact-cell window (STRATA_KV_WINDOW, S/R/B), and hybrid K8V4 pools; K8V4's
+// appends are the engine's folded calls (layer.cpp), its host copy written through kv_hybrid_k_half /
+// kv_hybrid_v_half.  The window arm writes the same q4 blocks through the same stream map, plus the fp16 side pool
+// the engine keeps resident beside them.  Its ring-restore check is skipped: the MTP ring never carries a window.
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_stream.hpp"
@@ -48,17 +50,40 @@ template <typename T> T* halloc(size_t n) {   // pinned, mapped; returns the dev
     return (T*) d;
 }
 
+struct Window {   // the exact fp16 side pool: rows [R sinks][S + B recent ring], always resident
+    uint16_t* k = nullptr;
+    uint16_t* v = nullptr;
+    int32_t* tag = nullptr;
+    int s = 0, r = 0, b = 0;
+    void alloc(const k::QsaShapes& sh, int S, int R, int B) {
+        s = S; r = R; b = B;
+        const size_t n = (size_t) (R + S + B) * sh.n_head_kv * sh.head_dim;
+        k = dalloc<uint16_t>(n);
+        v = dalloc<uint16_t>(n);
+        tag = dalloc<int32_t>((size_t) S + B);
+        // qsa_state_init's empty sentinel: no ring row names a cell until a writer puts its tag there.
+        ck(cudaMemset(tag, 0xFF, (size_t) (S + B) * sizeof(int32_t)), "win tag");
+    }
+    void attach(k::QsaAttnPools& a) const {
+        a.k_win = k; a.v_win = v; a.win_tag = tag;
+        a.win_s = s; a.win_r = r; a.win_b = b;
+    }
+};
+
 struct Pools {   // one K/V pool set of `pages` pages
     k::KvHostPools p;   // reused as a plain pointer bundle
-    void alloc(int64_t pages, const k::QsaShapes& s, int fmt, bool host) {
+    k::Q4Mode mode = k::Q4Mode::kUniform;
+    void alloc(int64_t pages, const k::QsaShapes& s, int fmt, bool host,
+               k::Q4Mode q4_mode = k::Q4Mode::kUniform) {
+        mode = q4_mode;
         const size_t rows = (size_t) pages * s.n_head_kv * s.page_size;
         if (fmt == k::kKvHybrid) {
-            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim, k::Q4Mode::kUniform);
+            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim, mode);
             p.k_q = host ? halloc<int8_t>(rows * s.head_dim) : dalloc<int8_t>(rows * s.head_dim);
             p.k_scale = host ? halloc<uint16_t>(rows * 4) : dalloc<uint16_t>(rows * 4);
             p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
         } else if (fmt == k::kKvQ4) {
-            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim, k::Q4Mode::kUniform);
+            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim, mode);
             p.k_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
             p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
         } else if (fmt == k::kKvInt8) {
@@ -75,21 +100,28 @@ struct Pools {   // one K/V pool set of `pages` pages
         k::QsaAttnPools a;
         a.k_pool = p.k_pool; a.v_pool = p.v_pool; a.k_q = p.k_q; a.v_q = p.v_q; a.k_scale = p.k_scale;
         a.v_scale = p.v_scale; a.k_q4 = p.k_q4; a.v_q4 = p.v_q4; a.page_table = table;
+        a.q4_mode = mode;
         return a;
     }
 };
 
 void append(const Pools& pl, const int32_t* table, const int32_t* step, const float* kc, const float* vc,
-            const k::QsaShapes& s, int fmt, const k::KvHostPools* host) {
+            const k::QsaShapes& s, int fmt, const k::KvHostPools* host, const Window* win = nullptr) {
     if (fmt == k::kKvHybrid) {   // exactly as qsa_layer: each half folded onto its own pool, host copy by halves
         const k::KvHostPools hk = host ? k::kv_hybrid_k_half(*host) : k::KvHostPools{},
                              hv = host ? k::kv_hybrid_v_half(*host) : k::KvHostPools{};
         k::kv_append_q8_step(pl.p.k_q, pl.p.k_q, pl.p.k_scale, pl.p.k_scale, table, step, kc, kc, s, nullptr,
                              host ? &hk : nullptr);
-        k::kv_append_q4_step(pl.p.v_q4, pl.p.v_q4, table, step, vc, vc, s, nullptr, host ? &hv : nullptr);
-    } else if (fmt == k::kKvQ4) k::kv_append_q4_step(pl.p.k_q4, pl.p.v_q4, table, step, kc, vc, s, nullptr, host);
+        k::kv_append_q4_step(pl.p.v_q4, pl.p.v_q4, table, step, vc, vc, s, nullptr, host ? &hv : nullptr, pl.mode);
+    } else if (fmt == k::kKvQ4)
+        k::kv_append_q4_step(pl.p.k_q4, pl.p.v_q4, table, step, kc, vc, s, nullptr, host, pl.mode);
     else if (fmt == k::kKvInt8) k::kv_append_q8_step(pl.p.k_q, pl.p.v_q, pl.p.k_scale, pl.p.v_scale, table, step, kc, vc, s, nullptr, host);
     else k::kv_append_step(pl.p.k_pool, pl.p.v_pool, table, step, kc, vc, s, nullptr, host);
+    // The engine's layer append writes the fp16 twin next to the q4 cell (layer.cpp:1561). It is independent of
+    // residency: the blocks stream, the side pool does not.
+    if (win != nullptr)
+        k::kv_append_win_steps(win->k, win->v, win->tag, step, 0, 1, kc, vc, (int) s.n_head_kv, (int) s.head_dim,
+                               nullptr, win->s, win->r, win->b);
 }
 
 // A selection like qsa_block_topk's: ascending cells, whole blocks, the tail block's cells, and one partial block.
@@ -114,19 +146,26 @@ std::vector<int32_t> selection(int64_t n_kv, int64_t width, std::mt19937& rng) {
     return ids;
 }
 
-bool run(int fmt) {
-    const char* name = fmt == k::kKvHybrid ? "k8v4" : fmt == k::kKvQ4 ? "q4_0" : fmt == k::kKvInt8 ? "int8" : "fp16";
+bool run(int fmt, bool window = false) {
+    const char* name = window ? "q4u32w" : fmt == k::kKvHybrid ? "k8v4" : fmt == k::kKvQ4 ? "q4_0" : fmt == k::kKvInt8 ? "int8" : "fp16";
+    const int move_fmt = window ? k::kKvQ4lmW : fmt;   // qsa_kv_format() of a state with a side pool
+    const k::Q4Mode mode = window ? k::Q4Mode::kUniformLs : k::Q4Mode::kUniform;
     k::QsaShapes s = k::qsa_real_shapes();
     const int64_t N = 40000, n_blocks = (N + 3) / 4, n_slots = 8 * 516 + 700;   // must evict: slots < blocks
     const int64_t cap = k::qsa_selection_width(k::kTopkMaxCells, s), NQ = 8;
     const int64_t H = s.n_head_kv, D = s.head_dim, NH = s.n_head;
-    std::mt19937 rng(7 + 4 * fmt);
+    std::mt19937 rng(7 + 4 * fmt + (window ? 31 : 0));
     std::normal_distribution<float> nd(0.f, 1.f);
 
     Pools ref, slots, host;
-    ref.alloc(n_blocks, s, fmt, false);
-    slots.alloc(n_slots, s, fmt, false);
-    host.alloc(n_blocks, s, fmt, true);
+    ref.alloc(n_blocks, s, fmt, false, mode);
+    slots.alloc(n_slots, s, fmt, false, mode);
+    host.alloc(n_blocks, s, fmt, true, mode);
+    Window wref, wslots;
+    if (window) {   // a small grid that wraps: S 64, R 8, B 32 (the engine's production grid is 256/64/6144)
+        wref.alloc(s, 64, 8, 32);
+        wslots.alloc(s, 64, 8, 32);
+    }
     int32_t* ident = dalloc<int32_t>(n_blocks);
     {
         std::vector<int32_t> t(n_blocks);
@@ -162,8 +201,8 @@ bool run(int fmt) {
         ck(cudaMemcpy(kc, hk.data(), hk.size() * 4, cudaMemcpyHostToDevice), "k");
         ck(cudaMemcpy(vc, hv.data(), hv.size() * 4, cudaMemcpyHostToDevice), "v");
         ck(cudaMemcpy(step, st, sizeof(st), cudaMemcpyHostToDevice), "step");
-        append(ref, ident, step, kc, vc, s, fmt, nullptr);
-        append(slots, m.page_table, step, kc, vc, s, fmt, &host.p);
+        append(ref, ident, step, kc, vc, s, fmt, nullptr, window ? &wref : nullptr);
+        append(slots, m.page_table, step, kc, vc, s, fmt, &host.p, window ? &wslots : nullptr);
         if (pos % 131 != 130 && pos != N - 1) continue;
         // a batch: n_q queries at the last n_q positions (as a verify window), each with its own selection
         const int n_q = 1 + (int) (rng() % NQ);
@@ -181,9 +220,11 @@ bool run(int fmt) {
         ck(cudaMemcpy(ids, hids.data(), hids.size() * 4, cudaMemcpyHostToDevice), "ids");
         ck(cudaMemcpy(steps, hst.data(), hst.size() * 4, cudaMemcpyHostToDevice), "steps");
         ck(cudaMemcpy(q, hq.data(), hq.size() * 4, cudaMemcpyHostToDevice), "q");
-        k::qsa_decode_attn_batch(q, ref.attn(ident), ids, steps, cap, s, scratch, out_ref, n_q, nullptr);
-        k::kv_stream_resolve(m, slots.attn(m.page_table), host.p, fmt, ids, steps, n_q, cap, s, nullptr);
-        k::qsa_decode_attn_batch(q, slots.attn(m.page_table), ids, steps, cap, s, scratch, out_str, n_q, nullptr);
+        k::QsaAttnPools ra = ref.attn(ident), sa = slots.attn(m.page_table);
+        if (window) { wref.attach(ra); wslots.attach(sa); }
+        k::qsa_decode_attn_batch(q, ra, ids, steps, cap, s, scratch, out_ref, n_q, nullptr);
+        k::kv_stream_resolve(m, sa, host.p, move_fmt, ids, steps, n_q, cap, s, nullptr);
+        k::qsa_decode_attn_batch(q, sa, ids, steps, cap, s, scratch, out_str, n_q, nullptr);
         ck(cudaDeviceSynchronize(), "batch");
         ck(cudaMemcpy(a.data(), out_ref, (size_t) n_q * NH * D * 4, cudaMemcpyDeviceToHost), "a");
         ck(cudaMemcpy(b2.data(), out_str, (size_t) n_q * NH * D * 4, cudaMemcpyDeviceToHost), "b");
@@ -212,10 +253,12 @@ bool run(int fmt) {
     if (c.overflow || c.calls != (uint64_t) batches || c.misses == 0 || c.misses >= c.lookups) ++bad;
 
     // 4. a ring over the same host copy: blocks [b1 - R, b1) restored, read through `b % R`
-    {
+    if (window) {
+        std::printf("  %s ring restore: skipped (the MTP ring never carries a window)\n", name);
+    } else {
         const int64_t R = 1500, b1 = n_blocks, b0 = b1 - R;
         Pools ring;
-        ring.alloc(R, s, fmt, false);
+        ring.alloc(R, s, fmt, false, mode);
         int32_t* rt = dalloc<int32_t>(n_blocks);
         k::kv_ring_table(rt, n_blocks, R, nullptr);
         k::kv_ring_restore(ring.attn(rt), host.p, fmt, b0, b1, R, s, nullptr);
@@ -240,7 +283,8 @@ bool run(int fmt) {
 int main() {
     std::printf("kv_stream_parity: streamed vs resident KV, bitwise\n");
     const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4), d = run(k::kKvHybrid);
-    if (!a || !b || !c || !d) ++g_fail;
+    const bool e = run(k::kKvQ4, true);   // q4u32 + exact-cell window: the streamed side pool
+    if (!a || !b || !c || !d || !e) ++g_fail;
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

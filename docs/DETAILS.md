@@ -251,8 +251,8 @@ New fields may be added to an event; a reader should ignore fields it does not k
 | `--kv q4u32` | 4-bit KV cache on the uniform grid (a per-32-value block scale, fitted instead of taken from the block maximum). The default on gfx12 in this tree; on other cards it runs the prompt 2.5x slower (the decode kernel it replaces), so there it has to be named on purpose. |
 | `--kv q4_0` | Half the KV memory with a Hadamard rotation before 4-bit rounding. About 4% faster at 128K, measurably less precise on long documents (perplexity +8-12%; needle tests still pass). Setup asks above 8K context. |
 | `--kv k8v4` | Keys at 8 bits, values as rotated 4-bit: 23% less KV memory than 8-bit, so more experts fit in VRAM. More precise than `q4_0` on long documents. Prompts are 2-5% slower. |
-| `--kv q4u32` + the window (this tree, opt-in) | `q4u32`'s 4-bit cells plus an exact-cell window (the recent 256 and the sink 64 cells of each QSA layer stay fp16 in a resident side pool). Setup's 4th KV choice writes `--kv q4u32` and the engine env `STRATA_KV_WINDOW=1` (S/R 256/64): 1,016 MiB at 128K against 1,584 MiB for 8-bit. Measured quality (cwe-4k, 32,746 positions, engine 0.1.59.1): mean KL 0.01739 against int8's 0.01688 (+0.00052, a statistical tie, int8 ahead in 4 of 8 segments; p99 0.2653 against 0.1888); on the 128K text (131,060 positions) 0.06949 against the fair int8 anchor's 0.06419 (+0.00530, top-1 98.31% against 98.41%, p99 1.9837 against 1.7455). On gfx12 the prompt is level with 8-bit at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at 4K and 32K. Exists only in a build from this source; does not combine with `--kv-streaming`. |
-| `--kv q4lm8v` (this tree, opt-in) | 4-bit Lloyd K and V plus the same exact-cell window (S/R 256/64, env `STRATA_KV_WINDOW=1`): the Lloyd window arm, with the detailed 2K/4K/128K quality series, 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for 8-bit. A hand-written config needs the env; setup's menu writes the `q4u32` pair. Does not combine with `--kv-streaming`. Details: [KV cache quantization](#kv-cache-quantization-above-8k-context). |
+| `--kv q4u32` + the window (this tree, opt-in) | `q4u32`'s 4-bit cells plus an exact-cell window (the recent 256 and the sink 64 cells of each QSA layer stay fp16 in a resident side pool). Setup's 4th KV choice writes `--kv q4u32` and the engine env `STRATA_KV_WINDOW=1` (S/R 256/64): 1,016 MiB at 128K against 1,584 MiB for 8-bit. Measured quality (cwe-4k, 32,746 positions, engine 0.1.59.1): mean KL 0.01739 against int8's 0.01688 (+0.00052, a statistical tie, int8 ahead in 4 of 8 segments; p99 0.2653 against 0.1888); on the 128K text (131,060 positions) 0.06949 against the fair int8 anchor's 0.06419 (+0.00530, top-1 98.31% against 98.41%, p99 1.9837 against 1.7455). On gfx12 the prompt is level with 8-bit at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at 4K and 32K. Combines with `--kv-resident`: the exact-cell side pool stays in VRAM while the q4 blocks stream from RAM; streamed and fully resident runs were bitwise identical at 32K (`docs/bench-results/2026-11-25-q4u32w-streaming/`). Exists only in a build from this source. |
+| `--kv q4lm8v` (this tree, opt-in) | 4-bit Lloyd K and V plus the same exact-cell window (S/R 256/64, env `STRATA_KV_WINDOW=1`): the Lloyd window arm, with the detailed 2K/4K/128K quality series, 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for 8-bit. A hand-written config needs the env; setup's menu writes the `q4u32` pair. Does not combine with `--kv-resident` (only the `q4u32` window has been checked under streaming). Details: [KV cache quantization](#kv-cache-quantization-above-8k-context). |
 | `--kv-streaming on\|off\|auto` | Keeps the context's KV cache in RAM and only the part attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Costs about 13.7 KB of RAM per context token (1.7 GB at 128K). Setup turns it on from 64K when the RAM has room; `on` overrides the RAM test with a note. Never under WSL. |
 | `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off) | The KV takes VRAM only for the cells the requests reach; the expert cache holds the rest and gives slots back as the context grows. Needs one GPU, an expert profile, the whole KV in VRAM and every expert in RAM. Otherwise the engine says so and stays off. On HIP it uses virtual memory management (`STRATA_HIP_VMM=0` turns that off). It pays on cards of about 24 GB or less with contexts of 128K and more. |
 
@@ -1518,7 +1518,10 @@ The window is opt-in (`--kv q4u32` + `STRATA_KV_WINDOW=1`, setup's 4th choice fr
 `--kv q4lm8v` for the Lloyd arm). Its ring is sized for the prompt chunk (`STRATA_KV_WINDOW_BATCH`, default follows the chunk, capped at 6,144
 cells so setup's 152 MiB figure stays honest); the cap comes from the free ring's 6,144-cell scan
 limit. The exact-cell overlay is orthogonal to the level table: `--kv q4lm32w` turns it on for
-kLloyd, and `STRATA_KV_WINDOW=1` turns it on for any other q4 mode.
+kLloyd, and `STRATA_KV_WINDOW=1` turns it on for any other q4 mode. `q4u32` is the one window arm that also
+accepts `--kv-resident`: the fp16 side pool stays resident beside the streamed q4 blocks. The kernel test
+(`kv_stream_parity`) and an end-to-end teacher-forced logits SHA compare the two; other window arms still refuse
+the pair.
 
 **Short-read note (method):** the scan limit is the reason `--prefill auto` is capped at 6,144 cells
 for a windowed run even when the host could take more (`auto_ceiling` 7,600). A run with
@@ -1526,13 +1529,16 @@ for a windowed run even when the host could take more (`auto_ceiling` 7,600). A 
 the fix; with the fix it runs through. Timing or quality numbers taken on a machine that is not
 quiet (other programs, browser, YouTube) are not valid and are not quoted here.
 
-**The window and KV streaming do not combine.** Streaming (`--kv-resident`) keeps the KV cache in
-RAM and only the attention's window in VRAM; the window's exact cells need an always-resident side
-pool that a streamed KV does not have. Setup never writes the pair: a windowed config's KV cache
-stays in VRAM and nothing streams beside it. A hand-edited config that sets both is refused loudly
-by the engine (exit 2, before anything loads). To stream instead, drop the window (`--kv int8`,
-`q4_0` or `k8v4`); to keep the window on a PC that would otherwise stream, run with
-`--kv-streaming off`.
+**The window combines with KV streaming only for `q4u32`.** Streaming (`--kv-resident`) keeps the q4
+KV blocks in RAM and only the part attention reads in VRAM. `q4u32`'s exact-cell side pool is carved
+in every main QSA state, including a streamed one, so it stays resident beside those blocks. Setup
+writes the pair for its `q4u32` window choice from engine `0.1.63-q4u32` on, when the RAM fits and
+`--kv-streaming` is not `off`; older engines and `--kv-streaming off` keep the whole KV in VRAM.
+Kernel parity and an end-to-end logits SHA
+found no difference between streamed and fully resident `q4u32w`
+([evidence](bench-results/2026-11-25-q4u32w-streaming/)). The other window arms are not checked
+under streaming and are refused with exit 2 before anything loads; for them, use `--kv q4u32`,
+`int8`, `q4_0` or `k8v4` when streaming.
 
 Measured on the Lloyd window arm (`--kv q4lm8v`) on the author's PC (Ryzen 9 3900XT, 64 GB DDR4-3000, RX 9060 XT
 16 GB, Windows, ROCm 7.1, Qwen3.8-Flash-Next, 128K context, `--prefill auto`): 5.29 bit/cell, 1,016 MiB of KV

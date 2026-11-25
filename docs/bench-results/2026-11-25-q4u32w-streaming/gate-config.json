@@ -1,0 +1,20 @@
+{
+  "exe": "{ROOT}\\terminal\\engine\\strata.exe",
+  "cwd": "{ROOT}\\terminal",
+  "args": [
+    "--pack", "{ROOT}\\..\\Strata-data\\packs\\qwen-iq3_xxs",
+    "--native", "{ROOT}\\..\\flash-next\\SC117_IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf",
+    "--ple-gguf", "{ROOT}\\..\\flash-next\\SC117_IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00002-of-00002.gguf",
+    "--expert-profile", "{ROOT}\\terminal\\data\\expert-profile.bin",
+    "--expert-cache", "auto",
+    "--prefill", "auto",
+    "--spec", "4",
+    "--spec-min-p", "0.5",
+    "--mtp", "{ROOT}\\..\\Strata-data\\mtp\\rt",
+    "--mtp-q4", "all",
+    "--max-context", "262144",
+    "--kv", "q4u32",
+    "--kv-resident", "32768",
+    "--vision"
+  ]
+}

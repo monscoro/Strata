@@ -7620,7 +7620,8 @@ def choices_from_config(cfg_path: Path) -> dict:
 
 def kv_check_config(cfg_path: Path) -> None:
     """--kv-check: read a Strata config and report its KV cache settings: mode, window env, streaming pair,
-    effective bits per cell, and whether the engine would start (the window + --kv-resident pair is refused)."""
+    effective bits per cell, and whether the engine would start.  q4u32's window streams from engine
+    0.1.63-q4u32 on; other window arms beside --kv-resident are still refused."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     args = cfg.get("args", []) or []
     env = cfg.get("env", {}) or {}
@@ -7675,12 +7676,16 @@ def kv_check_config(cfg_path: Path) -> None:
         note = "unknown mode"
     shown = f"{bits:.2f}" if bits is not None else "?"
     print(f"    effective bits: {shown}/cell  ({note})")
-    # checks
+    # checks.  Keep this in step with strata_control.setup_config.WINDOW_STREAM_ENGINE: setup must not write a
+    # pair the config's own engine would refuse, and --kv-check must not call that pair startable.
+    window_stream_engine = (0, 1, 63)
+    stream_engine = config_engine_version(cfg) if (window_active and resident and kv == "q4u32") else ()
+    q4u32_stream_ok = stream_engine >= window_stream_engine
     problems = []
-    if window_active and resident:
-        problems.append("DEAD PAIR: the exact-cell window + --kv-resident. The engine refuses this (exit 2) - the "
-                        "streamed cells have no resident side pool for the window's exact cells. Drop --kv-resident "
-                        "(keep the window) or switch --kv to int8/q4_0/k8v4.")
+    if window_active and resident and kv != "q4u32":
+        problems.append("DEAD PAIR: --kv-resident beside the exact-cell window of " + kv + ". The engine refuses "
+                        "this (exit 2): only q4u32's window has been checked under streaming. Drop --kv-resident "
+                        "(keep the window) or switch --kv to q4u32/int8/q4_0/k8v4.")
     if kv == "q4lm8v" and not window:
         problems.append("q4lm8v without STRATA_KV_WINDOW=1: the window is off, so only the 4-bit base runs "
                         "(no exact cells). Set STRATA_KV_WINDOW=1 (setup writes it for its window choice; a "
@@ -7694,14 +7699,21 @@ def kv_check_config(cfg_path: Path) -> None:
     if window_active and ctx is not None and ctx < 32768:
         problems.append(f"context {ctx} is below ~28K: the window's 152 MiB ring costs more than the 4-bit base "
                         "saves; setup warns but keeps the choice.")
-    if window_active and not resident:
-        problems.append("OK: window active, KV stays in VRAM (no streaming). --kv-streaming on is ignored beside "
-                        "the window; use --kv-streaming off to say so explicitly.")
+    if window_active and resident and kv == "q4u32" and not q4u32_stream_ok:
+        problems.append("DEAD PAIR: --kv-resident beside q4u32's exact-cell window needs engine 0.1.63-q4u32 or "
+                        "newer (this config's engine: " + (".".join(str(x) for x in stream_engine) or "unknown") +
+                        "). Use a newer engine, or drop --kv-resident to keep the window.")
+    elif window_active and resident and kv == "q4u32":
+        problems.append("OK: window active, q4u32 KV streaming: the fp16 side pool stays in VRAM beside the "
+                        "host copy of the q4 blocks (checked bitwise).")
+    elif window_active and not resident:
+        problems.append("OK: window active, KV stays in VRAM (no streaming). --kv-streaming on is now supported "
+                        "for q4u32; --kv-streaming off says so explicitly.")
     if problems:
         for msg in problems:
             tag = "FAIL" if msg.startswith("DEAD PAIR") or msg.startswith("q4lm8v without") else "note"
             print(f"    [{tag}] {msg}")
-    startable = not (window_active and resident)
+    startable = not (window_active and resident and (kv != "q4u32" or not q4u32_stream_ok))
     print(f"    engine starts:  {'yes' if startable else 'NO - refused (exit 2)'}")
 
 
