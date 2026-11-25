@@ -8436,6 +8436,16 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                             env=vision_env(cfg, env), lazy=lazy)
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
+        _args = cfg.get("args") or []
+        _kv = None
+        _kv_resident = None
+        for _i, _a in enumerate(_args):
+            if _a == "--kv" and _i + 1 < len(_args):
+                _kv = _args[_i + 1]
+            elif _a == "--kv-resident" and _i + 1 < len(_args):
+                _kv_resident = _args[_i + 1]
+        if _kv:
+            print(f"KV cache: {_kv}" + (f" ({_kv_resident} tokens resident)" if _kv_resident else ""), flush=True)
         warn_budget_over_ram(engine_args(cfg, announce=False) if "args" in cfg else [])      # #1080
         note = card_note(cfg, env)
         if note:
