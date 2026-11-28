@@ -856,3 +856,97 @@ class StartIgnoresSetupFlags(unittest.TestCase):
         code, out, started = self.run_main("--yes")
         self.assertEqual((code, started), (0, ["strata-iq3_xxs.json"]))
         self.assertNotIn("keeps its saved", out)
+
+
+class WindowKV(unittest.TestCase):
+    """The exact-cell window's choices (setup's 4th = q4u32w, and the Lloyd arm q4lm8v): the ring is always
+    resident, so its effective bytes per token fall with the context, and a re-run keeps the choice."""
+
+    def test_effective_bytes_fall_with_context(self):
+        self.assertEqual(setup.kv_cell_bytes("int8", 131072), 1056)
+        self.assertEqual(setup.kv_cell_bytes("q4u32", 131072), 576)     # the plain grid, no ring
+        self.assertEqual(setup.kv_cell_bytes("q4u32w", 131072), 625)   # 5.29 bit / 1,016 MiB at 128K
+        self.assertEqual(setup.kv_cell_bytes("q4lm8v", 131072), 625)   # the same ring on the Lloyd arm
+        self.assertGreater(setup.kv_cell_bytes("q4u32w", 32768), setup.kv_cell_bytes("q4u32w", 65536))
+        self.assertGreater(setup.kv_cell_bytes("q4u32w", 65536), setup.kv_cell_bytes("q4u32w", 131072))
+        # the ring stays in VRAM: the host copy (streaming) is the plain q4 figure at every context
+        self.assertEqual(setup.kv_host_cell_bytes("q4u32w"), 576)
+        self.assertEqual(setup.kv_streaming_ram_gb(131072, "q4u32w"),
+                         setup.kv_streaming_ram_gb(131072, "q4u32"))
+
+    def test_read_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-q2_0.json"
+            p.write_text(json.dumps({"args": ["--max-context", "131072", "--kv", "q4u32w"]}))
+            self.assertEqual(setup.choices_from_config(p)["kv"], "q4u32w")
+            p.write_text(json.dumps({"args": ["--max-context", "131072", "--kv", "q4u32"],
+                                     "env": {"STRATA_KV_WINDOW": "1"}}))   # an older config's spelling
+            self.assertEqual(setup.choices_from_config(p)["kv"], "q4u32w")
+            p.write_text(json.dumps({"args": ["--max-context", "131072", "--kv", "q4u32"]}))
+            self.assertEqual(setup.choices_from_config(p)["kv"], "q4u32")  # plain: no window
+
+
+class WindowKVWrite(unittest.TestCase):
+    """The window choices' real write path: --kv q4u32w names the format and the engine fills its own window
+    env; the Lloyd arm writes --kv q4lm8v plus the env.  The default stays int8 (no default changes)."""
+
+    def install(self, *extra, answers=None, version="0.1.70"):
+        from test_setup_golden import card, install
+        return install(63.7, [card(0, "NVIDIA GeForce RTX 5090", 31.8, "120")],
+                       ["--family", "qwen", "--model", "Q2_0", "--context", "131072", "--no-start", *extra],
+                       answers=answers, engine_version=version)
+
+    def test_opt_in_names_the_window_format(self):
+        code, out, cfg, _ = self.install("--kv", "q4u32w")
+        self.assertEqual(code, 0, out)
+        self.assertIn("q4u32w", cfg["args"])                 # self-describing: the engine sets its window env
+        self.assertIn("--kv-resident", cfg["args"])           # the pair is checked from 0.1.70 on
+        # The production point keeps the engine's chunk choice; B = 6,144 on the Windows HIP build.
+        self.assertEqual(cfg["args"][cfg["args"].index("--prefill") + 1], "auto")
+
+    def test_the_lloyd_window_arm_writes_the_env(self):
+        code, out, cfg, _ = self.install("--kv", "q4lm8v")
+        self.assertEqual(code, 0, out)
+        self.assertIn("q4lm8v", cfg["args"])
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW"], "1")
+
+    def test_the_window_choice(self):
+        # the picker's third choice
+        code, out, cfg, _ = self.install(answers={"KV cache?": "3"})
+        self.assertEqual(code, 0, out)
+        self.assertIn("q4u32w", cfg["args"])
+
+    def test_the_default_stays_int8(self):
+        code, out, cfg, _ = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "int8")
+
+    def test_streaming_on_beside_the_window_is_written(self):
+        # q4u32's exact-cell side pool was checked under streaming, so --kv-streaming on is no longer ignored.
+        code, out, cfg, _ = self.install("--kv", "q4u32w", "--kv-streaming", "on")
+        self.assertEqual(code, 0, out)
+        self.assertIn("--kv-resident", cfg["args"])
+        self.assertIn("side pool stays in VRAM beside the streamed q4 blocks", out)
+
+    def test_streaming_on_beside_lloyd_window_stays_off(self):
+        # Only q4u32's window has been checked under streaming; the other window arms still refuse the pair, so
+        # setup keeps their window and warns instead of writing a config that does not start.
+        code, out, cfg, _ = self.install("--kv", "q4lm8v", "--kv-streaming", "on")
+        self.assertEqual(code, 0, out)
+        self.assertIn("q4lm8v", cfg["args"])
+        self.assertNotIn("--kv-resident", cfg["args"])
+        self.assertIn("ignored beside the exact-cell window", out)
+
+
+class WindowKVShortContext(unittest.TestCase):
+    """The window named at 8K is kept (warned about, not forced away)."""
+
+    def test_the_ring_warning_reaches_the_8k_choice(self):
+        from test_setup_golden import card, install
+        code, out, cfg, _ = install(63.7, [card(0, "NVIDIA GeForce RTX 5090", 31.8, "120")],
+                                    ["--family", "qwen", "--model", "Q2_0", "--context", "8192", "--no-start",
+                                     "--kv", "q4u32w"], engine_version="0.1.70")
+        self.assertEqual(code, 0, out)
+        self.assertIn("break-even ~28K", out)
+        self.assertIn("q4u32w", cfg["args"])
+

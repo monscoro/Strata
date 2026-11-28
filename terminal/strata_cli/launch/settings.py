@@ -35,7 +35,7 @@ SPLIT_MODES = ("auto", "on", "off")
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 #: setup.py DRAFT_VOCABS (tests/terminal/test_launch_draft_vocab.py keeps the two the same)
 DRAFT_VOCAB_MODES = ("cjk", "en", "cyrillic", "fr", "latin", "arabic")
-KV_MODES = ("int8", "q4_0", "k8v4", "fp16", "fp8", "k8v8")
+KV_MODES = ("int8", "q4_0", "q4u32", "q4u32w", "q4lm8v", "k8v4", "fp16", "fp8", "k8v8")
 INKLING_KV_MODES_CUDA = ("fp16", "fp8", "k8v8", "k8v4")
 INKLING_KV_MODES_SAFE = ("fp16", "fp8")        # #6681: HIP/Metal/SYCL support fp16 and fp8 only (k8v4/k8v8 OOM on HIP)
 

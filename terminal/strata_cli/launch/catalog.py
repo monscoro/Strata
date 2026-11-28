@@ -693,6 +693,10 @@ class Catalog:
             from strata_control import inkling_fit
             return inkling_fit.kv_cache_gb(tokens)
         mod = self.strata.setup_module()
+        if kv in ("q4u32", "q4u32w", "q4lm8v"):  # 4-bit, and the window's ring is resident: bytes/cell fall with the context
+            eff = getattr(mod, "kv_cell_bytes", None)
+            if callable(eff):
+                return tokens * 13 * eff(kv, tokens) / 1e9
         table = getattr(mod, "UD_FIT_KV_BYTES", None) or {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}
         return tokens * 13 * table.get(kv, 1056) / 1e9
 

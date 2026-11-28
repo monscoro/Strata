@@ -221,6 +221,12 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
+    # The exact-cell window (setup's 4th KV choice): --kv q4u32w is q4u32 with the window (the engine fills
+    # STRATA_KV_WINDOW=1 and S/R 256/64 itself), --kv q4lm8v is the Lloyd arm with it (needs the env below).
+    window = a.kv in ("q4u32w", "q4lm8v")
+    window_kv = "q4lm8v" if a.kv == "q4lm8v" else "q4u32w"
+    if window:
+        kv = window_kv
     if ctx > 8192 or (kv and kv != "fp16"):
         args += ["--kv", kv]
     if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
@@ -302,6 +308,13 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     # --kv-streaming on|off overrides the RAM test (the owner's rule); WSL stays off - it cannot stream.
     stream_need = kv_streaming_need_gb(model, ctx, kv)
     stream_fits = ram >= stream_need
+    # The exact-cell window keeps its fp16 side pool in VRAM.  Only q4u32's window has been checked under KV
+    # streaming (kv_stream_parity's q4u32w arm); the other window arms are still refused with --kv-resident, so
+    # those keep their KV in VRAM.  No engine-version gate: an engine without the format refuses --kv q4u32w
+    # itself, and a version number would have to be guessed before the release that carries it.
+    window_stream = window and window_kv == "q4u32w"
+    if window and not window_stream:
+        stream_fits = False
     if is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
         if a.kv_streaming == "on":
@@ -309,9 +322,22 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
                  "only about 1 GB there): off")
     elif ctx >= 65536 and a.kv_streaming == "off":
         ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
+    elif ctx >= 65536 and window and not window_stream:
+        if a.kv_streaming == "on":
+            warn("--kv-streaming on: kept as you chose, but it is ignored beside the exact-cell window "
+                 f"(--kv {window_kv}): this engine does not check the window under streaming and refuses the pair. "
+                 "The window stays and streams nothing; to stream, use --kv int8/q4_0/k8v4")
+        else:
+            ok(f"KV streaming off: the exact-cell window (--kv {window_kv}) is not checked under streaming by this "
+               "engine (it refuses the pair), so the window's KV stays in VRAM "
+               f"(~{kv_ram_gb:.1f} GB at {ctx // 1024}K, the measured 5.29 bit). To stream instead, use "
+               "--kv int8/q4_0/k8v4")
     elif ctx >= 65536 and (stream_fits or a.kv_streaming == "on"):
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
+        if window_stream:
+            ok("q4u32's exact-cell side pool stays in VRAM beside the streamed q4 blocks; streamed and resident "
+               "windows were bit-for-bit identical in the engine test")
         if not stream_fits:
             warn(f"KV streaming needs ~{stream_need:.0f} GB of RAM for {model} (its experts, the room beside them and "
                  f"the {kv_ram_gb:.1f} GB cache); this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "
@@ -473,6 +499,9 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             ok(f"rocBLAS tuning tables for {gpu['arch']}: {', '.join(rocblas_tables)} (the engine takes the one of its rocBLAS build)")
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
+    if window and kv == "q4lm8v":   # the Lloyd arm's window travels in the engine env (server.py passes it); q4u32w sets its own
+        cfg.setdefault("env", {}).update({"STRATA_KV_WINDOW": "1", "STRATA_KV_WINDOW_S": "256",
+                                          "STRATA_KV_WINDOW_R": "64"})
     if gpu["count"] > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]                      # the engine is told this card (issue #51)
         cfg["gpus_asked"] = True                       # chosen at setup: not asked again at start
