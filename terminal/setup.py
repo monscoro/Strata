@@ -6858,8 +6858,9 @@ def low_ram_wanted(model, ram, choice="auto") -> bool:
 
 def kv_streaming_ram_gb(ctx, kv) -> float:
     """The RAM a streamed KV cache takes: ~13.7 KB per context token with 8-bit KV (1.7 GB at 128K), 10.6 KB with
-    K8V4, 7.5 KB with 4-bit - 12 QSA layers + the draft layer."""
-    return ctx * (13 * kv_cell_bytes(kv, ctx)) / 1e9
+    K8V4, 7.5 KB with 4-bit - 12 QSA layers + the draft layer.  A window arm's 152 MiB ring stays in VRAM and is not
+    part of this host copy."""
+    return ctx * (13 * KV_CELL_BYTES.get(kv, 1056)) / 1e9
 
 
 def kv_streaming_need_gb(model, ctx, kv) -> float:
