@@ -425,7 +425,12 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
 
 void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* page_table, const int32_t* ids,
                        const int32_t* step, int64_t max_ids, const QsaShapes& s, uint16_t* k_scratch,
-                       uint16_t* v_scratch, void* stream, Q4Mode mode) {
+                       uint16_t* v_scratch, void* stream, Q4Mode mode,
+                       const uint16_t* k_win, const uint16_t* v_win, const int32_t* win_tag,
+                       int win_s, int win_r, int win_b) {
+    // The exact-cell window is not ported to SYCL (--kv q4u32w is NVIDIA/AMD only), so the window
+    // parameters are accepted for the shared declaration and ignored.  They are never set here.
+    (void) k_win; (void) v_win; (void) win_tag; (void) win_s; (void) win_r; (void) win_b;
     if (max_ids <= 0) return;
     const int q4_mode = (int) mode;
     const int blocks_per_head = (int) (s.head_dim / QK4_0);

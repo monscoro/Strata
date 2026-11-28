@@ -1008,7 +1008,13 @@ void mtp_list_nodes(cudaGraph_t graph, const char* what) {
         if (ty == hipGraphNodeTypeKernel) {
             hipKernelNodeParams kp{};
             if (hipGraphKernelNodeGetParams(nd, &kp) == hipSuccess && kp.func != nullptr) {
-                const char* fn = nullptr;   // local Windows build: the ROCm import library (7.1 and 7.2 alike) declares but does not export hipKernelNameRefByPtr
+                // The Windows import library (ROCm 7.1 and 7.2 alike) declares but does not export this symbol,
+                // so the name lookup is skipped there; the other HIP platforms keep it.
+#if defined(_WIN32)
+                const char* fn = nullptr;
+#else
+                const char* fn = hipKernelNameRefByPtr(kp.func, nullptr);
+#endif
                 if (fn != nullptr) name = fn;
             }
         }
