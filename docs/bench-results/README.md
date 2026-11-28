@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 152 folders and 3 loose files, 2268 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 154 folders and 3 loose files, 2277 files in all.
 
 
 ## 2026-09
@@ -173,6 +173,8 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-11-23-standard-rx-9070-xt-3900x-0e6041d3](2026-11-23-standard-rx-9070-xt-3900x-0e6041d3/) | Strata standard benchmark: AMD Radeon | 8 |
 | [2026-11-23-standard-rx-9070-xt-3900x-1e463ce6](2026-11-23-standard-rx-9070-xt-3900x-1e463ce6/) | Strata standard benchmark: AMD Radeon | 8 |
 | [2026-11-23-standard-rx-9070-xt-3900x-bbb73d60](2026-11-23-standard-rx-9070-xt-3900x-bbb73d60/) | Strata standard benchmark: AMD Radeon | 8 |
+| [2026-11-25-q4u32-window-ab](2026-11-25-q4u32-window-ab/) | 128K-A/B: reines q4u32 gegen q4u32w (vorab festgelegt, 2026-11-25) | 5 |
+| [2026-11-25-q4u32w-streaming](2026-11-25-q4u32w-streaming/) | q4u32w mit --kv-resident: die Korrektheits-Gates (2026-11-25, portiert auf 0.1.70) | 4 |
 
 ## Loose files
 

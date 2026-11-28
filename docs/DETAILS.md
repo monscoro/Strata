@@ -250,11 +250,19 @@ New fields may be added to an event; a reader should ignore fields it does not k
 | `--kv int8` (default) | 8-bit KV cache. |
 | `--kv q4_0` | Half the KV memory with a Hadamard rotation before 4-bit rounding. About 4% faster at 128K, measurably less precise on long documents (perplexity +8-12%; needle tests still pass). Setup asks above 8K context. |
 | `--kv k8v4` | Keys at 8 bits, values as rotated 4-bit: 23% less KV memory than 8-bit, so more experts fit in VRAM. More precise than `q4_0` on long documents. Prompts are 2-5% slower. |
+| `--kv q4u32` (opt-in, an engine built from this tree) | The 4-bit uniform grid after the same Hadamard rotation, with the block's step **fitted** per 32 values (one least-squares pass) instead of taken from the block maximum: 4.5 bit/cell, 54.5% of int8's bytes, level with int8 in prompt speed on gfx12 where the matrix-core prompt path runs (`STRATA_HIP_WMMA`: on by default on gfx12 under Linux, `STRATA_HIP_WMMA=1` on Windows; without it the same grid is 2.5x slower than int8). Nothing changes without `--kv`. |
+| `--kv q4u32w` (opt-in, an engine built from this tree) | `q4u32` plus the **exact-cell window**: the recent 256 and sink 64 cells of each QSA layer stay fp16 in a resident side pool (env `STRATA_KV_WINDOW=1`, S/R 256/64). 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8. The better of the two 4-bit points in most setups. Quality: at 4K a mean tie with int8 (+0.00052 mean KL; p99 0.2653 against 0.1888), at 128K +0.00530 KL behind the fair int8 anchor and ahead of the plain grid (0.06949 against 0.078700 over 131,060 positions, the pre-registered 128K A/B in `docs/bench-results/2026-11-25-q4u32-window-ab/`; the same prompt ran at 26.5 against 26.2 tok/s and the side pool costs 152 MiB). Combines with `--kv-resident`: the side pool stays in VRAM while the q4 blocks stream from RAM. |
+| `--kv q4lm8v` (opt-in, an engine built from this tree) | 4-bit Lloyd levels (16 on K, 8 on V) with the same exact-cell window: a quality probe, not a byte layout; measurably less precise than int8 without the window. |
 | `--kv-streaming on\|off\|auto` | Keeps the context's KV cache in RAM and only the part attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Costs about 13.7 KB of RAM per context token (1.7 GB at 128K). Setup turns it on from 64K when the RAM has room; `on` overrides the RAM test with a note. Never under WSL. |
 | `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off) | The KV takes VRAM only for the cells the requests reach; the expert cache holds the rest and gives slots back as the context grows. Needs one GPU, an expert profile, the whole KV in VRAM and every expert in RAM. Otherwise the engine says so and stays off. On HIP it uses virtual memory management (`STRATA_HIP_VMM=0` turns that off). It pays on cards of about 24 GB or less with contexts of 128K and more. |
 
 `STRATA_KV_HOST_REGISTER=1` forces the KV host copy to be pinned with `cudaHostRegister` (the order WSL2 uses
 automatically); `0` forces `cudaHostAlloc` first.
+
+**The exact-cell window** (`--kv q4u32w`, `--kv q4lm8v`; opt-in) sizes its ring for the prompt chunk
+(`STRATA_KV_WINDOW_BATCH`: the default follows the chunk, capped at 6,144 cells, which is the 152 MiB that setup's
+figures use). Only `q4u32`'s window is checked under `--kv-resident` (bitwise, `kv_stream_parity`); the other window
+arms are refused beside it, and a snapshot of a windowed state is refused. The MTP ring never carries a window.
 
 ### Low-RAM modes (chosen by setup)
 
