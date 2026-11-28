@@ -242,10 +242,10 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_KV_PREFETCH` | number | NVIDIA and AMD, Intel Arc | [KV_PREFETCH.md](KV_PREFETCH.md), [README.md](bench-results/README.md), [README.md](bench-results/2026-10-06-community-rtx4090-opt-ins/README.md) |
 | `STRATA_KV_Q4_PROMPT` | on / off | NVIDIA and AMD | - |
 | `STRATA_KV_ROT` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md), [SPLIT_SERVE.md](SPLIT_SERVE.md) |
-| `STRATA_KV_WINDOW` | on / off | NVIDIA and AMD | - |
-| `STRATA_KV_WINDOW_BATCH` | number | NVIDIA and AMD | - |
-| `STRATA_KV_WINDOW_R` | text | NVIDIA and AMD | - |
-| `STRATA_KV_WINDOW_S` | text | NVIDIA and AMD | - |
+| `STRATA_KV_WINDOW` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-11-25-q4u32-window-ab/README.md), [README.md](bench-results/2026-11-25-q4u32w-streaming/README.md) |
+| `STRATA_KV_WINDOW_BATCH` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-11-25-q4u32-window-ab/README.md) |
+| `STRATA_KV_WINDOW_R` | text | NVIDIA and AMD | [README.md](bench-results/2026-11-25-q4u32-window-ab/README.md) |
+| `STRATA_KV_WINDOW_S` | text | NVIDIA and AMD | [README.md](bench-results/2026-11-25-q4u32-window-ab/README.md), [README.md](bench-results/2026-11-28-q4u32w-centering-tail/README.md) |
 | `STRATA_L3_PF` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_L3_PF_TOP` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_LEND_MIRROR` | text | Intel Arc | [INTEL.md](INTEL.md), [INTEL_ARC.md](INTEL_ARC.md) |
