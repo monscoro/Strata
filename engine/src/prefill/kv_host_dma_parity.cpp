@@ -70,7 +70,7 @@ std::vector<Arr> arrays_of(int fmt, const k::QsaShapes& s) {
         const size_t sc = (size_t) (s.head_dim / k::KV_Q8_GROUP) * 2;
         return {{(size_t) s.head_dim}, {(size_t) s.head_dim}, {sc}, {sc}};
     }
-    const size_t q4 = (size_t) k::kv_q4_bytes_per_head((int) s.head_dim);
+    const size_t q4 = (size_t) k::kv_q4_bytes_per_head((int) s.head_dim, k::Q4Mode::kUniform);
     return {{q4}, {q4}};
 }
 

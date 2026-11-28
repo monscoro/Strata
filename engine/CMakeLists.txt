@@ -103,8 +103,20 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
-# llama.cpp's MMQ prompt kernels are no longer in the tree (0.2.16): every CUDA and HIP build compiles Strata's own prompt kernels (strata_pf_own)
-# and the FP16 path.  MMQ comparison builds come from the v0.2.15 tag.
+# The QSA layer trace (engine/src/core/layer.cpp): one stderr line per QSA layer, for the hunt of a wrong KV path.  It is
+# compiled out by default, so a release build pays nothing for it; ON builds the line in (debug builds only).
+option(STRATA_QSA_LAYER_TRACE "Compile the QSA layer trace into the engine (one stderr line per QSA layer)" OFF)
+# The QSA selection dump (engine/src/core/verify.cpp): Block-Ids per token and QSA layer, for D2 (indexer selection
+# behaviour).  Compiled out by default; ON builds the dump path in.  At run time it is enabled through
+# STRATA_QSA_SELECT_DUMP=1 and writes sel_dump.bin (or $STRATA_QSA_SELECT_DUMP_PATH) in the CWD.
+option(STRATA_QSA_SELECT_DUMP "Compile the QSA selection dump into the engine (D2 instrument: Block-Ids per token and layer)" OFF)
+if(STRATA_QSA_SELECT_DUMP)
+  # Global and not per target: the switch adds members to `Verifier` (engine/include/strata/core/verify.hpp), so every
+  # translation unit that includes the header must see the same class layout - verify.cpp, generate.cpp and the
+  # tests alike. Per-target definitions would give two different `Verifier`s in one link. The SYCL port (engine/sycl/) is
+  # a configure of its own and has no dump; this option does not reach it.
+  add_compile_definitions(STRATA_QSA_SELECT_DUMP=1)
+endif()
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
 # switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
 # The rocBLAS tables are switched at run time (STRATA_AMD_COMMUNITY_TUNING=0).

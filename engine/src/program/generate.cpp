@@ -821,7 +821,7 @@ struct Options {
     int ple_inflight = 256;   // the prompt path reads a chunk's rows at once: 64 left the SSD half idle (32K: 303 -> 189 ms)
     double ple_delay_us = 0;           ///< fault injection: every row read completes no earlier than this
     bool ple_sync_submit = false;      ///< A/B arm: submit reads on the token thread, no I/O worker
-    std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
+    std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM); the q4 modes are opt-in
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     std::string dump_residual;
@@ -1227,9 +1227,45 @@ void usage() {
                  "  --ple-delay-us U     fault injection: each row read completes no earlier than U us\n"
                  "  --ple-sync-submit    A/B arm: submit table reads on the token thread (default: an I/O thread)\n"
                  "  --kv fp16|int8       KV storage (plan v0.3 P7): int8 codes + fp16 scale per 64 values, half the\n"
-                 "                       VRAM; default fp16 until gate G-C accepts int8\n"
+                 "                       VRAM. int8 is what setup names above 8K and what the published numbers\n"
+                 "                       were measured with; the engine's own default without --kv is fp16\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
-                 "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "                       slightly lower precision (see docs/bench-results/2026-09-27-kv-q4)\n"
+                 "  --kv q4lm32          q4_0's blocks and rotation with Max-Lloyd's 16 levels for N(0,1) in place of\n"
+                 "                       ggml's uniform grid (kv_q4.hpp): the same 576 B/cell, lower 4-bit error\n"
+                 "  --kv q4lm32s         the same levels with each block's own least-squares scale instead of\n"
+                 "                       max|x|/87: one extra reduction per block in the writer, the lowest error\n"
+                 "                       of the three\n"
+                 "  --kv q4lm32w         q4lm32's blocks, but the first R (sink) and most recent S cells read\n"
+                 "                       exact fp16 from a side pool. S/R via STRATA_KV_WINDOW_S/_R (default\n"
+                 "                       128/8, 0/0 is q4lm32). No snapshots in this mode\n"
+                 "  --kv q4lm8v          4-bit Lloyd (16-level K, 8-level V) plus the exact-cell window: the first R\n"
+                 "                       (sink) and the most recent S cells of each QSA layer read exact fp16 from\n"
+                 "                       a ring sized for the prompt chunk. STRATA_KV_WINDOW=1, S/R via\n"
+                 "                       STRATA_KV_WINDOW_S/_R (the measured point is 256/64). At 128K with B=6144: 5.29\n"
+                 "                       bit/cell, 1,016 MiB against int8's 1,584; prompt 528 vs 526 tok/s, decode\n"
+                 "                       34.2 vs 35.2 (inside int8's run spread), +14%% expert slots (RX 9060 XT,\n"
+                 "                       Windows HIP). Without STRATA_KV_WINDOW=1: the plain probe, measurably\n"
+                 "                       less precise than int8\n"
+                 "  --kv q4u32            4-bit UNIFORM grid after the same Hadamard rotation, with the step\n"
+                 "                       fitted per 32-value block instead of taken from the block maximum: 4.5\n"
+                 "                       bit/cell, 54.5%% of int8's bytes, 0.00530 KL behind int8 at 128K. Opt-in;\n"
+                 "                       q4u32w is the better point in most setups. Affine, so it rides the prompt\n"
+                 "                       fast path: level with int8 in prompt speed on gfx12 where the matrix-core\n"
+                 "                       path runs (STRATA_HIP_WMMA: on under Linux, =1 on Windows), 2.5x slower\n"
+                 "                       without it. STRATA_KV_Q4_PROMPT=0 sends it back to the decode kernel\n"
+                 "  --kv q4u32w           q4u32 with the exact-cell window: the recent 256 and sink 64 cells of\n"
+                 "                       each QSA layer read exact fp16 from a resident side pool (S/R via\n"
+                 "                       STRATA_KV_WINDOW_S/_R, default 256/64). 5.29 bit/cell at 128K, 1,016 MiB\n"
+                 "                       against int8's 1,584 with B=6144. The better of the two 4-bit points: at 4K\n"
+                 "                       a mean tie with int8 (+0.00052 KL, p99 0.2653 against 0.1888), at 128K\n"
+                 "                       0.06949 against the plain grid's 0.078700 over 131,060 positions\n"
+                 "                       (docs/bench-results/2026-11-25-q4u32-window-ab). Opt-in (int8 stays the\n"
+                 "                       default); combines with --kv-resident, the side pool staying in VRAM\n"
+                 "  --kv q4lm8 | q4lm8k  WP-2 PROBE (measurement only, not a byte layout): the same blocks\n"
+                 "                       and the same 576 B/cell, with Max-Lloyd's 8-level (3-bit) table for N(0,1)\n"
+                 "                       on both tensors or on K only. Answers whether the fixed\n"
+                 "                       Hadamard survives 3 bits before a 3-bit layout is built\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
                  "                       (vs int8's 1,056); streams with --kv-resident too\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
@@ -2854,6 +2890,24 @@ static bool pcie_auto_split_ok() {
            strata::kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName);
 #else
     return true;
+#endif
+}
+
+// `--kv q4u32w`: q4u32 with the exact-cell window, named by the person (opt-in).  The format itself is measured
+// level with int8 in prompt speed on gfx12 (A.23: 664.5 against 669.0 tok/s at 32K; A.28: 737.5 against 743.4 at
+// 106K) and the window adds the recent 256 and sink 64 cells of each QSA layer as exact fp16 from a resident side
+// pool: 5.29 bit/cell at 128K, 1,016 MiB against int8's 1,584, and 0.06949 mean KL against the plain grid's
+// 0.078700 over 131,060 positions at 128K (docs/bench-results/2026-11-25-q4u32-window-ab).  Nothing is on by
+// default: without `--kv` this tree names fp16 like the release, and q4u32/q4u32w run only when named.
+//
+// A value the environment can still override: set `key` to `value` only where nothing is set at all, so a
+// hand-set STRATA_KV_WINDOW / _S / _R keeps ruling (the window's own reader is layer.cpp's qsa_set_kv_q4_mode).
+[[maybe_unused]] static void env_default(const char* key, const char* value) {
+    if (std::getenv(key) != nullptr) return;
+#if defined(_WIN32)
+    _putenv_s(key, value);
+#else
+    setenv(key, value, 0);
 #endif
 }
 
@@ -5011,13 +5065,49 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: invalid --ple-io/--ple-row-cache/--ple-inflight/--ple-delay-us\n");
         return 2;
     }
+    if (o.kv == "q4u32w") {   // q4u32 with the exact-cell window, named by the person (opt-in)
+        // The window's reader (layer.cpp's qsa_set_kv_q4_mode) reads the env; fill it only where the person set
+        // nothing, so a hand-sized S/R keeps its size.  qsa_set_kv_q4_mode below reads the env, after this block.
+        env_default("STRATA_KV_WINDOW", "1");
+        const char* win = std::getenv("STRATA_KV_WINDOW");
+        if (win == nullptr || win[0] != '1') {
+            std::fprintf(stderr, "strata generate: --kv q4u32w: STRATA_KV_WINDOW is 0, so the plain grid runs "
+                                 "(--kv q4u32 is the same format)\n");
+            o.kv = "q4u32";
+        } else {
+            env_default("STRATA_KV_WINDOW_S", "256");
+            env_default("STRATA_KV_WINDOW_R", "64");
+            std::fprintf(stderr, "strata generate: KV storage: q4u32 with the exact-cell window (q4u32w): the recent "
+                                 "256 and sink 64 cells of each QSA layer read exact fp16 from a resident side pool "
+                                 "(5.29 bit/cell at 128K, 1,016 MiB against int8's 1,584; KL 0.06949 against the "
+                                 "plain grid's 0.078700 at 128K over 131,060 positions - docs/bench-results/"
+                                 "2026-11-25-q4u32-window-ab)\n");
+        }
+    }
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "q4lm32" && o.kv != "q4lm32s" &&
+        o.kv != "q4lm8" && o.kv != "q4lm8k" && o.kv != "q4lm8v" && o.kv != "q4lm32w" && o.kv != "k8v4" &&
+        o.kv != "q4u32" && o.kv != "q4u32w") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, q4lm32, q4lm32s, q4lm8, q4lm8k, "
+                             "q4lm8v, q4lm32w, q4u32, q4u32w or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
-    strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    strata::core::qsa_set_kv_q4(o.kv == "q4_0" || o.kv == "q4lm32" || o.kv == "q4lm32s" ||   // PR #21: 4-bit after a Hadamard rotation
+                                o.kv == "q4lm8" || o.kv == "q4lm8k" || o.kv == "q4lm8v" || o.kv == "q4lm32w" ||
+                                o.kv == "q4u32" || o.kv == "q4u32w");
+    // `--kv q4lm32` / `q4lm32s`: the same 4-bit blocks with Max-Lloyd's levels instead of ggml's uniform grid,
+    // and either max|x|/87 or the block's own least-squares scale (kv_q4.hpp, Q4Mode).  `--kv q4lm8*` is the WP-2
+    // probe: the same blocks and bytes with the 8-level (3-bit) table on K and V / K only / V only - a quality
+    // measurement of a 3-bit codebook, not a 3-bit layout.
+    strata::core::qsa_set_kv_q4_mode(o.kv == "q4lm32s" ? strata::kernels::Q4Mode::kLloydLs
+                                     : o.kv == "q4lm32" ? strata::kernels::Q4Mode::kLloyd
+                                     : o.kv == "q4lm32w" ? strata::kernels::Q4Mode::kLloydWin
+                                     : o.kv == "q4lm8"  ? strata::kernels::Q4Mode::kLloyd8
+                                     : o.kv == "q4lm8k" ? strata::kernels::Q4Mode::kLloyd8K
+                                     : o.kv == "q4lm8v" ? strata::kernels::Q4Mode::kLloyd8V
+                                     : o.kv == "q4u32" || o.kv == "q4u32w" ? strata::kernels::Q4Mode::kUniformLs
+                                                                         : strata::kernels::Q4Mode::kUniform);
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");
@@ -5025,11 +5115,81 @@ int main(int argc, char** argv) {
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
     strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
+    // STRATA_KV_CENTER=<file>: the centering offsets (docs/bench-results/2026-11-10-centering/). The file holds,
+    // per model layer, the per-(KV head, channel) offsets of the K and of the V rows; they are subtracted
+    // before the rotation, so the quantizer's scale (a maximum statistic) sees the signal without its fixed
+    // part. Measured: the bias cost 1.9 to 2.6 dB of block MSE. Opt-in: without the file every path stays
+    // byte-identical.
+    if (const char* cpath = std::getenv("STRATA_KV_CENTER")) {
+        const strata::core::ModelGeometry& cg = strata::core::kCompiledGeometry;
+        std::FILE* cf = std::fopen(cpath, "rb");
+        if (cf == nullptr) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: cannot read %s\n", cpath);
+            return 2;
+        }
+        char cmagic[4] = {0, 0, 0, 0};
+        int32_t cver = 0, centries = 0, cheads = 0, cdim = 0;
+        const bool chead = std::fread(cmagic, 1, 4, cf) == 4 && std::fread(&cver, 4, 1, cf) == 1 &&
+                           std::fread(&centries, 4, 1, cf) == 1 && std::fread(&cheads, 4, 1, cf) == 1 &&
+                           std::fread(&cdim, 4, 1, cf) == 1;
+        if (!chead || std::memcmp(cmagic, "STKC", 4) != 0 || cver != 1 || cheads != (int) cg.n_head_kv ||
+            cdim != (int) cg.head_dim || centries < 0 || centries > (int) cg.n_layers) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: %s is not a centering table for %d KV heads x %d channels\n",
+                         cpath, (int) cg.n_head_kv, (int) cg.head_dim);
+            std::fclose(cf);
+            return 2;
+        }
+        const size_t cper = (size_t) cg.n_head_kv * cg.head_dim;
+        std::vector<float> chost((size_t) cg.n_layers * cper * 2, 0.0f);
+        bool cok = true;
+        for (int e = 0; e < centries && cok; ++e) {
+            int32_t clayer = -1;
+            if (std::fread(&clayer, 4, 1, cf) != 1 || clayer < 0 || clayer >= (int) cg.n_layers ||
+                std::fread(&chost[(size_t) clayer * cper], 4, cper, cf) != cper ||
+                std::fread(&chost[(size_t) cg.n_layers * cper + (size_t) clayer * cper], 4, cper, cf) != cper)
+                cok = false;
+        }
+        std::fclose(cf);
+        if (!cok) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: %s is truncated or names a layer outside the model\n",
+                         cpath);
+            return 2;
+        }
+        float* cdev = nullptr;
+        if (cudaMalloc(&cdev, chost.size() * sizeof(float)) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: the offsets do not fit into VRAM\n");
+            return 2;
+        }
+        if (cudaMemcpy(cdev, chost.data(), chost.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: STRATA_KV_CENTER: the offsets did not reach VRAM\n");
+            (void) cudaFree(cdev);
+            return 2;
+        }
+        strata::core::qsa_set_kv_center(cdev, cdev + (size_t) cg.n_layers * cper, (int) cg.n_layers,
+                                         (int) cg.n_head_kv, (int) cg.head_dim);
+        // cdev stays allocated on purpose: qsa_set_kv_center keeps the two device pointers (layer.cpp's
+        // g_kv_center_k/_v) and every QSA layer, the prefill and the verifier read them until the process
+        // exits. Freeing it here would be a use-after-free, not a fix. One allocation per process
+        // (n_layers x n_head_kv x head_dim x 2 floats), reclaimed at exit.
+        std::fprintf(stderr, "strata generate: the centering is on: %d layers' offsets from %s (K and V, per KV head and channel)\n",
+                     centries, cpath);
+    }
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    // q4u32's exact-cell window and --kv-resident can be combined: the window's fp16 side pool is carved in every
+    // main QSA state (layer.cpp's ring_cells <= 0, which includes a streamed state) and stays resident, while the
+    // q4 blocks beside it page through the host copy. The MTP ring (ring_cells > 0) never carries a window, and
+    // snapshots of a windowed state are still refused. kv_stream_parity's q4u32w arm checks the pair bitwise; the
+    // other windowed arms have not been checked under streaming and stay refused.
+    if (o.kv != "q4u32" && o.kv != "q4u32w" && o.kv_resident > 0 && strata::core::qsa_kv_win()) {
+        std::fprintf(stderr, "strata: --kv-resident (KV streaming) and the exact-cell window do not combine for "
+                             "--kv %s: only q4u32 has been checked bitwise. Keep the window without --kv-resident, "
+                             "or use --kv int8/q4_0/k8v4 for streaming\n", o.kv.c_str());
+        return 2;
+    }
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
@@ -6155,6 +6315,43 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // WP-2a window: the recent ring must hold one prompt chunk's whole window span (every query of a chunk has
+    // its own horizon), and the chunk is only known here - so size it for `o.prefill_chunk` (<= 0 = no batched
+    // prefill). An explicit STRATA_KV_WINDOW_BATCH wins, and the append checks a too-small ring loudly. This is
+    // before the first `session_init`/`qsa_state_bytes`, i.e. before the side pool is carved.
+    //
+    // The window's memory figure (setup.py: 152 MiB at 128K, 625 B/cell) is measured with B = 6,144, the Windows
+    // HIP auto chunk. Auto reaches 8,192/16,384/32,768 on other hosts; letting the ring follow that would make
+    // setup's estimate too small by up to ~600 MiB. The ring therefore holds at most 6,144 cells' chunk on every
+    // backend: a larger --prefill is capped with a note, which also keeps the accepted prompt chunk safe.
+    // A ring the user sized (STRATA_KV_WINDOW_BATCH) is left alone: the cap exists for the default ring, and a
+    // chunk that does not fit an explicit ring is refused by the append, which says what to change.
+    constexpr int64_t kKvWinBatchMax = 6144;
+    if (strata::core::qsa_kv_win() && g.n_qsa_layers() > 0) {
+        int64_t chunk = o.prefill_chunk > 0 ? o.prefill_chunk : 512;
+        if (!strata::core::qsa_kv_win_batch_is_explicit()) {
+            // The auto scan's ceiling floors at 8192 (#282, auto_ceiling below), and the host cap is read at
+            // parse time where a free ring cannot influence it - so without this the scan may pick 8,192 while
+            // the ring holds S + 6,144, and the batched append exits mid-prompt.  Measured on this PC (RX 9060
+            // XT, Windows HIP 7.1): --kv q4lm8v STRATA_KV_WINDOW=1 S=256 R=64 --prefill auto:16384, an
+            // 8,191-token prompt -> "kv_append_win: 8191 cells in one batch do not fit the 6400-row recent
+            // ring", exit 1, no DONE.  An explicit STRATA_KV_WINDOW_BATCH stays out of it: the append's
+            // loud refusal is the contract for a ring the user sized.
+            o.prefill_auto_cap = kKvWinBatchMax;
+        }
+        if (chunk > kKvWinBatchMax && !strata::core::qsa_kv_win_batch_is_explicit()) {
+            std::fprintf(stderr,
+                         "strata generate: the exact-cell window's ring holds 6,144-cell prompt chunks; "
+                         "--prefill %lld is capped at 6,144 (setup's 152 MiB figure)\n",
+                         (long long) chunk);
+            chunk = kKvWinBatchMax;
+            o.prefill_chunk = kKvWinBatchMax;
+            if (o.prefill_auto) o.prefill_auto_max = std::min(o.prefill_auto_max, kKvWinBatchMax);
+        }
+        strata::core::qsa_set_kv_win_batch(g, chunk);
+        strata::core::qsa_kv_win_freeze();
+    }
+
     strata::core::SessionState ss;
     void* sbuf = nullptr;   // allocated after the layer-split search, sized to CUDA0's own layer range (the carve)
     // **THE ENGINE RAN ON THE LEGACY DEFAULT STREAM, WHICH ON WDDM IS THE SLOW PATH.**  All four session
@@ -6792,7 +6989,7 @@ int main(int argc, char** argv) {
     std::vector<std::pair<int32_t, int32_t>> profile_loaded;
     if (!o.expert_profile_save.empty()) profile_loaded = profile;
     // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
-    // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
+    // the 5080 + 3090 rig (docs/bench-results/2026-09-29-layer-split):
     //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a
     //     3090: the per-layer round trip and kernels, not the bytes - both cards have ~950 GB/s);
     //   - an expert no cache holds costs ~190 ms per unit of routed mass: the CPU pool in decode and the PCIe stream
@@ -9723,12 +9920,12 @@ int main(int argc, char** argv) {
         // token 0). That fault was fixed long since (native_expert_parity, expert_parity, the grouped kernels'
         // tests), and the warning outlived it (issue #23). What remains is rounding: a GPU expert and the CPU's
         // compute the same quantized expert with different float order, so a near-tie can flip. Measured teacher-
-        // forced on 2,557 tokens (bench/results/2026-09-27-cache-parity): 95-98% same top-1, and perplexity equal
+        // forced on 2,557 tokens (docs/bench-results/2026-09-27-cache-parity): 95-98% same top-1, and perplexity equal
         // (on - off = -0.005 +- 0.005 nats). Neither output is more correct than the other.
         std::fprintf(stderr,
                      "strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,\n"
                      "                 so a reply can differ slightly from a run without the cache (same quality:\n"
-                     "                 bench/results/2026-09-27-cache-parity).\n");
+                     "                 docs/bench-results/2026-09-27-cache-parity).\n");
         if (o.expert_cache_per_layer) {
             int64_t lo = 0, hi = 0;
             xcache.layer_slot_range(0, lo, hi);
@@ -10650,8 +10847,9 @@ int main(int argc, char** argv) {
     }
 
     std::FILE* dump = nullptr;
-    // The logits header is written WITH THE FIRST ROW, not at open: a native pack never reaches the
-    // per-token dump site, and a header promising rows that were never written is worse than no file.
+    // The logits header is written WITH THE FIRST ROW, not at open: a header promising rows that were never
+    // written is worse than no file.  A native pack skips the per-token loop, so its one row comes from the
+    // initial verify window below and the header starts at zero rows until that row is actually written.
     int32_t hdr[2] = {0, 0};
     bool hdr_written = false;
     const int64_t dump_positions = (int64_t) o.tokens.size() - 1 + o.max_new;
@@ -10672,7 +10870,8 @@ int main(int argc, char** argv) {
         // class of defect as a self-check that verifies the wrong invariant: anything reading the count instead
         // of the size gets a wrong answer that looks authoritative.  `tools/logits_identical.py` caught it by
         // parsing the header and refusing the file.
-        const int32_t n_rows = (int32_t) strata::program::logits_selection::row_count(dump_positions, o.logits_stride);
+        const int32_t n_rows = native_pack ? 0 :
+            (int32_t) strata::program::logits_selection::row_count(dump_positions, o.logits_stride);
         hdr[0] = n_vocab; hdr[1] = n_rows;
     }
 
@@ -23489,10 +23688,12 @@ int main(int argc, char** argv) {
                     const bool h = st.kv_mode != 0;
                     std::vector<std::pair<const void*, int64_t>> a;
                     if (st.kv_q4) {
-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim, st.kv_q4_mode);
                         a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
                     } else if (st.kv_hybrid) {
-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        // the hybrid's V half is rotated q4_0 whatever the process-wide mode is
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim,
+                                                                                            strata::kernels::Q4Mode::kUniform);
                         a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
                              {h ? st.host.k_scale : st.k_scale, scb}};
                     } else if (st.kv_int8) {
@@ -25180,6 +25381,22 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "strata generate: STRATA_DUMP_FIRST_LOGITS: cannot write %s\n", fl);
                     if (f) std::fclose(f);
                 }
+                // A native pack has no per-token dump site.  Write the same first row here so --dump-logits is a
+                // real end-to-end artifact for this path instead of an empty file with a printed success line.
+                if (dump != nullptr) {
+                    std::vector<float> row((size_t) ver.vocab());
+                    if (!ver.copy_logits(0, row.data())) {
+                        std::fprintf(stderr, "strata generate: reading the first logits for --dump-logits failed\n");
+                        return 1;
+                    }
+                    hdr[1] = 1;
+                    if ((!hdr_written && std::fwrite(hdr, sizeof hdr, 1, dump) != 1) ||
+                        std::fwrite(row.data(), sizeof(float), row.size(), dump) != row.size()) {
+                        std::fprintf(stderr, "strata generate: cannot write logits to %s\n", o.dump_logits.c_str());
+                        return 1;
+                    }
+                    hdr_written = true;
+                }
             }
             // plan v0.3 P6: the adaptive tier's host work (ranking, copy submission) runs on its own thread while the
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
@@ -25376,9 +25593,15 @@ int main(int argc, char** argv) {
                         (double) mtp.vram_bytes() / 1048576.0);
     }
 
-    if (dump != nullptr && std::fclose(dump) != 0) {
-        std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
-        return 1;
+    if (dump != nullptr) {
+        // No verify window ran (for example a prompt with no generated token): a native pack's declared zero
+        // rows are at least an honest description of the empty file.
+        if (native_pack && !hdr_written && std::fwrite(hdr, sizeof hdr, 1, dump) != 1)
+            std::fprintf(stderr, "strata generate: cannot write the empty logits header\n");
+        if (std::fclose(dump) != 0) {
+            std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
+            return 1;
+        }
     }
     if (layer_dump != nullptr) {
         std::fclose(layer_dump);
