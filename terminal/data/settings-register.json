@@ -25379,7 +25379,7 @@
    "last_date": "2026-11-28",
    "status": "research",
    "owner": "program",
-   "note": "[reviewed] opt-in: the centering offset table (per layer, per KV head and channel, K and V separately) that is subtracted before the Hadamard rotation; the file comes from tools/kv_center_table.py.  The campaign measured the bias at 1.9 to 2.6 dB of block MSE (docs/bench-results/2026-11-10-centering/), but the uncalibrated codec stays the product point: no artifact.",
+   "note": "[reviewed] opt-in: the centering offset table (per layer, per KV head and channel, K and V separately) that is subtracted before the Hadamard rotation; the file comes from tools/kv_center_table.py.  The campaign measured the bias at 1.9 to 2.6 dB of block MSE, but the 128K check on q4u32w found no gain (p99 1.98 -> 2.02, mean -0.00004 nats, t +0.03; docs/bench-results/2026-11-28-q4u32w-centering-tail/): no artifact ships and the uncalibrated codec stays the product point.",
    "retire_after": "",
    "retired_in": ""
   },

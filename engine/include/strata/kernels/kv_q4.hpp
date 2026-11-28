@@ -189,7 +189,7 @@ __device__ __forceinline__ const int8_t* q4l_map_v(Q4Mode m) { return q4_l8_v(m)
 void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream);
 inline void fwht256_inplace_cuda(float* data, int64_t n_rows, void* stream) { fwht256_cuda(data, data, n_rows, stream); }
 
-/// The rotation of the KV rows **with the centering** (docs/bench-results/2026-11-10-centering/): the
+/// The rotation of the KV rows **with the centering** (docs/DETAILS.md, KV cache): the
 /// per-(KV head, channel) offset is subtracted before the transform, in the channel space, so the
 /// quantizer's scale (a maximum statistic) sees the signal without its fixed part.  The rows of the
 /// buffer are (position, KV head, channel), so the head of a row is (row / 256) % n_heads.

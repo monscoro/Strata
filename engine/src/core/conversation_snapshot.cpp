@@ -70,7 +70,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         return false;
     }
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
-    // The centering (docs/bench-results/2026-11-10-centering/) is another format (+32): a centered state's bytes
+    // The centering (docs/DETAILS.md, KV cache) is another format (+32): a centered state's bytes
     // mean nothing to a state that does not center, so a snapshot or prompt checkpoint taken with the
     // centering never restores into one without it, nor the reverse.  The hybrid rotates its V without
     // the centering, so it keeps the uncentered format.

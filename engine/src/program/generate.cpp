@@ -5115,7 +5115,7 @@ int main(int argc, char** argv) {
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
     strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
-    // STRATA_KV_CENTER=<file>: the centering offsets (docs/bench-results/2026-11-10-centering/). The file holds,
+    // STRATA_KV_CENTER=<file>: the centering offsets (docs/DETAILS.md, KV cache). The file holds,
     // per model layer, the per-(KV head, channel) offsets of the K and of the V rows; they are subtracted
     // before the rotation, so the quantizer's scale (a maximum statistic) sees the signal without its fixed
     // part. Measured: the bias cost 1.9 to 2.6 dB of block MSE. Opt-in: without the file every path stays

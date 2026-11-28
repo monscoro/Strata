@@ -351,7 +351,7 @@ strata::kernels::Q4Mode qsa_kv_q4_mode();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
-/// ---- The centering (docs/bench-results/2026-11-10-centering/) ----
+/// ---- The centering (docs/DETAILS.md, KV cache) ----
 /// The per-(KV head, channel) offsets of the K and of the V rows, subtracted before the rotation so
 /// that the quantizer's scale (a maximum statistic) sees the signal without its fixed part.  Measured:
 /// the bias cost 1.9 to 2.6 dB of block MSE, and removing it is worth more than the level table or

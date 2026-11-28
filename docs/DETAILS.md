@@ -264,6 +264,14 @@ automatically); `0` forces `cudaHostAlloc` first.
 figures use). Only `q4u32`'s window is checked under `--kv-resident` (bitwise, `kv_stream_parity`); the other window
 arms are refused beside it, and a snapshot of a windowed state is refused. The MTP ring never carries a window.
 
+**The mean centering** (`STRATA_KV_CENTER=<table>`; opt-in, research) subtracts a per-(KV head, channel) offset
+before the rotation, so the quantizer's step no longer sees the fixed part of the signal. The table comes from
+`tools/kv_center_table.py` on a `STRATA_KV_Q4_DUMP` dump; no table ships and no default uses it. Measured at 128K
+on `q4u32w`, it did not help: the p99 got 1.76 % worse (1.983749 -> 2.018592) and the paired mean was -0.000040
+nats (95 % [-0.003174, +0.003093], t +0.03); at 4K the gain was +0.00321 nats at the harness's 0.00200 nats
+resolution. A centered state also carries a different snapshot format (+32). Protocol and numbers:
+`docs/bench-results/2026-11-28-q4u32w-centering-tail/`.
+
 ### Low-RAM modes (chosen by setup)
 
 Normally all of a model's experts are copied into RAM (23-50 GB, pinned) and the GPU holds a copy of the most-used ones.

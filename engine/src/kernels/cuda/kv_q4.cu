@@ -496,7 +496,7 @@ void add_center_offsets_cuda(float* data, int64_t n_rows, int n_q_heads, int g, 
     check("add_center_offsets launch");
 }
 
-// The centering (docs/bench-results/2026-11-10-centering/): the per-(KV head, channel) offset of the K
+// The centering (docs/DETAILS.md, KV cache): the per-(KV head, channel) offset of the K
 // (or V) rows is subtracted BEFORE the rotation, in the channel space, so the quantizer's scale
 // (a maximum statistic) sees the signal without its fixed part.  The rows of the buffer are
 // (position, KV head, channel), so the head of a row is r % n_heads (see the kernel body).
