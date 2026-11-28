@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 170 folders and 3 loose files, 2296 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 172 folders and 3 loose files, 2310 files in all.
 
 
 ## 2026-09
@@ -189,8 +189,10 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-11-13-ultraquant-scale](2026-11-13-ultraquant-scale/) | UltraQuants Skalenmechanismus, auf unserem Gitter nachgemessen (2026-11-13) | 1 |
 | [2026-11-14-q4u32-fastpath](2026-11-14-q4u32-fastpath/) | q4u32 als int8-Ersatz: der Fast-Path und die Laufzeitmessung (Vorregistrierung, 2026-11-14) | 3 |
 | [2026-11-14-rdna2-pcie-auto](2026-11-14-rdna2-pcie-auto/) | PcieAuto on gfx103x: the decode miss split from the CPU pool's speed (#4007) | 3 |
-| [2026-11-25-q4u32-window-ab](2026-11-25-q4u32-window-ab/) | 128K-A/B: reines q4u32 gegen q4u32w (vorab festgelegt, 2026-11-25) | 5 |
-| [2026-11-25-q4u32w-streaming](2026-11-25-q4u32w-streaming/) | q4u32w mit --kv-resident: Korrektheits-Gates und erste Laufzeitmessung (2026-11-25) | 50 |
+| [2026-11-21-community-rx-9060-xt-swift-1-5-iq2-xs](2026-11-21-community-rx-9060-xt-swift-1-5-iq2-xs/) | Community benchmark on AMD Radeon RX 9060 XT | 3 |
+| [2026-11-25-q4u32-window-ab](2026-11-25-q4u32-window-ab/) | 128K-A/B: reines q4u32 gegen q4u32w (vorab festgelegt, 2026-11-25) | 7 |
+| [2026-11-25-q4u32w-streaming](2026-11-25-q4u32w-streaming/) | q4u32w mit --kv-resident: Korrektheits-Gates und erste Laufzeitmessung (2026-11-25) | 54 |
+| [2026-11-28-q4u32w-centering-tail](2026-11-28-q4u32w-centering-tail/) | 128K-Tail: q4u32w ohne gegen mit Mittelwert-Kalibrierung (vorab festgelegt, 2026-11-28) | 5 |
 
 ## Loose files
 
